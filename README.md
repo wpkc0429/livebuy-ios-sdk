@@ -21,7 +21,7 @@ Embed live shopping experiences — live streams, replays, and shoppable VODs �
 1. In Xcode, go to **File → Add Package Dependencies…**
 2. Paste the repository URL:
    ```
-   https://github.com/livebuy/livebuy-ios-sdk
+   https://github.com/wpkc0429/livebuy-ios-sdk
    ```
 3. Select **Up to Next Major Version** starting from `1.0.0`
 4. Add **LiveBuySDK** to your target
@@ -30,7 +30,7 @@ Embed live shopping experiences — live streams, replays, and shoppable VODs �
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/livebuy/livebuy-ios-sdk", from: "1.0.0")
+    .package(url: "https://github.com/wpkc0429/livebuy-ios-sdk", from: "1.0.0")
 ],
 targets: [
     .target(
