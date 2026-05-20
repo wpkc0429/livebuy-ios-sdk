@@ -11,8 +11,8 @@ let package = Package(
         .binaryTarget(
             name: "LiveBuySDK",
             // Updated automatically by CI on each release.
-            url: "https://github.com/wpkc0429/livebuy-ios-sdk/releases/download/v0.0.8-rc/LiveBuySDK.xcframework.zip",
-            checksum: "868e92f8359051a7a5e1d50960d5f1f28e355eabb8444ccb939d46203ede0010"
+            url: "https://github.com/wpkc0429/livebuy-ios-sdk/releases/download/v0.0.9-rc/LiveBuySDK.xcframework.zip",
+            checksum: "cc5b67ee89d0e45014387bc919d5e144f6b39103f5298ce1a25d8040cb1b971c"
         )
     ]
 )
