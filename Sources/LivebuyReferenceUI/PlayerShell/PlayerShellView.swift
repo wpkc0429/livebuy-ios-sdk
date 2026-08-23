@@ -347,12 +347,27 @@ public struct PlayerShellView: View {
         return .none
     }
 
+    /// PURE: whether a vertical swipe is allowed to trigger a video-switch / close action.
+    /// **直播正在進行中**（`isLive`, `liveStatus == 1`，涵蓋「串流直播」與「預錄直播」兩者，與
+    /// `isUpcoming` / `isFinishedLiveReplay` 互斥）MUST NOT 用垂直滑動切換影片（design R18，
+    /// `screens.jsx` 的 `liveInProgress = effectiveState === 'live_main' && !isUpcoming && !isReplay`）；
+    /// 預告倒數（upcoming）與已結束直播的回放（finished-live replay）不受影響，維持可滑動換片
+    /// （rb-ios-live-swipe-gesture-gating）。抽成純函式使此 gate 可單元測試（不需渲染手勢）。
+    static func allowsSwipeNav(isLive: Bool) -> Bool { !isLive }
+
     /// Resolves a committed vertical drag into the correct action, honoring host overrides.
+    /// - **直播進行中**（`model.isLive == true`）MUST NOT 觸發任何換片 / 關閉動作——本函式整個提早
+    ///   return，host override（`onSwipeUp`/`onSwipeDown`）、model fallback（`navigateToNext`/
+    ///   `navigateToPrev`）、close-on-empty（`onCloseRequest`）三者皆不觸發（rb-ios-live-swipe-
+    ///   gesture-gating）。拖曳事件本身仍由呼叫端（`resolveGestureEnd`）分類為 swipe，不會落回 tap，
+    ///   故仍被手勢層吞掉，不會誤觸點擊靜音。
     /// - A host `onSwipeUp` / `onSwipeDown` override ALWAYS wins (called instead of any
     ///   template-nav / close behavior).
     /// - Otherwise (template-nav fallback): swipe toward a video → navigate; swipe toward
     ///   an EMPTY direction (no next / no prev) → `onCloseRequest()` (close the player, #7).
     func handleSwipeEnded(translationHeight dy: CGFloat) {
+        // 直播進行中：不換片、不關閉（拖曳事件已由呼叫端分類為 swipe，仍算被吞掉，只是無 side effect）。
+        guard Self.allowsSwipeNav(isLive: model.isLive) else { return }
         // Host override wins, regardless of next/prev availability.
         if dy <= -Self.swipeThreshold, let onSwipeUp = onSwipeUp { onSwipeUp(); return }
         if dy >= Self.swipeThreshold, let onSwipeDown = onSwipeDown { onSwipeDown(); return }
@@ -686,6 +701,12 @@ public struct PlayerShellView: View {
                     // `false` keeps the title (single line + ellipsis, same height) but stops it
                     // scrolling; the overflow MEASUREMENT itself is untouched.
                     titleScroll: model.titleScroll,
+                    // Cold-start loading gate (rb-live-entry-viewer-count-loading-gate):
+                    // mirrors `model.startPhase`. While `.loading` (the `/sdk/video` fetch
+                    // has not yet resolved) the viewer-count badge is suppressed so a
+                    // not-yet-real `viewerCount` (type default `0`) is never drawn as if it
+                    // were a real count.
+                    startPhase: model.startPhase,
                     onMinimize: { onMinimize?() },
                     // 訂閱徽章 → 容器注入的 gate（未登入 → AuthGate(.subscribe)）；未注入 fallback
                     // `model.toggleSubscribe()`（rb-ios-subscribe-login-gate）。與 info pill 共用。

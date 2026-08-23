@@ -125,6 +125,11 @@ struct PlayerOverlayRootView: View {
     /// so the product card shows and is tappable (rb-ios-live-pinned-card-appears).
     static let liveChatTrailingClearance: CGFloat = 152
 
+    /// Leading inset fed to `FeedWinOverlayView` so the merged chat feed's left edge aligns
+    /// with the LIVE bottom bar's bag button left margin (`LiveBottomBarView.barHPadding == 10`)
+    /// instead of sitting flush against the screen edge (rb-ios-live-chat-card-edge-align).
+    static let liveChatLeadingClearance: CGFloat = 10
+
     /// EXTRA bottom clearance added to the chat feed when the LBLiveAnnounce banner is showing,
     /// so the chat's newest rows clear the bottom-left 公告 banner instead of overlapping it
     /// (rb-ios-live-announce-chat-clearance, 問題 4). ≈ the announce banner's height: vertical
@@ -271,6 +276,9 @@ struct PlayerOverlayRootView: View {
                                // bottom-right LBLivePinnedCard column free (rb-ios-live-pinned-
                                // card-appears).
                                chatTrailingInset: Self.liveChatTrailingClearance,
+                               // Align the chat's left edge with the LIVE bottom bar's bag
+                               // button left margin (rb-ios-live-chat-card-edge-align).
+                               chatLeadingInset: Self.liveChatLeadingClearance,
                                // LIVE-only: drop the chat feed entirely in VOD so it doesn't
                                // occlude / eat the VOD side rail's taps (rb-ios-hide-chat-feed-
                                // in-vod).

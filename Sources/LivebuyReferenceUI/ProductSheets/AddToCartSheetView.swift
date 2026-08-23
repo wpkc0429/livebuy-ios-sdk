@@ -10,8 +10,9 @@ import LivebuyUI
 //
 // The product LIST 加購鈕 (in-stock cart glyph) opens THIS compact purchase sheet — the
 // design's `AddToCartSheet`: 縮圖 + 名 + 價 + 變體 picker + 數量 stepper + 加入購物車 CTA,
-// header「加入購物車」, and crucially NO 收藏 / 分享 footer (that 3-slot footer belongs to the
-// full ProductDetailSheet, opened from the 明細鈕 / 商品名). To avoid duplicating the
+// header「加入購物車」, and crucially NO 收藏 / 分享 (those belong to the full ProductDetailSheet's
+// `.detail` presentation — body-bottom inline 收藏鈕 + 2-slot `[分享][CTA]` footer, opened from
+// the 明細鈕 / 商品名). To avoid duplicating the
 // variant / qty / CTA / 請選規格 / 加購失敗 logic, this is a THIN WRAPPER over
 // `ProductDetailSheetView` with `presentation: .addToCart` (which switches the header title
 // and drops 收藏 / 分享). It carries no faved / onToggleFavorite / onShare inputs (those are

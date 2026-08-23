@@ -169,7 +169,8 @@ public struct ProductSheetsOverlayView: View {
     /// NEVER opens a detail itself (D-2). nil for demo / snapshot instances.
     private let onProductTap: ((LBProduct) -> Void)?
 
-    /// Host-wired 分享 tap from the product-detail footer's 3-slot [收藏][分享][CTA].
+    /// Host-wired 分享 tap from the product-detail footer's 2-slot [分享][CTA]
+    /// (rb-ios-product-sheet-resize-fav-inline moved 收藏 out of the footer into the body content).
     /// Share is a HOST CONCERN — the headless SDK has no share route, so the container
     /// simply forwards the intent to this host-provided closure (passthrough). nil for
     /// demo / snapshot instances; the share button renders correctly action-free.
@@ -423,8 +424,10 @@ public struct ProductSheetsOverlayView: View {
                     actionMode = .restock
                     onProductTap?(product)
                 },
-                // 縮圖點擊 → 影片跳轉到商品介紹時間（issue 5）；分享鈕 → 系統分享帶 `?t=beginTime`（issue 6）。
-                onSeekToIntro: { product in onSeekToProductIntro?(product) },
+                // 縮圖點擊 → 影片跳轉到商品介紹時間，並關閉商品清單抽屜（issue 5 +
+                // rb-ios-product-bag-seek-dismiss）；分享鈕 → 系統分享帶 `?t=beginTime`（issue 6，
+                // 不連動關閉抽屜）。
+                onSeekToIntro: { product in seekToProductIntro(product) },
                 onShareProduct: { product in onShareProduct?(product) },
                 onOpenCart: { model.openCart() },
                 // header 右上角關閉 icon → 關抽屜（rb-ios-sheet-header-close-unify；與 scrim /
@@ -437,7 +440,9 @@ public struct ProductSheetsOverlayView: View {
         // scrim + grab handle + drag-to-dismiss + content-sized height (iOS-14/15 height
         // control) instead of the system sheet. `onDismiss` clears the local mirror; the
         // template still owns detail open/close (the `syncPresentation` mirror below).
-        .lbBottomSheet(theme: theme, item: $presentingDetail, onDismiss: { dismissDetail() }) { detail in
+        // `resizable: true` (rb-ios-product-sheet-resize-fav-inline): the ONLY `.lbBottomSheet(item:)`
+        // call site — grab handle drag-UP live-resizes 25%–90%; drag-DOWN dismiss/bounce unchanged.
+        .lbBottomSheet(theme: theme, item: $presentingDetail, onDismiss: { dismissDetail() }, resizable: true) { detail in
             presentedSheet(for: detail, actionMode: actionMode)
         }
         // Keep the presented sheet in lock-step with the model's detail snapshot:
@@ -462,6 +467,18 @@ public struct ProductSheetsOverlayView: View {
     private func dismissDetail() {
         presentingDetail = nil
         model.closeDetail()
+    }
+
+    /// Forward a product-list **thumbnail** tap → seek the video to the product's intro time
+    /// (host-wired `onSeekToProductIntro`), and close the product-list drawer so the user
+    /// immediately sees where the video jumped to (rb-ios-product-bag-seek-dismiss). Reuses the
+    /// SAME `model.listPresented` flag the header close button / scrim / drag-to-dismiss already
+    /// write to — no second sheet-state field, no second close path. Scoped to THIS ONE entry
+    /// point: the list's other row actions (明細鈕 / 加購鈕 / 補貨鈴鐺 / 列分享鈕) are untouched
+    /// and MUST NOT gain this side effect.
+    private func seekToProductIntro(_ product: LBProduct) {
+        withAnimation { model.listPresented = false }
+        onSeekToProductIntro?(product)
     }
 
     /// Add to cart, then (re)present the「請選規格」prompt if the add hit the incomplete-variant
@@ -596,6 +613,18 @@ public struct ProductSheetsOverlayView: View {
     func presentedSheetForTesting(for detail: LBProductDetailState,
                                   actionMode: ProductSheetActionMode) -> some View {
         presentedSheet(for: detail, actionMode: actionMode)
+    }
+
+    /// Test-only hook exposing the SAME thumbnail-tap → seek-and-dismiss path `body` wires
+    /// (rb-ios-product-bag-seek-dismiss). Lets tests assert, without mounting SwiftUI gesture
+    /// handling, that a thumbnail tap both forwards the seek AND closes the product-list drawer
+    /// via the shared `model.listPresented` flag.
+    ///
+    /// MUST NOT be called from production code, and MUST keep forwarding to the very same
+    /// `seekToProductIntro(_:)` — a parallel copy would decouple the assertion from what the
+    /// container actually wires.
+    func seekToProductIntroForTesting(_ product: LBProduct) {
+        seekToProductIntro(product)
     }
 
     // NOTE on `goodsGpn` for the restock sheet (D-5): `LBProductDetailState` mirrors

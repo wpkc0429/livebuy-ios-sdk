@@ -211,7 +211,12 @@ public struct LiveOverlayChromeView: View {
                     Spacer(minLength: 0)
                     pinnedCardCarousel
                 }
-                .padding(.horizontal, 8)
+                // Leading (announce side) stays 8 — the design's `left:8`, unrelated to the
+                // announce banner's own fixed 233pt width calc below. Trailing (pinned-card
+                // side) is 10 (was 8) so the pinned card's right edge aligns with the LIVE
+                // bottom bar's heart button right margin (rb-ios-live-chat-card-edge-align).
+                .padding(.leading, 8)
+                .padding(.trailing, 10)
                 .padding(.bottom, 64)
             }
         }

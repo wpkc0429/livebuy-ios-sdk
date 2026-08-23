@@ -130,7 +130,9 @@ public enum LBShowStock {
 public struct ProductDetailSheetView: View {
 
     /// How this sheet presents the same product-detail state (rb-ios-product-action-sheet):
-    /// `.detail` = full browse (header「商品明細」+ 3-slot `[收藏][分享][CTA]` footer);
+    /// `.detail` = full browse (header「商品明細」+ body-bottom inline 收藏鈕 + 2-slot
+    /// `[分享][CTA]` footer — rb-ios-product-sheet-resize-fav-inline moved 收藏 out of the footer
+    /// into the body content);
     /// `.addToCart` = compact purchase (header「加入購物車」+ CTA-only footer, no 收藏/分享),
     /// the design's `AddToCartSheet`. `AddToCartSheetView` is the thin wrapper that picks
     /// `.addToCart`. Defaults to `.detail` so existing call sites / baselines are unchanged.
@@ -168,9 +170,10 @@ public struct ProductDetailSheetView: View {
     /// Genuinely-live signal (rb-ios-live-hide-product-share, design R12) — `ProductSheetsModel.isLive`
     /// (`DefaultPlayerHeaderState.isLive` republish, `liveStatus == 1`). DISTINCT from `live` above
     /// (that one only gates real-photo loading; this one gates the share button). `.detail`
-    /// presentation's 分享 (share) button in the 3-slot `[收藏][分享][CTA]` footer is hidden when
-    /// `isLive == true` — a genuinely-live product has no settled "start time" a share link could
-    /// carry (unlike VOD / a finished-live replay, which have a real `beginTime`). 收藏 (favorite) is
+    /// presentation's 分享 (share) button in the 2-slot `[分享][CTA]` footer is hidden when
+    /// `isLive == true` (footer collapses to just `[CTA]`) — a genuinely-live product has no
+    /// settled "start time" a share link could carry (unlike VOD / a finished-live replay, which
+    /// have a real `beginTime`). 收藏 (favorite, now in the body content, not the footer) is
     /// unaffected. Default `false` → existing call sites / snapshots byte-identical.
     public let isLive: Bool
     /// 商品說明（`LBProduct.brief`）— `.detail` 呈現在價格下方畫一段說明（對齊設計 `ProductDetailSheet`
@@ -215,7 +218,7 @@ public struct ProductDetailSheetView: View {
     /// Host-wired 收藏 toggle → `model.toggleFavorite()` → `DefaultGoodsTracking.toggleAwait(goodsGpn)`.
     /// reference-ui NEVER calls core directly. nil for demo / snapshot instances.
     private let onToggleFavorite: (() -> Void)?
-    /// Host-wired 分享 tap (the design's 3-slot footer middle slot). Share is a HOST
+    /// Host-wired 分享 tap (the footer's leading slot, `[分享][CTA]`). Share is a HOST
     /// CONCERN — the headless SDK exposes no share route, so reference-ui simply
     /// FORWARDS the intent to this closure (the container provides it as a host
     /// passthrough). reference-ui NEVER builds share logic / calls core / template.
@@ -341,8 +344,11 @@ public struct ProductDetailSheetView: View {
         // photo / variant / qty body scrolls (within the ½-screen cap). Snapshot path stays
         // content-sized (byte-identical) via `LBSheetScaffold`'s `lbSheetHeightUncapped` branch.
         // `.addToCart`（精簡購買 sheet）固定填滿到 cap，與 NotifyRestock 同高（對齊設計稿
-        // rb-ios-addtocart-sheet-height-align-restock）；`.detail` 維持 content-sized。
-        LBSheetScaffold(fillToCap: presentation == .addToCart) {
+        // rb-ios-addtocart-sheet-height-align-restock）；`.detail` 維持 content-sized，但 cap 上限
+        // 自 rb-ios-product-sheet-resize-fav-inline 起改為 90%（design-contract R19，`capFraction`
+        // 顯式覆寫 `LBSheetScaffold` 的預設 0.5——不影響 VideoInfoPanelView / ProductListView，兩者
+        // 未傳 `capFraction`，維持既有 0.5）。
+        LBSheetScaffold(fillToCap: presentation == .addToCart, capFraction: 0.9) {
             header
         } bodyContent: {
             VStack(alignment: .leading, spacing: 0) {
@@ -376,6 +382,15 @@ public struct ProductDetailSheetView: View {
                 // add threw (D-3). Sits above the footer so it reads as feedback.
                 if addToCartFailed {
                     failureBanner.padding(.top, 16)
+                }
+
+                // 收藏鈕 inline 模式：body 內文區塊最下方單獨置中一行（design R19，
+                // rb-ios-product-sheet-resize-fav-inline）— 只在 `.detail` 呈現畫（`.addToCart`
+                // 不畫收藏 / 分享，既有規則不變）。
+                if presentation == .detail {
+                    favButtonInline
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.top, 16)
                 }
             }
             .padding(.horizontal, 16)
@@ -756,30 +771,30 @@ public struct ProductDetailSheetView: View {
 
     private var footer: some View {
         VStack(spacing: 10) {
-            // Bottom action row: the design's 3-slot footer [收藏][分享][CTA]
-            // (ProductDetailSheet footer / LBPFavButton). 收藏 toggle + 分享 are the
-            // two width-56 secondary slots left of the flexible primary CTA. 分享 is a
-            // HOST CONCERN — the headless SDK exposes no share route, so reference-ui
-            // only forwards the intent to the host-wired `onShare` passthrough.
+            // Bottom action row: 2-slot footer [分享][CTA] (rb-ios-product-sheet-resize-fav-inline
+            // moved 收藏 out of the footer into the body content — see `favButtonInline`; the
+            // design's `ProductDetailSheet` footer originally had a 3rd `[收藏]` slot here). 分享 is
+            // the one remaining width-56 secondary slot, left of the flexible primary CTA, and is a
+            // HOST CONCERN — the headless SDK exposes no share route, so reference-ui only
+            // forwards the intent to the host-wired `onShare` passthrough.
             HStack(spacing: 12) {
                 // `.addToCart` (compact purchase) drops 收藏 / 分享 — just the CTA (design's
-                // AddToCartSheet). `.detail` keeps the 3-slot `[收藏][分享][CTA]` footer, EXCEPT
-                // 分享 is additionally hidden while genuinely live (rb-ios-live-hide-product-share,
-                // design R12) — 收藏 is unaffected.
-                if presentation == .detail {
-                    favButton
-                    if !isLive {
-                        shareButton
-                    }
+                // AddToCartSheet). `.detail` footer collapses to 2-slot `[分享][CTA]` (收藏 moved
+                // to the body content, see `favButtonInline` below — rb-ios-product-sheet-resize-fav-inline),
+                // EXCEPT 分享 is additionally hidden while genuinely live
+                // (rb-ios-live-hide-product-share, design R12) — 收藏 is unaffected either way.
+                if presentation == .detail && !isLive {
+                    shareButton
                 }
                 addToCartButton
             }
 
-            // 商品明細 footer 收斂為設計 `ProductDetailSheet` 的 3-slot `[收藏][分享][CTA]`：
-            // 設計並無額外的「查看購物車」CTA，且 `cartCount`（= `DefaultCartCTA.state.count`，
-            // per-session 成功加購計數）非真實購物車件數、數據不準，故 footer MUST NOT 畫查看購物車
-            // CTA（rb-ios-product-sheet-cart-cta-cleanup 問題 2）。`cartCTA` computed 與 `cartCount`
-            // / `onOpenCart` 參數保留（不動建構子簽章 / 外部接線），body 不再引用。
+            // 商品明細 footer 收斂為 2-slot `[分享][CTA]`（收藏鈕自 rb-ios-product-sheet-resize-fav-inline
+            // 起搬到 body 內文區塊，不再是 footer 的一個 slot）：設計並無額外的「查看購物車」CTA，且
+            // `cartCount`（= `DefaultCartCTA.state.count`，per-session 成功加購計數）非真實購物車件數、
+            // 數據不準，故 footer MUST NOT 畫查看購物車 CTA（rb-ios-product-sheet-cart-cta-cleanup 問題 2）。
+            // `cartCTA` computed 與 `cartCount` / `onOpenCart` 參數保留（不動建構子簽章 / 外部接線），
+            // body 不再引用。
         }
         .padding(.horizontal, 16)
         .padding(.top, 12)
@@ -827,30 +842,32 @@ public struct ProductDetailSheetView: View {
         .accessibilityIdentifier(LBAccessibilityID.addToCartCta)
     }
 
-    /// 收藏（到貨追蹤 type=1）toggle — LBPFavButton (vertical icon+label, width 56).
+    /// 收藏（到貨追蹤 type=1）toggle — `LBPFavButton` `inline` 模式(horizontal icon+text, centered
+    /// in the body content, rb-ios-product-sheet-resize-fav-inline). Replaces the prior footer
+    /// vertical icon-over-label version (design R19: `LBPFavButton` gained an `inline` prop).
     /// Empty `heart` = not faved; filled `heart.fill` + accent = faved. Reads
     /// `faved` (= `DefaultGoodsTracking.awaitEnabled(for:)`); tap → host-wired
     /// `onToggleFavorite` → `toggleAwait(goodsGpn)`. reference-ui never flips it itself.
-    private var favButton: some View {
+    private var favButtonInline: some View {
         Button(action: { onToggleFavorite?() }) {
-            VStack(spacing: 4) {
+            HStack(spacing: 6) {
                 Image(systemName: faved ? "heart.fill" : "heart")
-                    .font(.system(size: 20, weight: .regular))
+                    .font(.system(size: 16, weight: .regular))
                     .foregroundColor(faved ? theme.accent : theme.text)
                 Text(faved ? Self.favedLabel : Self.favLabel)
-                    .font(.system(size: 11 * theme.fontScale, weight: faved ? .bold : .medium))
+                    .font(.system(size: 13 * theme.fontScale, weight: faved ? .bold : .medium))
                     .foregroundColor(faved ? theme.accent : Self.textDim)
             }
-            .frame(width: 56)
         }
         .buttonStyle(PlainButtonStyle())
         .accessibilityIdentifier(LBAccessibilityID.favButton)
     }
 
-    /// 分享 button — the design's 3-slot footer middle slot (between 收藏 and the CTA).
-    /// Width-56 vertical icon+label secondary button, mirroring `favButton` /
-    /// `LBPFavButton` chrome (hand-drawn `ShareGlyph` = design `Icons.share` size 20 + 「分享」
-    /// label, rb-ios-share-icon-design-align — no longer SF `square.and.arrow.up`). Share is a
+    /// 分享 button — the footer's leading slot (`[分享][CTA]`; 收藏 no longer shares this footer,
+    /// see `favButtonInline` in the body content — rb-ios-product-sheet-resize-fav-inline). Its
+    /// own visual style is unchanged by that move: width-56 vertical icon+label secondary button
+    /// (hand-drawn `ShareGlyph` = design `Icons.share` size 20 + 「分享」 label,
+    /// rb-ios-share-icon-design-align — no longer SF `square.and.arrow.up`). Share is a
     /// HOST CONCERN: the tap only forwards to the host-wired `onShare` (the headless SDK has no
     /// share route) — reference-ui never builds share logic nor calls core / template. Hidden
     /// entirely (not rendered) by the `footer`'s `!isLive` gate while genuinely live
@@ -870,8 +887,9 @@ public struct ProductDetailSheetView: View {
     }
 
     /// LBPCartCTA — accent bag button with the per-session add count.
-    /// 保留但**目前未被 `footer` 引用**：明細 footer 收斂為設計 3-slot `[收藏][分享][CTA]`，
-    /// 不再畫「查看購物車」CTA（rb-ios-product-sheet-cart-cta-cleanup 問題 2）。此 computed 保留
+    /// 保留但**目前未被 `footer` 引用**：明細 footer 收斂為 2-slot `[分享][CTA]`（收藏鈕已搬到
+    /// body 內文區塊，見 `favButtonInline`），不再畫「查看購物車」CTA（rb-ios-product-sheet-cart-cta-cleanup
+    /// 問題 2）。此 computed 保留
     /// 以免動建構子簽章 / 外部接線，日後若要恢復可一鍵接回 `footer`。
     private var cartCTA: some View {
         Button(action: { onOpenCart?() }) {

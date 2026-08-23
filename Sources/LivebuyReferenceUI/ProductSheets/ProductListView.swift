@@ -264,8 +264,10 @@ public struct ProductListView: View {
         .padding(.bottom, 14)
     }
 
-    /// Expanded search header — a bgSunken pill (search glyph + TextField + clear) + 取消 button
-    /// (design `ProductListSheet` search-open state). iOS-14-safe: `TextField` (iOS 13+); no
+    /// Expanded search header — a bgSunken pill (search glyph + TextField) + 取消 button
+    /// (design `ProductListSheet` search-open state; the clear/"x" button is intentionally
+    /// omitted — 取消 already collapses the bar AND clears `query` in one tap,
+    /// rb-search-bar-cancel-only). iOS-14-safe: `TextField` (iOS 13+); no
     /// `@FocusState` (iOS 15+) — autofocus omitted.
     private var searchHeader: some View {
         HStack(spacing: 8) {
@@ -279,20 +281,9 @@ public struct ProductListView: View {
                     .disableAutocorrection(true)
                     // E2E: the search input field (sheet-search-field).
                     .accessibilityIdentifier(LBAccessibilityID.sheetSearchField)
-                if !query.isEmpty {
-                    Button(action: { query = "" }) {
-                        ZStack {
-                            Circle().fill(Self.strokeStrong)
-                            Image(systemName: "xmark")
-                                .font(.system(size: 8, weight: .bold))
-                                .foregroundColor(theme.text)
-                        }
-                        .frame(width: 18, height: 18)
-                    }
-                    .buttonStyle(PlainButtonStyle())
-                    // E2E: clear the search query (sheet-search-clear).
-                    .accessibilityIdentifier(LBAccessibilityID.sheetSearchClear)
-                }
+                // Clear ("xmark") button removed — 取消 already collapses the search bar AND
+                // clears `query` in one tap, making a separate clear affordance redundant
+                // (rb-search-bar-cancel-only).
             }
             .padding(.horizontal, 14)
             .frame(height: 36)

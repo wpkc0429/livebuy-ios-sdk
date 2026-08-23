@@ -177,6 +177,20 @@ public struct PlayerHeaderBarView: View {
     /// `Text` (see `titleView`), so the title still occupies its row at exactly the same height.
     public let titleScroll: Bool
 
+    /// Cold-start loading gate (rb-live-entry-viewer-count-loading-gate). Mirrors
+    /// `PlayerShellModel.startPhase` (`LBStartScreenPhase`: `.loading` / `.splash` /
+    /// `.buffering` / `.done`). While `startPhase == .loading` (the `/sdk/video`
+    /// fetch has not yet resolved — SDK has not fired ANY momentState update yet)
+    /// the viewer-count badge MUST NOT render, because `viewerCount` in that window
+    /// has no real value to show and would otherwise fall back to the type default
+    /// `0`, which a user cannot distinguish from "the real count is zero". See
+    /// `showsViewerBadge` for the single decision point.
+    ///
+    /// Default `.done` (the value furthest from `.loading` in the phase's lifecycle)
+    /// keeps every existing call site — including `demo(...)` and every existing
+    /// snapshot / unit test that does not pass this parameter — byte-identical.
+    public let startPhase: LBStartScreenPhase
+
     // -- Optional action closures (LAST, each defaulting to nil) ----------------
     //
     // The header's top-right is a SINGLE minimize affordance (design `LBPTopBar`
@@ -209,6 +223,7 @@ public struct PlayerHeaderBarView: View {
         showViewerCount: Bool = true,
         viewerCountVisible: Bool = true,
         titleScroll: Bool = true,
+        startPhase: LBStartScreenPhase = .done,
         onMinimize: (() -> Void)? = nil,
         onSubscribe: (() -> Void)? = nil,
         onTapHostBadge: (() -> Void)? = nil
@@ -225,6 +240,7 @@ public struct PlayerHeaderBarView: View {
         self.showViewerCount = showViewerCount
         self.viewerCountVisible = viewerCountVisible
         self.titleScroll = titleScroll
+        self.startPhase = startPhase
         self.onMinimize = onMinimize
         self.onSubscribe = onSubscribe
         self.onTapHostBadge = onTapHostBadge
@@ -319,7 +335,8 @@ public struct PlayerHeaderBarView: View {
                         }
                         if Self.showsViewerBadge(isLive: isLive,
                                                  viewerCountVisible: viewerCountVisible,
-                                                 hostShowViewerCount: showViewerCount) {
+                                                 hostShowViewerCount: showViewerCount,
+                                                 startPhase: startPhase) {
                             viewerBadge
                         }
                     }
@@ -329,8 +346,27 @@ public struct PlayerHeaderBarView: View {
         .padding(.leading, 4)
         .padding(.trailing, 12)
         .padding(.vertical, 4)
-        .background(Capsule().fill(pillGlass))
+        // rb-ios-player-header-viewer-pill: the host pill NO LONGER paints a shared
+        // `pillGlass` background — only `viewerBadge` does (see its own `.background`
+        // below). Parity `LBPHostBadge` (`sdk-components.jsx:355-458`), which has NO
+        // outer background container at all; its text contrast comes from `textShadow`
+        // alone. ⚠️ KNOWN GAP (not fixed by this change, flagged intentionally): this
+        // module has ZERO `.shadow(...)` on `titleView` / hostName `Text` — unlike the
+        // design's `textShadow`, so this SwiftUI tree has NO independent legibility
+        // mechanism for those two texts once this background is gone. Left for a
+        // follow-up change; MUST NOT be "fixed" here by re-adding a background (that
+        // would defeat the point of this change).
     }
+
+    /// Test-only hook exposing the SAME `hostPill` subtree `body` renders, so unit tests
+    /// (rb-ios-player-header-viewer-pill) can make STRUCTURAL assertions confirming the
+    /// outer `hostPill` container itself no longer carries a `Capsule` background — only
+    /// its `viewerBadge` child does (see `viewerBadgeForTesting`). Follows the established
+    /// `avatarForTesting` / `titleViewForTesting` precedent.
+    ///
+    /// MUST NOT be called from production code (it is on no `body` path, so it costs zero
+    /// pixels), and MUST keep returning the very same `hostPill` — never a parallel copy.
+    var hostPillForTesting: some View { hostPill }
 
     // MARK: - Title (LBPMarqueeText) — rb-ios-marquee-title-scroll / rb-ios-video-title-scroll
     //
@@ -556,6 +592,13 @@ public struct PlayerHeaderBarView: View {
     /// Viewer count with a small people glyph. Mirrors the design's nowrap
     /// viewer-count span: `.fixedSize` keeps "12.3K" fully visible (never clipped
     /// to "12...."); only the title / host name ellipsize under squeeze.
+    ///
+    /// rb-ios-player-header-viewer-pill: carries its OWN `pillGlass` glass-pill
+    /// background (`Capsule`, same color token as the now-removed `hostPill` outer
+    /// background — no new color value). Small internal padding keeps the icon /
+    /// text off the capsule edge; this is purely a local detail of this view and
+    /// does not affect `hostPill`'s outer `HStack` negotiation (`viewerBadge` is
+    /// already `.fixedSize`).
     private var viewerBadge: some View {
         HStack(spacing: 3) {
             Image(systemName: "person.2")
@@ -566,8 +609,20 @@ public struct PlayerHeaderBarView: View {
                 .foregroundColor(onGlassDim)
                 .lineLimit(1)
         }
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(Capsule().fill(pillGlass))
         .fixedSize(horizontal: true, vertical: false)
     }
+
+    /// Test-only hook exposing the SAME `viewerBadge` subtree `body` renders, so unit tests
+    /// (rb-ios-player-header-viewer-pill) can make STRUCTURAL assertions confirming it carries
+    /// the `Capsule` `pillGlass` background. Follows the established `avatarForTesting` /
+    /// `titleViewForTesting` precedent.
+    ///
+    /// MUST NOT be called from production code (it is on no `body` path, so it costs zero
+    /// pixels), and MUST keep returning the very same `viewerBadge` — never a parallel copy.
+    var viewerBadgeForTesting: some View { viewerBadge }
 
     // MARK: - Trailing control — SINGLE minimize button (LBPTopBar pip affordance)
     //
@@ -644,20 +699,28 @@ public struct PlayerHeaderBarView: View {
         return URL(string: trimmed)
     }
 
-    /// Viewer-count badge visibility gate (rb-ios-viewer-count-show-pv-num). Pure /
-    /// deterministic truth table — extracted so the gate is unit-testable without
-    /// rendering. The viewer count draws ⟺ ALL THREE hold:
+    /// Viewer-count badge visibility gate (rb-ios-viewer-count-show-pv-num,
+    /// rb-live-entry-viewer-count-loading-gate). Pure / deterministic truth table —
+    /// extracted so the gate is unit-testable without rendering. The viewer count
+    /// draws ⟺ ALL FOUR hold:
     ///   - `isLive` — live-chrome family (true live OR finished-live replay; VOD shows none).
     ///   - `viewerCountVisible` — backend `channel.show_pv_num == 1` (mirrored from the
     ///     view-model `DefaultPlayerHeaderState.viewerCountVisible`). Replay reuses the LIVE
     ///     chrome so it honours the original live-time setting.
     ///   - `hostShowViewerCount` — host config `LivebuyPlayerConfig.showViewerCount` (default
     ///     true); a host may force-hide regardless of the backend flag.
+    ///   - `startPhase != .loading` — NOT in the cold-start window (`/sdk/video` fetch still
+    ///     in flight, SDK has not fired any momentState update yet). `viewerCount` has no real
+    ///     value there and would otherwise fall back to the type default `0`, which a user
+    ///     cannot distinguish from "the real count is zero" (rb-live-entry-viewer-count-loading-gate).
     /// Any one being `false` hides the badge; the LIVE pill is unaffected (separate gate).
+    /// `startPhase` defaults to `.done` so every existing 3-argument call site (incl. every
+    /// existing test) keeps its byte-identical behavior.
     static func showsViewerBadge(isLive: Bool,
                                  viewerCountVisible: Bool,
-                                 hostShowViewerCount: Bool) -> Bool {
-        isLive && viewerCountVisible && hostShowViewerCount
+                                 hostShowViewerCount: Bool,
+                                 startPhase: LBStartScreenPhase = .done) -> Bool {
+        isLive && viewerCountVisible && hostShowViewerCount && startPhase != .loading
     }
 
     /// Compact viewer-count formatting (e.g. `12345` → `12.3K`). Pure / deterministic.
@@ -862,7 +925,8 @@ extension PlayerHeaderBarView {
                      live: Bool = true,
                      replay: Bool = false,
                      title: String = "夏日彩妝特賣",
-                     titleScroll: Bool = true) -> PlayerHeaderBarView {
+                     titleScroll: Bool = true,
+                     startPhase: LBStartScreenPhase = .done) -> PlayerHeaderBarView {
         PlayerHeaderBarView(
             theme: theme,
             title: title,
@@ -872,7 +936,8 @@ extension PlayerHeaderBarView {
             isSubscribed: false,
             isLive: live,
             isReplay: replay,
-            titleScroll: titleScroll
+            titleScroll: titleScroll,
+            startPhase: startPhase
         )
     }
 }

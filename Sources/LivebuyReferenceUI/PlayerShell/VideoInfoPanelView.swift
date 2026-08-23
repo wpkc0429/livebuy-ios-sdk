@@ -31,20 +31,27 @@ import LivebuyUI
 //                            shopIntro, a divider, then a shop row (logo +
 //                            shopName + subscribe affordance bound to
 //                            `info.isSubscribed`).
-//   • 公告     (`.notice`) — selectable ONLY when `canOpenNotice == true`.
-//                            When un-selectable it is drawn as a DISABLED
-//                            affordance (dimmed, non-tappable) and the tap is a
-//                            no-op — the template's `selectTab(.notice)` is
-//                            itself a no-op in that case, so we never request it.
+//   • 公告     (`.notice`) — rendered ONLY when `canOpenNotice == true`
+//                            (rb-ios-notice-tab-hide-when-empty). When
+//                            `canOpenNotice == false` the tab item is NOT built
+//                            at all — the tab bar shows a single 影片詳情 tab,
+//                            not a two-tab switcher with one dead disabled
+//                            entry. `content` also carries a DEFENSIVE fallback
+//                            to 影片詳情 for the (type-legal but
+//                            interaction-path-unreachable) combination
+//                            `activeTab == .notice && canOpenNotice == false` —
+//                            see that property's doc comment.
 //
 // iOS-14-safe SwiftUI only. `VStack` / `HStack` / `ZStack` / `Text` / `Button` /
 // `Divider` / `Color` are all iOS-13+; `RoundedRectangle` corner-specific masking
 // for the sheet top is done with a manual iOS-14-safe rounded-corner shape. No
 // `.task` / `AsyncImage` / `NavigationStack` / `.foregroundStyle` / `.tint`.
 
-/// The family-1 bottom-sheet info/notice panel. Renders a two-tab panel: an
-/// always-available 影片詳情 (info) tab and a 公告 (notice) tab that is a disabled
-/// affordance when `canOpenNotice == false`.
+/// The family-1 bottom-sheet info/notice panel. Renders an always-available
+/// 影片詳情 (info) tab plus a 公告 (notice) tab that is built ONLY when
+/// `canOpenNotice == true` (rb-ios-notice-tab-hide-when-empty) — when
+/// `canOpenNotice == false` the panel is a single-tab surface, not a two-tab
+/// switcher with a disabled entry.
 public struct VideoInfoPanelView: View {
 
     /// The resolved reference-ui theme (FIRST positional argument, always).
@@ -178,65 +185,92 @@ public struct VideoInfoPanelView: View {
 
     // MARK: - Tab bar (VideoInfoSheet tab row — active = accent + 2pt underline)
 
+    /// `canOpenNotice == false` → the 公告 tab item is NOT built at all
+    /// (rb-ios-notice-tab-hide-when-empty): the tab bar shows a single 影片詳情
+    /// tab, not a two-tab switcher with a dead disabled entry. Every tab this
+    /// helper builds is therefore always selectable — see `tab(_:title:)`.
     private var tabBar: some View {
         HStack(spacing: 24) {
-            tab(.info, title: Self.infoTabTitle, enabled: true)
-            tab(.notice, title: Self.noticeTabTitle, enabled: canOpenNotice)
+            tab(.info, title: Self.infoTabTitle)
+            if canOpenNotice {
+                tab(.notice, title: Self.noticeTabTitle)
+            }
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 18)
     }
 
-    /// One tab label. `enabled == false` (notice tab when un-openable) → dimmed,
-    /// non-tappable disabled affordance; the tap is a no-op.
-    private func tab(_ tab: LBInfoPanelTab, title: String, enabled: Bool) -> some View {
-        let isActive = (activeTab == tab) && enabled
+    /// One tab label. Callers only ever build a tab that IS currently
+    /// selectable (`.info` always; `.notice` only from the `canOpenNotice`-gated
+    /// branch above), so this helper carries no disabled/dimmed styling branch —
+    /// there is no longer a "built but disabled" tab state to render.
+    private func tab(_ tab: LBInfoPanelTab, title: String) -> some View {
+        let isActive = (activeTab == tab)
         let underline = isActive ? theme.accent : Color.clear
-        // Active → accent; disabled → very dim; inactive-enabled → mid dim.
-        let labelColor: Color = isActive
-            ? theme.accent
-            : (enabled ? Self.textDim : Self.textDisabled)
+        let labelColor: Color = isActive ? theme.accent : Self.textDim
 
         return Button(action: {
-            guard enabled else { return }          // disabled affordance: no-op
             onSelectTab?(tab)
         }) {
-            HStack(spacing: 5) {
-                Text(title)
-                    .font(.system(size: 13 * theme.fontScale, weight: .bold))
-                    .foregroundColor(labelColor)
-                // Disabled 公告 tab → "· 無" suffix (mirrors the design's tabBtn).
-                if tab == .notice && !enabled {
-                    Text(Self.noticeNoneSuffix)
-                        .font(.system(size: 10 * theme.fontScale, weight: .medium))
-                        .foregroundColor(Self.textDisabled)
-                }
-            }
-            .padding(.top, 4)
-            .padding(.bottom, 10)
-            .overlay(
-                Rectangle()
-                    .fill(underline)
-                    .frame(height: 2),
-                alignment: .bottom
-            )
+            Text(title)
+                .font(.system(size: 13 * theme.fontScale, weight: .bold))
+                .foregroundColor(labelColor)
+                .padding(.top, 4)
+                .padding(.bottom, 10)
+                .overlay(
+                    Rectangle()
+                        .fill(underline)
+                        .frame(height: 2),
+                    alignment: .bottom
+                )
         }
         .buttonStyle(PlainButtonStyle())
-        .disabled(!enabled)
         .accessibilityIdentifier(tab == .info ? LBAccessibilityID.infoTabDetail : LBAccessibilityID.infoTabNotice)
     }
 
     // MARK: - Content (info-tab vs notice-tab)
 
+    /// `activeTab == .notice && canOpenNotice == false` is a DEFENSIVE fallback
+    /// branch (rb-ios-notice-tab-hide-when-empty): the tab-bar tap path
+    /// (`tab(_:title:)` only ever forwards `.notice` when it was built, i.e.
+    /// `canOpenNotice == true`) plus the upstream view-model guards
+    /// (`DefaultInfoTab.selectTab` no-ops selecting `.notice` while
+    /// `canOpenNotice == false`; `reconcileActiveTab()` snaps a resting
+    /// `.notice` back to `.info` the moment `canOpenNotice` flips false) already
+    /// make this combination unreachable via normal interaction. But
+    /// `VideoInfoPanelView` is a public sub-view any caller (demo / snapshot /
+    /// tests / a future call site) can construct with an arbitrary
+    /// `activeTab` / `canOpenNotice` pair — the type system does not forbid it —
+    /// so this view owns its own fallback rather than assuming a caller upheld
+    /// the view-model layer's invariant. Falling back to `infoContent` avoids
+    /// ever showing notice content with no corresponding tab, or a blank pane.
     @ViewBuilder
     private var content: some View {
         switch activeTab {
         case .info:
             infoContent
         case .notice:
-            noticeContent
+            if canOpenNotice {
+                noticeContent
+            } else {
+                infoContent
+            }
         }
     }
+
+    /// Test-only hook exposing the SAME `tabBar` subtree `body` renders, so unit
+    /// tests can make STRUCTURAL assertions on it (e.g. does the 公告 tab item
+    /// exist when `canOpenNotice == false`). MUST NOT be called from production
+    /// code, and MUST keep returning the very same `tabBar` (never a parallel
+    /// copy — see `shopRowForTesting`'s doc comment for why).
+    var tabBarForTesting: some View { tabBar }
+
+    /// Test-only hook exposing the SAME `content` subtree `body` renders, so
+    /// unit tests can make STRUCTURAL assertions on which pane is actually
+    /// drawn (in particular the `activeTab == .notice && canOpenNotice == false`
+    /// fallback). MUST NOT be called from production code, and MUST keep
+    /// returning the very same `content`.
+    var contentForTesting: some View { content }
 
     // MARK: Info tab (VideoInfoSheet body)
 
@@ -364,6 +398,16 @@ public struct VideoInfoPanelView: View {
 
     // MARK: Notice tab (公告 content)
 
+    /// Reached only when `content` selects it (`activeTab == .notice &&
+    /// canOpenNotice == true`, i.e. the notice tab was actually built —
+    /// rb-ios-notice-tab-hide-when-empty). `hasNoticeText` mirrors the same
+    /// boolean expression as `canOpenNotice` (`DefaultNoticeTab.canOpen`) but is
+    /// an independent computation over this view's own `systemNotice` / `notice`
+    /// inputs; its `else` branch below is kept as a cheap, conservative guard —
+    /// `VideoInfoPanelView` is a public sub-view a caller could still construct
+    /// with `canOpenNotice: true` while both texts are actually empty (a
+    /// type-legal but inconsistent combination) — not because that combination
+    /// is expected to occur through normal interaction.
     @ViewBuilder
     private var noticeContent: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -392,7 +436,7 @@ public struct VideoInfoPanelView: View {
                         text: notice)
                 }
             } else {
-                // Disabled / empty affordance — dim placeholder copy.
+                // Defensive empty-state placeholder — see doc comment above.
                 Text(Self.noticeEmptyPlaceholder)
                     .font(.system(size: 13 * theme.fontScale))
                     .foregroundColor(Self.textDisabled)
@@ -498,7 +542,6 @@ public struct VideoInfoPanelView: View {
     static let panelTitle = "點播間說明"
     static let infoTabTitle = "影片詳情"
     static let noticeTabTitle = "公告"
-    static let noticeNoneSuffix = "· 無"
     static let systemNoticeLabel = "系統公告"
     static let mallNoticeLabel = "商城公告"
     static let subscribeLabel = "訂閱通知"
@@ -615,7 +658,8 @@ struct VideoInfoPanelView_Previews: PreviewProvider {
                 notice: VideoInfoPanelView.demoNotice)
                 .previewDisplayName("notice tab")
 
-            // Notice tab UN-selectable → disabled affordance.
+            // No notices at all → the 公告 tab is not built; single-tab panel
+            // (rb-ios-notice-tab-hide-when-empty).
             VideoInfoPanelView(
                 theme: theme,
                 info: VideoInfoPanelView.demoInfo,
@@ -623,7 +667,19 @@ struct VideoInfoPanelView_Previews: PreviewProvider {
                 canOpenNotice: false,
                 systemNotice: "",
                 notice: "")
-                .previewDisplayName("notice disabled")
+                .previewDisplayName("notice tab hidden")
+
+            // Defensive fallback: activeTab == .notice but canOpenNotice ==
+            // false (type-legal, unreachable via normal interaction — see
+            // `content`'s doc comment). Content MUST fall back to 影片詳情.
+            VideoInfoPanelView(
+                theme: theme,
+                info: VideoInfoPanelView.demoInfo,
+                activeTab: .notice,
+                canOpenNotice: false,
+                systemNotice: "",
+                notice: "")
+                .previewDisplayName("notice tab hidden — activeTab fallback")
         }
         .frame(width: 393, height: 520)
         .previewLayout(.sizeThatFits)

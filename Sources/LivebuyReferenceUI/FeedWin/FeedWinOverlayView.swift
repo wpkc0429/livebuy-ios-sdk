@@ -148,6 +148,13 @@ public struct FeedWinOverlayView: View {
     /// byte-identical; it does NOT shift the centered claim modal or the win-entry badge.
     public let chatTrailingInset: CGFloat
 
+    /// Leading inset applied ONLY to the merged chat-feed stream so its left edge aligns with
+    /// the LIVE bottom bar's bag button left margin instead of sitting flush against the screen
+    /// edge (rb-ios-live-chat-card-edge-align). Default `0` keeps the demo / snapshot path
+    /// byte-identical; it does NOT shift the centered claim modal or the win-entry badge — only
+    /// the chat feed sub-view. Same opt-in pattern as `chatBottomInset` / `chatTrailingInset`.
+    public let chatLeadingInset: CGFloat
+
     /// The winner the claim sheet is currently presented for, if any. Local
     /// presentation state only — the sheet CONTENT (award detail / CTA / result)
     /// is driven by the model; this just governs which winner is on screen.
@@ -163,6 +170,7 @@ public struct FeedWinOverlayView: View {
     public init(model: FeedWinModel, theme: ReferenceUITheme,
                 chatBottomInset: CGFloat = 0, chatScrollable: Bool = false,
                 infoPanelOpen: Bool = false, chatTrailingInset: CGFloat = 0,
+                chatLeadingInset: CGFloat = 0,
                 showsChatFeed: Bool = true) {
         self.model = model
         self.theme = theme
@@ -170,6 +178,7 @@ public struct FeedWinOverlayView: View {
         self.chatScrollable = chatScrollable
         self.infoPanelOpen = infoPanelOpen
         self.chatTrailingInset = chatTrailingInset
+        self.chatLeadingInset = chatLeadingInset
         self.showsChatFeed = showsChatFeed
     }
 
@@ -204,6 +213,10 @@ public struct FeedWinOverlayView: View {
                 // does not occlude / eat taps on the bottom-right LBLivePinnedCard column —
                 // applied ONLY to the chat feed (rb-ios-live-pinned-card-appears).
                 .padding(.trailing, chatTrailingInset)
+                // Align the chat's left edge with the LIVE bottom bar's bag button left margin
+                // instead of sitting flush against the screen edge — applied ONLY to the chat
+                // feed (rb-ios-live-chat-card-edge-align).
+                .padding(.leading, chatLeadingInset)
                 // While the info panel (lower-layer bottom sheet + scrim) is up, hide +
                 // disable the chat feed so it neither occludes the sheet nor swallows its
                 // taps (the panel's scrim then cleanly covers the background). opacity (not

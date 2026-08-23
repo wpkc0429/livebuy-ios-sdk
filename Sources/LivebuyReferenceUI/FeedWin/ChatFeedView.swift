@@ -532,8 +532,12 @@ struct LBChatLineRow: View {
     private var avatarKey: String { (userName?.isEmpty == false) ? userName! : text }
 
     var body: some View {
+        // `rb-ios-feed-avatar-icon-hide`（design R20）：24px 圖示 / 頭像軌不再組裝進渲染樹——
+        // 對齊設計稿 `moments.jsx` `ACT_SLOT` 由 `display:'flex'` 改 `display:'none'`（可逆的暫時
+        // 性決定，設計稿註解「改回顯示把 display 換成 'flex'」）。`slot` 不放進 HStack 子項，讓
+        // bubble 貼齊列最左側起點，不留原本 slot + `spacing: 8` 的空白區塊。`slot` 本身的繪製邏輯
+        // 保留在下方不刪，供未來復原（加回 `slot` 子項即可，spacing 值不變）。
         HStack(alignment: .top, spacing: 8) {
-            slot
             // 無角色 → 既有暱稱內聯前綴氣泡（byte-identical）；有角色 → 角色版型氣泡。
             if hasRole { roleBubble } else { bubble }
         }
@@ -541,6 +545,10 @@ struct LBChatLineRow: View {
     }
 
     // MARK: - 24px 圖示軌（主播 / AI = accent + glyph；觀眾 = 名字色頭像）
+    //
+    // `rb-ios-feed-avatar-icon-hide`（design R20）起不再被 `body` 組裝渲染（見上）——保留此
+    // computed view 供未來設計稿改回 `display:'flex'` 時可直接復原（把 `slot` 加回 `body` 的
+    // HStack 第一個子項）。
 
     @ViewBuilder
     private var slot: some View {
@@ -631,12 +639,17 @@ struct LBChatLineRow: View {
                         .stroke(Color.white.opacity(0.55), lineWidth: 1)))
     }
 
-    /// Translucent dark bubble. ACT_BUBBLE: radius 12, black 0.42, padding h11/v5.
+    /// Translucent dark bubble. ACT_BUBBLE: radius 12, black 0.42, padding h11/v3.
+    /// Vertical padding tightened from 5→3 (rb-ios-chat-bubble-padding-tighten) to
+    /// align with `roleBubble`'s existing compact-spacing convention (its inner
+    /// `VStack(spacing: 3)` / reply-quote `.padding(.vertical, 3)`) — stacked with
+    /// `ChatFeedView.rowGap` the previous value read as excess whitespace between
+    /// consecutive single-line viewer messages.
     private var bubble: some View {
         bubbleText
             .lineLimit(2)
             .padding(.horizontal, 11)
-            .padding(.vertical, 5)
+            .padding(.vertical, 3)
             .background(
                 RoundedRectangle(cornerRadius: 12)
                     .fill(Color.black.opacity(0.42)))
@@ -719,8 +732,12 @@ struct LBEventJoinLineRow: View {
     var body: some View {
         // Shared message-row language (ACT_ROW gap 8): round crown-glyph slot OUTSIDE the
         // bubble, `.top`-aligned like `LBChatLineRow`'s avatar + bubble pairing.
+        //
+        // `rb-ios-feed-avatar-icon-hide`（design R20）：`eventSlot` 不再組裝進渲染樹——對齊
+        // 設計稿 `moments.jsx` `ACT_SLOT` 由 `display:'flex'` 改 `display:'none'`（可逆的暫時性
+        // 決定）。`bubble` 貼齊列最左側起點，不留原本 slot + `spacing: 8` 的空白。`eventSlot`
+        // 繪製邏輯保留在下方不刪，供未來復原。
         HStack(alignment: .top, spacing: 8) {
-            eventSlot
             bubble
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -731,6 +748,9 @@ struct LBEventJoinLineRow: View {
     /// `LBChatLineRow.roleBubble`'s isHost avatar (design re-sync `c3c98733`: was `sparkles`;
     /// the design's own slot path is the host crown shape, not a checkmark), drawn OUTSIDE the
     /// bubble on the shared 24px icon rail (same shape/size as `LBActivityLineRow`'s icon slot).
+    ///
+    /// `rb-ios-feed-avatar-icon-hide`（design R20）起不再被 `body` 組裝渲染（見上）——保留供
+    /// 未來復原（把 `eventSlot` 加回 `body` 的 HStack 第一個子項）。
     private var eventSlot: some View {
         Circle()
             .fill(theme.accent)
@@ -864,8 +884,12 @@ struct LBActivityLineRow: View {
     let tier: LBActivityTier
 
     var body: some View {
+        // `rb-ios-feed-avatar-icon-hide`（design R20）：`iconSlot` 不再組裝進渲染樹——對齊設計
+        // 稿 `moments.jsx` `ACT_SLOT` 由 `display:'flex'` 改 `display:'none'`（可逆的暫時性決
+        // 定）。文字氣泡貼齊列（或 toast）最左側起點，不留原本 slot + `spacing: 8` 的空白。tier
+        // 差異化視覺（`bubble` 的 accent 暈染 / 邊框 / 光暈、`textColor` / `textWeight`）不受影
+        // 響——只隱藏 icon slot。`iconSlot` 繪製邏輯保留在下方不刪，供未來復原。
         HStack(spacing: 8) {
-            iconSlot
             Text(text)
                 .font(.system(size: 11.5 * theme.fontScale, weight: textWeight))
                 .foregroundColor(textColor)
@@ -878,6 +902,9 @@ struct LBActivityLineRow: View {
     }
 
     // MARK: - 24px icon slot (shared rail with chat avatar)
+    //
+    // `rb-ios-feed-avatar-icon-hide`（design R20）起不再被 `body` 組裝渲染（見上）——保留供未來
+    // 復原（把 `iconSlot` 加回 `body` 的 HStack 第一個子項）。
 
     @ViewBuilder
     private var iconSlot: some View {

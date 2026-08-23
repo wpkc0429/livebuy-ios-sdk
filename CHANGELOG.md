@@ -5,6 +5,45 @@ All notable changes to the Livebuy iOS SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.6.2] - 2026-08-24
+
+> **Patch.** 觀看人數進場假 0 修復 + 一批 reference-ui 視覺/互動細節收斂，無新增符號、無破壞性
+> 變更。**iOS + Android 兩端 lockstep**；React Native / Flutter 不在此列車（見
+> [`livebuy-android-sdk/CHANGELOG.md`](../livebuy-android-sdk/CHANGELOG.md#462---2026-08-24)
+> 的 Android 對照段）。
+
+### Fixed
+
+- **觀看人數進場顯示假 0**：`publishMomentState()` 組裝 `viewerCount` 時，`channel` 尚未 resolve
+  （含 `unload()` 清空 channel）不再硬編覆寫成 `0`，改為沿用上一個已知值；PlayerHeader 觀看人數
+  徽章新增第四道顯示閘——`startPhase == loading`（冷啟動、真實資料尚未到位）期間不渲染任何具體
+  數字（含 `0`）。兩者共同解決「一進入直播間先顯示 0、過一陣子才變成正常人數」的症狀。
+- **公告分頁為空時不再顯示灰階死路徑**：VideoInfoPanel 的公告分頁在系統公告與商城公告皆空時，
+  改為整個不渲染，不再畫出永遠點不動的 disabled 灰階分頁。
+- **商品袋縮圖跳轉後自動收合**：商品清單抽屜內點擊商品縮圖跳轉到影片對應時間點時，同步關閉
+  商品清單抽屜。
+- **PlayerHeader 商家 pill 背景收斂**：移除整塊商家資訊（logo / 標題 / 商家名稱 / LIVE 標籤 /
+  觀看人數）共用的半透明灰底，改由觀看人數獨立套用該背景，對齊最新設計稿。
+- **Feed 訊息頭像/icon 先隱藏**：聊天 / 活動 feed 每則訊息前方的 24pt 圓形頭像/icon 槽暫時隱藏，
+  文字/氣泡貼齊列最左側起點（可逆的暫時性設計決定，繪製邏輯保留）。
+- **商品明細 sheet 拖曳調整高度 + 收藏鈕橫排內置 + 明細呈現拉高到 90%**：商品明細 / 加入購物車 /
+  補貨通知三個底部 sheet 的把手新增拖曳即時調整高度（25%–90%）能力；收藏鈕從底部操作列移到
+  內文區塊置中橫排；商品明細（`.detail`）呈現高度上限由 50% 提高到 90%。
+- **直播疊層聊天室左邊距 / 釘選商品卡右邊距對齊底部 icon**：對齊底部功能列購物袋（左）與愛心
+  （右）icon 的既有 10pt 邊距。
+- **商品搜尋框移除清除鈕，只留取消**：商品清單 sheet 展開態搜尋框移除叉叉清除鈕，只留取消
+  （收合整個搜尋列並清空查詢字串）。
+- **底部 sheet 拖曳關閉不再跳動**（iOS-only）：下滑放手關閉時，先收斂殘留位移動畫到畫面外，
+  再觸發卸載，不再與卸載動畫疊加造成跳動。
+- **聊天氣泡間距收緊**（iOS-only）：一般觀眾留言氣泡的垂直間距，收斂至與主播/AI 留言版型既有
+  的緊湊間距慣例一致。
+
+### Changed
+
+- **直播進行中停用垂直滑動切影片**：先前任何播放狀態下垂直滑動皆會切換影片，本版起直播正在
+  進行中時滑動不再切換影片（拖曳仍會被手勢層吞掉，不會誤觸 tap-to-mute / hold-to-pause）；
+  預告倒數（upcoming）與已結束直播的回放（finished-live replay）不受影響，維持可滑動切片。
+
 ## [4.6.1] - 2026-08-13
 
 > **Patch.** 補齊一個既有背景繪製語意的缺口，無新增符號、無破壞性變更。**iOS + Android
