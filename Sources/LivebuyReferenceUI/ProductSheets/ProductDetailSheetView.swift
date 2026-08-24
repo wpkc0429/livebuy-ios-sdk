@@ -201,6 +201,33 @@ public struct ProductDetailSheetView: View {
     /// the thin `AddToCartSheetView` wrapper, which forwards this value).
     public let showStock: Bool
 
+    /// Whether the「更多商品」推薦格 (design R21) is drawn at all
+    /// (rb-ios-product-detail-recommendations). Default `true`. The container SHALL pass
+    /// `false` for a NESTED detail (non-empty `detailBreadcrumb`) — a巢狀明細 MUST NOT
+    /// re-render its own recommendations grid (no infinite recursion,
+    /// `expose-other-goods-recommendations-template` design.md Non-Goals). Orthogonal to
+    /// `presentation`: even when `true`, `.addToCart` never draws this section (body-content
+    /// gate below), only `.detail` does.
+    public let showsRecommendations: Bool
+
+    /// Whether the「商品介紹」text block (design R21) is drawn (rb-ios-product-detail-recommendations
+    /// §2). Default `true` — this is genuinely new DEFAULT-ON content for every `.detail`
+    /// presentation (unlike `showsRecommendations`, it is NOT gated by any data — see
+    /// `productIntroSection`'s fallback-copy note). Existing PRE-CHANGE snapshot fixtures
+    /// (`ProductDetailSheetViewSnapshotTests`) explicitly pass `false` here to keep their
+    /// locked baseline PNGs byte-identical (CLAUDE.local.md「不要動的地方」— those PNGs MUST NOT
+    /// be regenerated); real host call sites leave this at its `true` default so the new
+    /// section actually ships. `.addToCart` never draws it regardless (body-content gate below).
+    public let showsProductIntro: Bool
+
+    /// Whether the header's close icon currently reads as「返回」rather than「✕ 關閉」
+    /// (rb-ios-product-detail-recommendations §5 — non-empty `detailBreadcrumb`). Default
+    /// `false` → every EXISTING call site (never passes this) draws the unchanged「✕」and
+    /// is byte-identical. Purely a glyph/identifier choice — `onDismiss` itself is what the
+    /// container wires to either「pop breadcrumb + reopen」or「真正關閉」; this view does not
+    /// decide which.
+    public let showsBackAffordance: Bool
+
     /// Host-wired variant chip tap → `model.selectVariant(...)` → `template.selectVariant`.
     /// nil for demo / snapshot instances.
     private let onSelectVariant: ((_ groupIndex: Int, _ optionIndex: Int) -> Void)?
@@ -232,6 +259,21 @@ public struct ProductDetailSheetView: View {
     /// badge; tap is a no-op).
     private let onZoomImage: (() -> Void)?
 
+    /// Host-wired「更多商品」推薦卡**卡片本體**tap → the container pushes the CURRENT product
+    /// into its local `detailBreadcrumb` and resolves + forwards the recommendation's REAL
+    /// `LBProduct` (from core `channel.otherGoods`) through the EXISTING `onProductTap`
+    /// path (design.md D1 — SWAP, not a second sheet instance). nil for demo / snapshot.
+    private let onOpenRecommendation: ((LBProductRecommendation) -> Void)?
+    /// Host-wired「更多商品」推薦卡**加購鈕**tap → same breadcrumb-push + resolve path as
+    /// `onOpenRecommendation`, but sets the container's local `actionMode = .addToCart`.
+    /// nil for demo / snapshot.
+    private let onQuickAddRecommendation: ((LBProductRecommendation) -> Void)?
+    /// Host-wired「更多商品」推薦卡**播放圖示**tap → 換片（design.md D3）：the container calls
+    /// core `player.load(videoId:)`, sheet stays open, MUST NOT push `detailBreadcrumb`. This
+    /// view only WIRES the play button when the item's `videoId` is non-nil (task 4.1 — a nil
+    /// `videoId` hides the button entirely, regardless of whether this closure is set).
+    private let onPlayRecommendation: ((LBProductRecommendation) -> Void)?
+
     public init(
         theme: ReferenceUITheme,
         detail: LBProductDetailState,
@@ -247,6 +289,9 @@ public struct ProductDetailSheetView: View {
         isLive: Bool = false,
         brief: String = "",
         showStock: Bool = true,
+        showsRecommendations: Bool = true,
+        showsProductIntro: Bool = true,
+        showsBackAffordance: Bool = false,
         onSelectVariant: ((_ groupIndex: Int, _ optionIndex: Int) -> Void)? = nil,
         onSetQty: ((Int) -> Void)? = nil,
         onInc: (() -> Void)? = nil,
@@ -256,7 +301,10 @@ public struct ProductDetailSheetView: View {
         onToggleFavorite: (() -> Void)? = nil,
         onShare: (() -> Void)? = nil,
         onDismiss: (() -> Void)? = nil,
-        onZoomImage: (() -> Void)? = nil
+        onZoomImage: (() -> Void)? = nil,
+        onOpenRecommendation: ((LBProductRecommendation) -> Void)? = nil,
+        onQuickAddRecommendation: ((LBProductRecommendation) -> Void)? = nil,
+        onPlayRecommendation: ((LBProductRecommendation) -> Void)? = nil
     ) {
         self.theme = theme
         self.detail = detail
@@ -272,6 +320,9 @@ public struct ProductDetailSheetView: View {
         self.isLive = isLive
         self.brief = brief
         self.showStock = showStock
+        self.showsRecommendations = showsRecommendations
+        self.showsProductIntro = showsProductIntro
+        self.showsBackAffordance = showsBackAffordance
         self.onSelectVariant = onSelectVariant
         self.onSetQty = onSetQty
         self.onInc = onInc
@@ -282,6 +333,9 @@ public struct ProductDetailSheetView: View {
         self.onShare = onShare
         self.onDismiss = onDismiss
         self.onZoomImage = onZoomImage
+        self.onOpenRecommendation = onOpenRecommendation
+        self.onQuickAddRecommendation = onQuickAddRecommendation
+        self.onPlayRecommendation = onPlayRecommendation
     }
 
     // MARK: - Derived presentation (pure)
@@ -320,6 +374,16 @@ public struct ProductDetailSheetView: View {
     /// to draw" drift apart).
     private var hasOriginalPrice: Bool { resolvedPrice.hasOriginalPrice }
 
+    /// Whether the「Sale」badge chip is drawn (rb-ios-product-sale-badge, design
+    /// `screens.jsx` `onSale && !product.sold`). Reuses the SAME two existing
+    /// computed properties `priceRow` already reads — `hasOriginalPrice` (spec-aware,
+    /// same-source resolved) and `isSoldOut` (`qty.max == 0`) — so this gate can never
+    /// drift from the price row's own "is there a discount" / "is it sold out" reading.
+    /// No new view-model / SDK field is introduced for this.
+    private var showsSaleBadge: Bool {
+        Self.showsSaleBadge(hasOriginalPrice: hasOriginalPrice, isSoldOut: isSoldOut)
+    }
+
     public var body: some View {
         // Content only — the shared `.lbBottomSheet(item:)` presenter (SheetKit) draws the
         // grab handle + `theme.background` + `TopRoundedRectangle(20)` + shadow + dim scrim +
@@ -344,11 +408,14 @@ public struct ProductDetailSheetView: View {
         // photo / variant / qty body scrolls (within the ½-screen cap). Snapshot path stays
         // content-sized (byte-identical) via `LBSheetScaffold`'s `lbSheetHeightUncapped` branch.
         // `.addToCart`（精簡購買 sheet）固定填滿到 cap，與 NotifyRestock 同高（對齊設計稿
-        // rb-ios-addtocart-sheet-height-align-restock）；`.detail` 維持 content-sized，但 cap 上限
-        // 自 rb-ios-product-sheet-resize-fav-inline 起改為 90%（design-contract R19，`capFraction`
-        // 顯式覆寫 `LBSheetScaffold` 的預設 0.5——不影響 VideoInfoPanelView / ProductListView，兩者
-        // 未傳 `capFraction`，維持既有 0.5）。
-        LBSheetScaffold(fillToCap: presentation == .addToCart, capFraction: 0.9) {
+        // rb-ios-addtocart-sheet-height-align-restock）；`.detail` 維持 content-sized，
+        // **未顯式傳入 `capFraction`**（回退至 `LBSheetScaffold` 的預設 `0.5`，
+        // rb-ios-sheetkit-resize-dismiss-unify，取代 rb-ios-product-sheet-resize-fav-inline 曾
+        // 引入、開啟就逼近全螢幕的靜態 `0.9`）——與 `VideoInfoPanelView` / `ProductListView` 並列
+        // 同一個預設值。`0.9`（90%）現為全部 5 個 bottom sheet 共用的拖曳調高上限
+        // （`BottomSheetChrome.resizeCeilingFraction`），使用者主動往上拖到頂才會看到，不再是
+        // `.detail` 開啟就看到的靜態值。
+        LBSheetScaffold(fillToCap: presentation == .addToCart) {
             header
         } bodyContent: {
             VStack(alignment: .leading, spacing: 0) {
@@ -358,8 +425,15 @@ public struct ProductDetailSheetView: View {
                     compactProductCard
                 } else {
                     productPhoto
+                    // Sale 徽章（rb-ios-product-sale-badge，design `screens.jsx` ProductDetailSheet
+                    // L797-828）— 畫在照片之後、名稱之前；顯示時名稱上緣間距收縮為 6pt（對齊設計稿
+                    // `marginTop: onSale && !product.sold ? 6 : 12`），不顯示時維持既有 12pt。
+                    if showsSaleBadge {
+                        saleBadge
+                            .padding(.top, 12)
+                    }
                     productName
-                        .padding(.top, 12)
+                        .padding(.top, showsSaleBadge ? 6 : 12)
                     priceRow
                         .padding(.top, 10)
                     // 商品說明（`brief`）— 只在 `.detail`、且 brief 非空時畫（對齊設計 `ProductDetailSheet`
@@ -391,6 +465,19 @@ public struct ProductDetailSheetView: View {
                     favButtonInline
                         .frame(maxWidth: .infinity, alignment: .center)
                         .padding(.top, 16)
+
+                    // 商品介紹 + 更多商品（design R21，rb-ios-product-detail-recommendations）—
+                    // 只在 `.detail` 呈現畫，接在收藏鈕之後（既有內容之後新增，對齊設計稿
+                    // ProductDetailSheet 底部新增段落）。
+                    if showsProductIntro {
+                        productIntroSection
+                            .padding(.top, 20)
+                    }
+
+                    if showsRecommendations {
+                        recommendationsSection
+                            .padding(.top, 20)
+                    }
                 }
             }
             .padding(.horizontal, 16)
@@ -431,7 +518,7 @@ public struct ProductDetailSheetView: View {
                 // Shared transparent close (rb-ios-sheet-header-close-unify) — was a
                 // `Circle(bgSunken) + xmark 11pt`; now aligned to ProductListView / design.
                 // Behavior unchanged: tap → `onDismiss` → container `dismissDetail()`.
-                SheetHeaderCloseButton(theme: theme, onTap: onDismiss)
+                SheetHeaderCloseButton(theme: theme, isBack: showsBackAffordance, onTap: onDismiss)
             }
         }
         .padding(.horizontal, 16)
@@ -499,6 +586,26 @@ public struct ProductDetailSheetView: View {
         .accessibilityIdentifier(LBAccessibilityID.zoomBadge)
     }
 
+    // MARK: - Sale badge (rb-ios-product-sale-badge — design `screens.jsx` ProductDetailSheet
+    // L821-828 / AddToCartSheet L938-941: `padding:'2px 8px'; borderRadius:4; background:accent;
+    // color:#fff; fontSize:11; fontWeight:800; letterSpacing:0.3`. Drawn by BOTH presentations
+    // (gated by `showsSaleBadge`, see call sites in `sheetContent` / `compactProductCard`).
+    // Fixed text "Sale" — the design's `product.badge || 'Sale'` fallback, since the iOS product
+    // model has no `badge` custom-text field (no new field added for this).
+
+    private var saleBadge: some View {
+        Text(Self.saleBadgeLabel)
+            .font(.system(size: 11 * theme.fontScale, weight: .heavy))
+            .kerning(0.3)
+            .foregroundColor(.white)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 2)
+            .background(
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(theme.accent))
+            .accessibilityIdentifier(LBAccessibilityID.saleBadge)
+    }
+
     // MARK: - Compact product card (AddToCartSheet 96×96 thumb + name + price — design AddToCartSheet)
     //
     // The `.addToCart` presentation uses the design's horizontal product card (96×96 縮圖 + 名 + 價),
@@ -524,6 +631,12 @@ public struct ProductDetailSheetView: View {
             .overlay(compactZoomBadge, alignment: .bottomTrailing)
 
             VStack(alignment: .leading, spacing: 6) {
+                // Sale 徽章（rb-ios-product-sale-badge）— 名稱正上方，與 `.detail` 呈現相對順序一致
+                // (design `AddToCartSheet` L938-941 同款徽章；此呈現的版位是既有橫向卡片,非設計稿
+                // 原始直式流,見 design.md D5)。
+                if showsSaleBadge {
+                    saleBadge
+                }
                 Text(detail.name)
                     .font(.system(size: 15 * theme.fontScale, weight: .bold))
                     .foregroundColor(theme.text)
@@ -762,6 +875,17 @@ public struct ProductDetailSheetView: View {
         showStock && !isSoldOut
     }
 
+    /// THE single predicate deciding whether the「Sale」badge chip is drawn
+    /// (rb-ios-product-sale-badge). Mirrors design `screens.jsx`'s
+    /// `onSale && !product.sold`, where `onSale` is exactly what `hasOriginalPrice`
+    /// already answers (spec-aware, same-source resolved original vs sale price) and
+    /// `!product.sold` is exactly what `!isSoldOut` already answers (`qty.max == 0`).
+    /// A `static func` (not just the instance computed property) so unit tests can
+    /// exercise the truth table directly, mirroring `showsStockCaption(showStock:isSoldOut:)`.
+    static func showsSaleBadge(hasOriginalPrice: Bool, isSoldOut: Bool) -> Bool {
+        hasOriginalPrice && !isSoldOut
+    }
+
     // MARK: - Footer (sticky 加入購物車 CTA + cart-CTA badge)
     //
     // Primary 加入購物車 (LBPButton primary). DISABLED when sold out (qty.max == 0) —
@@ -861,6 +985,99 @@ public struct ProductDetailSheetView: View {
         }
         .buttonStyle(PlainButtonStyle())
         .accessibilityIdentifier(LBAccessibilityID.favButton)
+    }
+
+    // MARK: - 商品介紹 (design R21, rb-ios-product-detail-recommendations §2)
+    //
+    // Resource GAP (proposal.md `## Depends On` — 不依賴 bullet): iOS `LBProduct` / core
+    // 目前 MUST NOT 帶 `description` 欄位（待後端上線後另立 core change）。在該欄位就緒前，此
+    // 區塊 SHALL 恆顯示設計稿 fallback 文案「商品介紹內容」。此規則與上面的「商品說明」
+    // (`brief`, `briefDescription`, 「空字串不畫」) **刻意不同**——商品介紹一律顯示，MUST NOT
+    // 因為沒有資料就整塊不畫。DO NOT "fix" this to mirror `briefDescription`'s empty-hides rule.
+
+    private var productIntroSection: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(Self.productIntroTitle)
+                .font(.system(size: 14 * theme.fontScale, weight: .bold))
+                .foregroundColor(theme.text)
+            // No real data source yet (see gap note above) — always the fallback copy.
+            Text(Self.productIntroFallback)
+                .font(.system(size: 12 * theme.fontScale))
+                .foregroundColor(Self.textDim)
+                .lineSpacing(4)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .accessibilityIdentifier(LBAccessibilityID.productIntro)
+    }
+
+    // MARK: - 更多商品 (design R21, rb-ios-product-detail-recommendations §3/§4/§5)
+    //
+    // Reads `detail.recommendations` (`[LBProductRecommendation]`,
+    // `expose-other-goods-recommendations-template`), `.prefix(4)` — the truncation-to-4
+    // decision is THIS layer's job (that template change's design.md D1). 0 筆 → whole
+    // section (incl. title) hidden; < 4 → shows the actual count, no blank placeholder
+    // cards. A plain chunked `VStack`/`HStack` (NOT `LazyVGrid`) — `ImageRenderer` never
+    // materializes lazy containers (see `ProductListView.rows`'s same documented
+    // constraint), so a real grid container would snapshot BLANK.
+
+    private var recommendationItems: [LBProductRecommendation] {
+        Array(detail.recommendations.prefix(4))
+    }
+
+    @ViewBuilder
+    private var recommendationsSection: some View {
+        let items = recommendationItems
+        if !items.isEmpty {
+            VStack(alignment: .leading, spacing: 12) {
+                Text(Self.recommendationsTitle)
+                    .font(.system(size: 14 * theme.fontScale, weight: .bold))
+                    .foregroundColor(theme.text)
+                VStack(spacing: 10) {
+                    ForEach(Self.pairedRows(items).indices, id: \.self) { rowIndex in
+                        recommendationRow(Self.pairedRows(items)[rowIndex], rowIndex: rowIndex)
+                    }
+                }
+            }
+            .accessibilityIdentifier(LBAccessibilityID.productRecommendations)
+        }
+    }
+
+    /// Chunk into rows of (at most) 2 for the plain `HStack`/`VStack` 2-column layout.
+    /// Pure — mirrors `WrapChips.rows`'s chunking idiom elsewhere in this file.
+    static func pairedRows(_ items: [LBProductRecommendation]) -> [[LBProductRecommendation]] {
+        stride(from: 0, to: items.count, by: 2).map { Array(items[$0..<Swift.min($0 + 2, items.count)]) }
+    }
+
+    private func recommendationRow(_ pair: [LBProductRecommendation], rowIndex: Int) -> some View {
+        HStack(alignment: .top, spacing: 10) {
+            ForEach(pair.indices, id: \.self) { col in
+                recommendationCard(pair[col], index: rowIndex * 2 + col)
+            }
+            // An odd trailing single-item row keeps that card at the same ~half-width as a
+            // full row (an invisible spacer, NOT a blank placeholder CARD — no card chrome,
+            // no tap target, nothing a user could mistake for a product).
+            if pair.count == 1 {
+                Color.clear.frame(maxWidth: .infinity)
+            }
+        }
+    }
+
+    private func recommendationCard(_ item: LBProductRecommendation, index: Int) -> some View {
+        ProductRowView(
+            theme: theme,
+            product: item.asDisplayProduct,
+            index: index,
+            live: live,
+            layout: .grid,
+            hideSub: true,
+            onOpenProduct: { onOpenRecommendation?(item) },
+            onQuickAdd: { onQuickAddRecommendation?(item) },
+            // 換片播放圖示只在該筆 `videoId` 非 nil 時才存在（task 4.1）——`ProductRowView` 的
+            // `.grid` 播放鈕可見性單純吃 `onPlayClick != nil`，所以這裡是唯一的 gate 點。
+            onPlayClick: item.videoId != nil ? { onPlayRecommendation?(item) } : nil)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// 分享 button — the footer's leading slot (`[分享][CTA]`; 收藏 no longer shares this footer,
@@ -983,6 +1200,9 @@ public struct ProductDetailSheetView: View {
 
     static let headerTitle = "商品明細"
     static let soldOutLabel = "已售完"
+    /// Fixed Sale badge text (rb-ios-product-sale-badge) — the design's `product.badge || 'Sale'`
+    /// fallback; the iOS product model has no `badge` custom-text field, so this is always shown.
+    static let saleBadgeLabel = "Sale"
     static let qtyLabel = "數量"
     static let stockCaptionPrefix = "只剩庫存 "
     static let stockCaptionSuffix = " 組"
@@ -996,6 +1216,10 @@ public struct ProductDetailSheetView: View {
     static let shareLabel = "分享"
     static let retryLabel = "重試"
     static let failureTitle = "加入購物車失敗,請稍後再試"
+    // 商品介紹 + 更多商品（design R21，rb-ios-product-detail-recommendations）
+    static let productIntroTitle = "商品介紹"
+    static let productIntroFallback = "商品介紹內容"
+    static let recommendationsTitle = "更多商品"
     // 「請選規格」copy moved to `SelectVariantPromptModalView` (prompt hoisted to the container's
     // overlay root — ios-variant-prompt-overlay-fix).
 

@@ -59,6 +59,36 @@ public struct LBCartRequest: Equatable {
 
 // MARK: - 1. product-detail — `{ productId, name, priceShow, …, specifications, specOptions }`
 
+/// One「更多商品」推薦卡片 — mapped from `LBChannel.otherGoods[]`
+/// (expose-other-goods-recommendations-template design.md D2). Deliberately
+/// minimal: just enough to render a recommendation card and switch videos
+/// (`videoId`) — NOT the full `LBProduct` (no `specifications` / `specOptions`;
+/// a tap into the nested detail re-maps a full `LBProductDetailState` via the
+/// existing `onProductTap` path instead).
+public struct LBProductRecommendation: Equatable {
+    public let productId: String
+    public let name: String
+    public let priceShow: String
+    public let pic: String
+    /// Cross-video product reference (`LBProduct.videoId`). `nil` when the
+    /// backend omits `video_id` on this `other_goods[]` entry — reference-ui
+    /// MUST hide/disable the switch-video affordance rather than fabricate one
+    /// (design.md D2).
+    public let videoId: String?
+    /// 0/1 — mirrors `LBProduct.soldOut` (API integer, not boolean).
+    public let soldOut: Int
+
+    public init(productId: String, name: String, priceShow: String, pic: String,
+                videoId: String?, soldOut: Int) {
+        self.productId = productId
+        self.name = name
+        self.priceShow = priceShow
+        self.pic = pic
+        self.videoId = videoId
+        self.soldOut = soldOut
+    }
+}
+
 /// Host-bindable product-detail state for `LBPBottomSheet` + `LBPProductRow`.
 /// Mirrors the relevant `LBProduct` fields directly (D1 — no parallel model) so
 /// the host binds in one place. `originalPriceShow` is exposed (may be empty).
@@ -74,10 +104,17 @@ public struct LBProductDetailState: Equatable {
     public let photos: [String]
     public let specifications: [LBSpec]
     public let specOptions: [LBSpecOption]
+    /// 「更多商品」推薦清單 — filtered `LBChannel.otherGoods` (current product
+    /// excluded), FULL list, NOT pre-truncated to a card count
+    /// (expose-other-goods-recommendations-template design.md D1 — truncation is
+    /// reference-ui's job). Empty when the channel has no other goods, or when
+    /// this detail was opened without a channel context.
+    public let recommendations: [LBProductRecommendation]
 
     public init(productId: String, name: String, priceShow: String,
                 originalPriceShow: String, price: Double, stock: Int, soldOut: Int,
-                photos: [String], specifications: [LBSpec], specOptions: [LBSpecOption]) {
+                photos: [String], specifications: [LBSpec], specOptions: [LBSpecOption],
+                recommendations: [LBProductRecommendation] = []) {
         self.productId = productId
         self.name = name
         self.priceShow = priceShow
@@ -88,6 +125,7 @@ public struct LBProductDetailState: Equatable {
         self.photos = photos
         self.specifications = specifications
         self.specOptions = specOptions
+        self.recommendations = recommendations
     }
 
     // LBSpec / LBSpecOption are not Equatable; compare by stable identity so a
@@ -103,6 +141,7 @@ public struct LBProductDetailState: Equatable {
             && lhs.photos == rhs.photos
             && lhs.specifications.map(\.id) == rhs.specifications.map(\.id)
             && lhs.specOptions.map(\.name) == rhs.specOptions.map(\.name)
+            && lhs.recommendations == rhs.recommendations
     }
 }
 
@@ -118,10 +157,13 @@ public final class DefaultProductSheet {
     init() {}
 
     /// Map `product` (a `diversion == 0` `productTap`) into the detail state.
+    /// `otherGoods` is the owning channel's `LBChannel.otherGoods` (empty when no
+    /// channel context, e.g. a headless unit test) — mapped into `recommendations`
+    /// via the pure `recommendations(from:excluding:)` resolver.
     /// Diff-then-notify: re-opening the SAME product (identical mapped fields) is
     /// a no-op. The owning template resets variant / qty when this fires for a NEW
     /// product (handled at the template level so the three models stay decoupled).
-    func openDetail(_ product: LBProduct) {
+    func openDetail(_ product: LBProduct, otherGoods: [LBProduct] = []) {
         let next = LBProductDetailState(
             productId: product.id,
             name: product.name,
@@ -132,10 +174,25 @@ public final class DefaultProductSheet {
             soldOut: product.soldOut,
             photos: product.photos,
             specifications: product.specifications,
-            specOptions: product.specOptions)
+            specOptions: product.specOptions,
+            recommendations: Self.recommendations(from: otherGoods, excluding: product.id))
         guard next != detail else { return }
         detail = next
         onMutation?()
+    }
+
+    /// PURE mapper (testable in isolation, expose-other-goods-recommendations-template
+    /// design.md D1/D2): excludes `productId` itself from `otherGoods` (data-correctness
+    /// concern, owned by template — see design.md D1) and maps the remainder into the
+    /// minimal `LBProductRecommendation` shape. Does NOT truncate to any card count —
+    /// truncation is reference-ui's job (design.md D1).
+    static func recommendations(from otherGoods: [LBProduct], excluding productId: String) -> [LBProductRecommendation] {
+        otherGoods
+            .filter { $0.id != productId }
+            .map {
+                LBProductRecommendation(productId: $0.id, name: $0.name, priceShow: $0.priceShow,
+                                        pic: $0.pic, videoId: $0.videoId, soldOut: $0.soldOut)
+            }
     }
 
     /// Dismiss the detail sheet. Diff-then-notify (no-op when already nil).

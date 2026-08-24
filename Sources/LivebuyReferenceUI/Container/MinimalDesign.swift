@@ -59,7 +59,9 @@ public struct MinimalDesign: ReferenceUIDesign {
                 onPickHot: context.onPickHot,
                 onCancel: context.onCancel,
                 onRetry: context.onRetry,
-                onDismiss: context.onDismiss))
+                onDismiss: context.onDismiss,
+                onResolveProduct: context.onResolveProduct,
+                onSwitchVideo: context.onSwitchVideo))
     }
 
     /// The horizontally-scrolling widget carousel — the existing `ScrollableCarouselView`.
@@ -201,6 +203,10 @@ struct PlayerOverlayRootView: View {
     let onCancel: () -> Void
     let onRetry: () -> Void
     let onDismiss: () -> Void
+    /// productId → real `LBProduct` resolver (rb-ios-product-detail-recommendations §5).
+    let onResolveProduct: ((String) -> LBProduct?)?
+    /// 「更多商品」推薦卡播放圖示 → 換片（design.md D3）。
+    let onSwitchVideo: ((String) -> Void)?
 
     /// Mirrors `PlayerShellView`'s info-panel (VideoInfoPanel bottom sheet) open state, so the
     /// chat feed (a HIGHER overlay layer that would otherwise occlude the sheet / swallow its
@@ -296,7 +302,10 @@ struct PlayerOverlayRootView: View {
                 // 加購「需登入」gate's 前往登入 → host login flow (`config.onLogin`), the SAME
                 // host hook the comment login-gate uses. reference-ui NEVER logs in itself
                 // (cart-needs-login-gate).
-                onRequestLogin: onRequestLogin)
+                onRequestLogin: onRequestLogin,
+                // 「更多商品」推薦格（rb-ios-product-detail-recommendations）——resolve + 換片。
+                onResolveProduct: onResolveProduct,
+                onSwitchVideo: onSwitchVideo)
 
             ChatComposerBar(
                 controller: composerController,

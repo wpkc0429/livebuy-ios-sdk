@@ -256,6 +256,16 @@ public final class DefaultPlayerTemplate {
     /// carries the correct `video_id`. nil until a channel is ingested.
     private(set) public var currentVideoId: String?
 
+    /// Current channel's「更多商品」候選清單(`LBChannel.otherGoods`), tracked from
+    /// `ingestChannel` (expose-other-goods-recommendations-template — mirrors
+    /// `currentVideoId`'s cache-then-fallback pattern so headless unit tests can
+    /// drive it via `ingestChannel(_:)` without a live `player.channel`, which is
+    /// `private(set)` and unreachable from this module). `openProductDetail` reads
+    /// this (falling back to the live `player?.channel?.otherGoods` when nil — never
+    /// ingested) to compute `LBProductDetailState.recommendations`. nil until a
+    /// channel is ingested.
+    private(set) public var currentOtherGoods: [LBProduct]?
+
     /// 「本實例目前所知的、穩定的 videoId」——`deinit` 存快照的 save key 用它，避免依賴 teardown /
     /// ARC 當下才去讀 `currentVideoId` / `player?.channel?.id`（那時可能都已為 nil：channel 尚未
     /// `ingestChannel`、或只經 `handleVideoSwitch(to:)` 抵達新場而其 channel 未 ingest、或 player 已先
@@ -636,6 +646,9 @@ public final class DefaultPlayerTemplate {
         // so addToCart can thread it as CART_ADD_REQUEST.video_id (the template's
         // view-model truth; mirrors player.channel without reaching into player state).
         currentVideoId = ch.id
+        // expose-other-goods-recommendations-template — cache channel.otherGoods
+        // for openProductDetail's recommendations mapping (mirrors currentVideoId).
+        currentOtherGoods = ch.otherGoods
         // Remember a stable videoId for the deinit save-key (only advances, never nils out).
         rememberVideoId(ch.id)
         coalescing {
@@ -1034,7 +1047,7 @@ public final class DefaultPlayerTemplate {
             addToCartFailed = false
             addToCartNeedsLogin = false
             addToCartInFlight = false
-            productSheet.openDetail(product)
+            productSheet.openDetail(product, otherGoods: currentOtherGoods ?? player?.channel?.otherGoods ?? [])
             guard let detail = productSheet.detail else { return }
             variantPicker.reset(for: detail)
             // qty bounds: chosen spec stock if a spec is implicitly selected

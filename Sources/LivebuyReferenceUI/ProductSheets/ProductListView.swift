@@ -340,230 +340,26 @@ public struct ProductListView: View {
             // a presentation filter only; the underlying `products` snapshot is untouched.
             VStack(spacing: 0) {
                 ForEach(Array(displayedProducts.enumerated()), id: \.element.id) { index, product in
-                    productRow(product, index: index)
+                    ProductRowView(
+                        theme: theme,
+                        product: product,
+                        index: index,
+                        live: live,
+                        // `layout` defaults `.row`, `hideSub` defaults `false`, `onPlayClick`
+                        // defaults `nil` (→ falls back to `onSeekToIntro`) — this call site is
+                        // therefore BYTE-IDENTICAL to the pre-extraction `productRow(_:index:)`
+                        // (rb-ios-product-detail-recommendations §1).
+                        mode: mode ?? (live ? .live : .vod),
+                        isNarrating: introducingProductId != nil && product.id == introducingProductId,
+                        playbackPosition: playbackPosition,
+                        onOpenProduct: { onOpenProduct?(product) },
+                        onQuickAdd: { (onQuickAdd ?? onOpenProduct)?(product) },
+                        onNotifyRestock: { (onNotifyRestock ?? onOpenProduct)?(product) },
+                        onSeekToIntro: { onSeekToIntro?(product) },
+                        onShareProduct: { onShareProduct?(product) })
                 }
             }
         }
-    }
-
-    // MARK: - Product row (LBPProductRow layout:'row')
-    //
-    // Mirrors `LBPProductRow` `layout:'row'`:
-    //   • 64×64 rounded-12 thumbnail with a centered play affordance overlay.
-    //   • name (14pt semibold) + price block. Sold-out → 「已售完」line; in-stock →
-    //     strike original (`originalPriceShow`) + accent sale price (`priceShow`).
-    //   • trailing action group: detail circle + share circle (outline accent,
-    //     HIDDEN while the row's effective mode is genuinely-live —
-    //     rb-ios-live-hide-product-share, design R12) + cart circle (filled
-    //     accent; bell glyph when sold out → 補貨通知, cart glyph otherwise →
-    //     加購).
-    // The whole name/price column AND the detail icon funnel the row tap to
-    // `onOpenProduct(product)`. The THUMBNAIL tap forwards to `onSeekToIntro(product)`
-    // (→ host → core `seek(seconds: beginTime)`, issue 5) and the SHARE icon forwards to
-    // `onShareProduct(product)` (→ host → system share with `?t=beginTime`, issue 6) —
-    // both host-wired (nil → no-op for demo / snapshot, byte-identical baselines).
-
-    private func productRow(_ product: LBProduct, index: Int) -> some View {
-        // 狀態標籤改吃後端結論欄 `label`（rb-ios-goods-label-unified ③，單一優先序）；label 空
-        // （舊後端 / demo）經 raw fallback 仍正確 → baseline 不變。
-        let statusBadge = ProductStatusBadge.resolve(product)
-        let soldOut = statusBadge == .soldOut
-        // out_soon / hot 小徽章只認**明確** label（label 空不臆測 → demo / 舊後端中性）。
-        let explicitBadge = ProductStatusBadge.fromLabel(product.label)
-        // Thumbnail overlay by playback MODE (rb-ios-product-row-status-overlay), via a pure
-        // function. `mode` falls back to deriving from the real-frame `live` flag for existing
-        // call sites / snapshots (`live ? .live : .vod`) so baselines stay byte-identical.
-        //   VOD          → play icon (seek-to-intro)
-        //   active live  → 介紹中 on the narrating product (introducingProductId), else nothing
-        //   replay       → 介紹中 when playbackPosition ∈ [beginTime, endTime], else play icon
-        let effectiveMode = mode ?? (live ? .live : .vod)
-        let isNarratingThis = introducingProductId != nil && product.id == introducingProductId
-        let overlay = ProductRowOverlay.decide(
-            mode: effectiveMode,
-            isNarrating: isNarratingThis,
-            beginTime: product.beginTime,
-            endTime: product.endTime,
-            position: playbackPosition
-        )
-        // 優先序 sold_out > narrating：售罄時壓過「介紹中」橫幅（rb-ios-goods-label-unified ③）。
-        let isIntroducing = overlay.showIntroducing && !soldOut
-        let showPlay = overlay.showPlay
-        return HStack(spacing: 12) {
-            // Thumbnail + play affordance. `live` + a real photo → the product image loads over
-            // the placeholder; the play affordance stays on top (rb-ios-product-real-images).
-            ZStack {
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(Self.bgSunken)
-                if live, let url = Self.photoURL(product) {
-                    RemoteStillImageView(url: url, contentMode: .scaleAspectFill)
-                }
-                if showPlay {
-                    ZStack {
-                        Circle().fill(Color.black.opacity(0.5))
-                        Image(systemName: "play.fill")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundColor(.white)
-                    }
-                    .frame(width: 26, height: 26)
-                }
-                // 「介紹中」橫幅 — 貼齊縮圖底部、左右填滿（accent 底滿版 + 白色等化器 + 白字）。
-                if isIntroducing {
-                    VStack(spacing: 0) {
-                        Spacer(minLength: 0)
-                        HStack(spacing: 3) {
-                            EqualizerGlyph(size: 9, color: .white)
-                            Text(Self.introducingLabel)
-                                .font(.system(size: 10 * theme.fontScale, weight: .bold))
-                                .foregroundColor(.white)
-                                .lineLimit(1)
-                                .fixedSize()
-                        }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 3)
-                        .padding(.horizontal, 4)
-                        .background(theme.accent)
-                    }
-                }
-            }
-            .frame(width: 64, height: 64)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
-            // 縮圖點擊 → 影片跳轉到該商品介紹時間（`beginTime`），對齊設計 `LBPProductRow` 的縮圖
-            // `onSeek`（issue 5）。整個 64×64 可點（`contentShape`）。snapshot 無互動 → 像素不變。
-            .contentShape(Rectangle())
-            .onTapGesture { onSeekToIntro?(product) }
-            // E2E: per-item product thumbnail (seek-to-intro affordance).
-            .accessibilityIdentifier(LBAccessibilityID.productRowThumb(index))
-
-            // Name + price column (tap → open detail via host/core).
-            Button(action: { onOpenProduct?(product) }) {
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(product.name)
-                        .font(.system(size: 14 * theme.fontScale, weight: .semibold))
-                        .foregroundColor(theme.text)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-
-                    if soldOut {
-                        Text(Self.soldOutLabel)
-                            .font(.system(size: 12 * theme.fontScale))
-                            .foregroundColor(Self.soldOutColor)
-                    } else {
-                        HStack(alignment: .firstTextBaseline, spacing: 6) {
-                            if !product.originalPriceShow.isEmpty,
-                               product.originalPriceShow != product.priceShow {
-                                Text(product.originalPriceShow)
-                                    .font(.system(size: 12 * theme.fontScale))
-                                    .foregroundColor(Self.textDim)
-                                    .strikethrough(true, color: Self.textDim)
-                            }
-                            Text(product.priceShow)
-                                .font(.system(size: 14 * theme.fontScale, weight: .heavy))
-                                .foregroundColor(Self.saleColor)
-                            // out_soon / hot 小徽章（rb-ios-goods-label-unified ③）——僅明確 label
-                            // 觸發（label 空不臆測）。最終配色 DECISION-PENDING 待設計稿。
-                            switch explicitBadge {
-                            case .outSoon: statusPill(Self.outSoonLabel, Self.outSoonColor)
-                            case .hot:     statusPill(Self.hotLabel, theme.accent)
-                            default:       EmptyView()
-                            }
-                        }
-                    }
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            .buttonStyle(PlainButtonStyle())
-            // E2E: per-item name/price column → open detail (product-row-detail).
-            .accessibilityIdentifier(LBAccessibilityID.productRowDetail(index))
-
-            // Trailing action group (detail · share · cart/bell).
-            HStack(spacing: 8) {
-                rowOutlineIcon("doc.text", action: { onOpenProduct?(product) })
-                // 分享鈕 → 系統分享，連結帶該商品介紹時間 `?t=beginTime`（issue 6，對齊設計
-                // `LBPProductRow` 的 `onShare`）。轉發到 host-wired `onShareProduct`。glyph 為自繪
-                // `ShareGlyph`（設計 `Icons.share` size 16，rb-ios-share-icon-design-align）。
-                // 進行中直播（`effectiveMode == .live`）MUST NOT 顯示（rb-ios-live-hide-product-share,
-                // design R12）：live 商品沒有已定案的開始銷售時間，分享連結無法帶對時間點；VOD /
-                // 回放（有真實 beginTime/endTime）維持顯示。單一決策點 `overlay.showShare`。
-                if overlay.showShare {
-                    rowOutlineGlyph(action: { onShareProduct?(product) }) {
-                        ShareGlyph(size: 16, color: theme.accent)
-                    }
-                    // E2E: per-item share circle (product-row-share).
-                    .accessibilityIdentifier(LBAccessibilityID.productRowShare(index))
-                }
-                rowCartButton(soldOut: soldOut, product: product)
-                    // E2E: per-item cart/bell circle (product-row-cart).
-                    .accessibilityIdentifier(LBAccessibilityID.productRowCart(index))
-            }
-        }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 10)
-        .overlay(
-            // Bottom hairline (LBPProductRow `borderBottom: 1px solid stroke`).
-            VStack(spacing: 0) {
-                Spacer(minLength: 0)
-                Rectangle()
-                    .fill(Self.stroke)
-                    .frame(height: 1)
-            }
-        )
-    }
-
-    /// An outline-accent 30pt circular icon button (detail / share affordances).
-    private func rowOutlineIcon(_ systemName: String, action: (() -> Void)?) -> some View {
-        Button(action: { action?() }) {
-            ZStack {
-                Circle()
-                    .stroke(theme.accent, lineWidth: 1)
-                Image(systemName: systemName)
-                    .font(.system(size: 14, weight: .regular))
-                    .foregroundColor(theme.accent)
-            }
-            .frame(width: 30, height: 30)
-            // Whole 30pt circle taps — the stroke-only ring would leave the interior dead.
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(PlainButtonStyle())
-    }
-
-    /// Glyph overload of `rowOutlineIcon` — same 30pt accent outline ring, but draws a custom
-    /// glyph view (e.g. the hand-drawn `ShareGlyph`) instead of an SF Symbol
-    /// (rb-ios-share-icon-design-align).
-    private func rowOutlineGlyph<Glyph: View>(action: (() -> Void)?, @ViewBuilder glyph: () -> Glyph) -> some View {
-        Button(action: { action?() }) {
-            ZStack {
-                Circle()
-                    .stroke(theme.accent, lineWidth: 1)
-                glyph()
-            }
-            .frame(width: 30, height: 30)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(PlainButtonStyle())
-    }
-
-    /// The filled-accent cart button — bell glyph (補貨通知) when sold out → `onNotifyRestock`
-    /// (專屬補貨入口，開 NotifyRestock sheet；名稱 / 明細仍走 `onOpenProduct` 開詳情，
-    /// rb-ios-soldout-row-detail-vs-restock)，falling back to `onOpenProduct` when nil; cart glyph
-    /// (加購) otherwise → `onQuickAdd` (the compact AddToCart sheet), falling back to
-    /// `onOpenProduct` when `onQuickAdd` is nil (rb-ios-product-action-sheet).
-    private func rowCartButton(soldOut: Bool, product: LBProduct) -> some View {
-        Button(action: {
-            if soldOut {
-                (onNotifyRestock ?? onOpenProduct)?(product)
-            } else {
-                (onQuickAdd ?? onOpenProduct)?(product)
-            }
-        }) {
-            ZStack {
-                Circle().fill(theme.accent)
-                Image(systemName: soldOut ? "bell" : "cart")
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundColor(.white)
-            }
-            .frame(width: 30, height: 30)
-        }
-        .buttonStyle(PlainButtonStyle())
     }
 
     // MARK: - Bottom cart CTA (LBPCartCTA — bag glyph + label + count)
@@ -604,35 +400,18 @@ public struct ProductListView: View {
     static let stroke = Color(hex: "#ECEAF0") ?? Color.gray.opacity(0.2)
     /// `theme.surface.strokeStrong` (grab handle).
     static let strokeStrong = Color(hex: "#D8D5DE") ?? Color.gray.opacity(0.35)
-    /// `theme.surface.bgSunken` (thumbnail placeholder fill — light mode).
+    /// `theme.surface.bgSunken` (search-pill background — light mode).
     static let bgSunken = Color(hex: "#F4F4F6") ?? Color.gray.opacity(0.08)
-    /// `theme.sale` (sale price red — `design/brands/livebuy/tokens.jsx`).
-    static let saleColor = Color(hex: "#E0334B") ?? Color.red
-    /// `theme.soldOut` (sold-out grey label — `design/brands/livebuy/tokens.jsx`).
-    static let soldOutColor = Color(hex: "#9A96A3") ?? Color.gray
-    /// out_soon「即將售完」徽章色（暖橘；最終配色 DECISION-PENDING 待設計稿）。
-    static let outSoonColor = Color(hex: "#F5A623") ?? Color.orange
 
     // MARK: - Fixed localized copy (static presentation strings)
 
     static let title = "銷售商品"
     static let cartLabel = "查看購物車"
-    static let soldOutLabel = "已售完"
     static let emptyLabel = "目前沒有商品"
-    static let introducingLabel = "介紹中"
-    static let outSoonLabel = "即將售完"
-    static let hotLabel = "熱賣中"
     // 搜尋（rb-ios-product-list-search，對齊設計 ProductListSheet）
     static let searchPlaceholder = "搜尋商品名稱"
     static let searchCancel = "取消"
     static let noResultsFormat = "找不到符合「%@」的商品"
-
-    /// First product photo as a non-empty URL, or nil (empty / whitespace → placeholder).
-    static func photoURL(_ product: LBProduct) -> URL? {
-        guard let s = product.photos.first?.trimmingCharacters(in: .whitespacesAndNewlines),
-              !s.isEmpty else { return nil }
-        return URL(string: s)
-    }
 }
 
 // MARK: - Deterministic demo seed (previews + snapshot tests)
@@ -648,17 +427,6 @@ public extension ProductListView {
 
     /// A deterministic demo drawer: three products (one sold-out) + a cart count
     /// of 2, action-free. Mirrors `ProductSheetsModel.demoListModel`'s product set.
-    /// out_soon / hot 小徽章（rb-ios-goods-label-unified ③）。最小中性 pill；最終樣式
-    /// DECISION-PENDING 待設計稿。
-    private func statusPill(_ text: String, _ color: Color) -> some View {
-        Text(text)
-            .font(.system(size: 10 * theme.fontScale, weight: .bold))
-            .foregroundColor(.white)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(Capsule().fill(color))
-    }
-
     static func demo(theme: ReferenceUITheme) -> ProductListView {
         ProductListView(
             theme: theme,

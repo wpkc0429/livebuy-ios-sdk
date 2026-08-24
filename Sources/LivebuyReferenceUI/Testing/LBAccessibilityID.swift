@@ -128,7 +128,19 @@ public enum LBAccessibilityID {
     public static func productRowCart(_ index: Int) -> String { "lb_product_row_cart_\(index)" }
 
     public static let sheetHeaderClose = "lb_sheet_header_close"
+    /// Header close button while it reads as「返回」(non-empty `detailBreadcrumb`,
+    /// rb-ios-product-detail-recommendations §5). Distinct id from `sheetHeaderClose` so
+    /// E2E can assert which affordance is currently drawn.
+    public static let sheetHeaderBack = "lb_sheet_header_back"
     public static let productDetail = "lb_product_detail"
+
+    /// 商品明細「商品介紹」文字區 (rb-ios-product-detail-recommendations §2).
+    public static let productIntro = "lb_product_intro"
+    /// 商品明細「更多商品」推薦格容器 (rb-ios-product-detail-recommendations §3).
+    public static let productRecommendations = "lb_product_recommendations"
+    public static func productRecommendationCard(_ index: Int) -> String { "lb_product_recommendation_card_\(index)" }
+    public static func productRecommendationPlay(_ index: Int) -> String { "lb_product_recommendation_play_\(index)" }
+    public static func productRecommendationCart(_ index: Int) -> String { "lb_product_recommendation_cart_\(index)" }
     public static func variantChip(_ group: Int, _ option: Int) -> String { "lb_variant_chip_\(group)_\(option)" }
     public static let qtyPlus = "lb_qty_plus"
     public static let qtyMinus = "lb_qty_minus"
@@ -141,6 +153,9 @@ public enum LBAccessibilityID {
     public static let addToCartRetry = "lb_add_to_cart_retry"
     /// Add-to-cart success toast (`CartToastView`, rb-ios-cart-add-success-toast).
     public static let cartToast = "lb_cart_toast"
+
+    /// Sale badge chip on the product-detail / add-to-cart sheet (rb-ios-product-sale-badge).
+    public static let saleBadge = "lb_sale_badge"
 
     public static let zoomBadge = "lb_zoom_badge"
     public static let zoomOverlay = "lb_zoom_overlay"

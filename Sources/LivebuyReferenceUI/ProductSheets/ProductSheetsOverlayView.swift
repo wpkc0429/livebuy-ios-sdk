@@ -194,6 +194,29 @@ public struct ProductSheetsOverlayView: View {
     /// defaults not-presented, so baselines stay byte-identical).
     private let onRequestLogin: (() -> Void)?
 
+    /// Host-wired productId → real `LBProduct` resolver (rb-ios-product-detail-recommendations
+    /// §5, design.md D1). Backed by core `LivebuyPlayerViewController.channel?.goods ∪
+    /// channel?.otherGoods` — `other_goods[]` is already a full `LBProduct` array, so this
+    /// resolves WITHOUT another API call. Used to (a) push the CURRENTLY-shown product into
+    /// `detailBreadcrumb` when the user drills into a「更多商品」推薦卡, and (b) resolve the
+    /// recommendation itself to a real `LBProduct` before forwarding it through the EXISTING
+    /// `onProductTap` path. nil for demo / snapshot instances — the drill-in / breadcrumb-push
+    /// is then a safe no-op (mirrors `onProductTap` itself being nil there).
+    private let onResolveProduct: ((String) -> LBProduct?)?
+
+    /// Host-wired 換片 (design.md D3) — mirrors `LivebuyPlayer.swift`'s `onPickHot` default
+    /// (`player.load(videoId:)`). Triggered ONLY by a「更多商品」推薦卡的播放圖示; the sheet
+    /// stack stays open (this is NEVER `dismissDetail()`), and `detailBreadcrumb` is NEVER
+    /// touched by this path. nil for demo / snapshot instances.
+    private let onSwitchVideo: ((String) -> Void)?
+
+    /// 「更多商品」巢狀 drill-in 的返回路徑（design.md D1）：the product the user was looking at
+    /// BEFORE drilling into a recommendation, pushed here so the header's「返回」can pop back to
+    /// it. Purely reference-ui LOCAL — the template never sees this (it only observes a normal
+    /// sequence of `onProductTap` calls, same as browsing the product list). Cleared whenever the
+    /// sheet is genuinely closed (`dismissDetail()`), never left to leak into the next open.
+    @State private var detailBreadcrumb: [LBProduct] = []
+
     /// The product-detail the sheet is currently presented for, if any. Mirrors
     /// `model.detail` so the sheet binds a non-optional detail inside; the SOLD-OUT
     /// bit selects restock vs plain detail. The template owns detail open/close —
@@ -271,7 +294,9 @@ public struct ProductSheetsOverlayView: View {
         onShare: (() -> Void)? = nil,
         onSeekToProductIntro: ((LBProduct) -> Void)? = nil,
         onShareProduct: ((LBProduct) -> Void)? = nil,
-        onRequestLogin: (() -> Void)? = nil
+        onRequestLogin: (() -> Void)? = nil,
+        onResolveProduct: ((String) -> LBProduct?)? = nil,
+        onSwitchVideo: ((String) -> Void)? = nil
     ) {
         self.model = model
         self.theme = theme
@@ -281,6 +306,8 @@ public struct ProductSheetsOverlayView: View {
         self.onSeekToProductIntro = onSeekToProductIntro
         self.onShareProduct = onShareProduct
         self.onRequestLogin = onRequestLogin
+        self.onResolveProduct = onResolveProduct
+        self.onSwitchVideo = onSwitchVideo
     }
 
     public var body: some View {
@@ -440,9 +467,12 @@ public struct ProductSheetsOverlayView: View {
         // scrim + grab handle + drag-to-dismiss + content-sized height (iOS-14/15 height
         // control) instead of the system sheet. `onDismiss` clears the local mirror; the
         // template still owns detail open/close (the `syncPresentation` mirror below).
-        // `resizable: true` (rb-ios-product-sheet-resize-fav-inline): the ONLY `.lbBottomSheet(item:)`
-        // call site — grab handle drag-UP live-resizes 25%–90%; drag-DOWN dismiss/bounce unchanged.
-        .lbBottomSheet(theme: theme, item: $presentingDetail, onDismiss: { dismissDetail() }, resizable: true) { detail in
+        // Drag-to-resize + drag-to-dismiss now apply unconditionally through this overload
+        // (rb-ios-sheetkit-resize-dismiss-unify, replacing the prior `resizable: true` opt-in
+        // parameter) — grab handle drag-UP live-resizes toward the shared 90% ceiling from this
+        // presentation's own default height; drag-DOWN shrinks back to that floor before
+        // converting into the existing dismiss/bounce behavior.
+        .lbBottomSheet(theme: theme, item: $presentingDetail, onDismiss: { dismissDetail() }) { detail in
             presentedSheet(for: detail, actionMode: actionMode)
         }
         // Keep the presented sheet in lock-step with the model's detail snapshot:
@@ -467,6 +497,55 @@ public struct ProductSheetsOverlayView: View {
     private func dismissDetail() {
         presentingDetail = nil
         model.closeDetail()
+        // 真正關閉整個 sheet stack 時 MUST 一併清空 breadcrumb（design.md「Risks / Trade-offs」
+        // 點名的最容易漏掉的一步）——否則下次開一個全新的商品明細會殘留上一輪的返回路徑
+        // （rb-ios-product-detail-recommendations §5.5）。
+        detailBreadcrumb = []
+    }
+
+    /// Header close-icon tap when it may read as「返回」(rb-ios-product-detail-recommendations
+    /// §5, design.md D1): non-empty `detailBreadcrumb` pops the last entry and re-opens it via
+    /// the EXISTING `onProductTap` path (sheet stays open, same single-slot swap the drill-in
+    /// itself used); empty breadcrumb falls back to the existing真正 `dismissDetail()`. Always
+    /// reopens in full `.detail` browse mode — this is a deliberate simplification (design.md
+    /// does not specify per-level presentation-mode restoration): 返回一律看完整明細，not
+    /// necessarily whichever `actionMode` (`.detail`/`.addToCart`) was active before drilling in.
+    private func backOrDismiss() {
+        let popped = DetailBreadcrumbReducer.popped(detailBreadcrumb)
+        guard let previous = popped.previous else {
+            dismissDetail()
+            return
+        }
+        detailBreadcrumb = popped.remaining
+        actionMode = .detail
+        onProductTap?(previous)
+    }
+
+    /// 「更多商品」推薦卡卡片本體 / 加購鈕 tap (design.md D1) — pushes the CURRENTLY-shown
+    /// product into `detailBreadcrumb` (resolved via `onResolveProduct`, so pop-back can reopen
+    /// it), resolves the recommendation itself to its real `LBProduct`
+    /// (`channel.goods ∪ channel.otherGoods`, no extra API call), sets the local `actionMode`,
+    /// and forwards through the EXISTING `onProductTap` path — the SAME single-slot swap a
+    /// normal product-list tap uses (MUST NOT open a second sheet instance). When
+    /// `onResolveProduct` is unset (demo / snapshot, no live channel) this degrades to the
+    /// recommendation's presentation-only conversion and skips the breadcrumb push (mirrors
+    /// `onProductTap` itself being a no-op there — nothing is observably lost).
+    private func openRecommendation(_ item: LBProductRecommendation, mode: ProductSheetActionMode) {
+        let resolvedItem = onResolveProduct?(item.productId) ?? item.asDisplayProduct
+        let currentProduct = presentingDetail.flatMap { onResolveProduct?($0.productId) ?? nil }
+        detailBreadcrumb = DetailBreadcrumbReducer.pushed(detailBreadcrumb, currentProduct: currentProduct)
+        actionMode = mode
+        onProductTap?(resolvedItem)
+    }
+
+    /// 「更多商品」推薦卡**播放圖示** tap (design.md D3) — 换片 only, mirrors
+    /// `LivebuyPlayer.swift`'s `onPickHot` default action. MUST NOT call `dismissDetail()` (the
+    /// sheet stays open) and MUST NOT touch `detailBreadcrumb` (this is a DIFFERENT trigger path
+    /// from `openRecommendation` — the risk this change explicitly flags: 播放圖示 MUST NOT push
+    /// breadcrumb, 卡片本體/加購鈕 MUST NOT switch video).
+    private func switchRecommendationVideo(_ item: LBProductRecommendation) {
+        guard let videoId = item.videoId else { return }
+        onSwitchVideo?(videoId)
     }
 
     /// Forward a product-list **thumbnail** tap → seek the video to the product's intro time
@@ -552,6 +631,10 @@ public struct ProductSheetsOverlayView: View {
                 // 商家庫存文案設定（rb-ios-show-stock-caption-toggle）——精簡購買 sheet 與下面的
                 // 商品明細 sheet 共用同一段「只剩庫存 N 組」，兩個分支都 MUST 收到旗標。
                 showStock: model.showStock,
+                // Header 關閉鈕在巢狀 drill-in（breadcrumb 非空）時讀作「返回」——AddToCartSheetView
+                // 與下面的 .detail 分支共用同一個 breadcrumb 狀態（design.md D1：換片/巢狀是同一套
+                // 單槽 swap 機制，不分 actionMode），rb-ios-product-detail-recommendations §5。
+                showsBackAffordance: !detailBreadcrumb.isEmpty,
                 onSelectVariant: { groupIndex, optionIndex in
                     model.selectVariant(groupIndex: groupIndex, optionIndex: optionIndex)
                 },
@@ -560,7 +643,7 @@ public struct ProductSheetsOverlayView: View {
                 onDec: { model.decQty() },
                 onAddToCart: { addToCartReprompting() },
                 onOpenCart: { model.openCart() },
-                onDismiss: { dismissDetail() },
+                onDismiss: { backOrDismiss() },
                 onZoomImage: { zoomedDetail = detail })
         case .detail:
             ProductDetailSheetView(
@@ -585,6 +668,10 @@ public struct ProductSheetsOverlayView: View {
                 // 商家庫存文案設定（rb-ios-show-stock-caption-toggle）——與上面的 `.addToCart` 分支
                 // 共用同一段「只剩庫存 N 組」（`qtyRow` 與 `presentation` 正交），兩個分支都 MUST 傳。
                 showStock: model.showStock,
+                // 「更多商品」推薦格（design R21，rb-ios-product-detail-recommendations）——巢狀
+                // 明細（breadcrumb 非空）MUST NOT 再畫自己的推薦格，避免無限遞迴 UI。
+                showsRecommendations: detailBreadcrumb.isEmpty,
+                showsBackAffordance: !detailBreadcrumb.isEmpty,
                 onSelectVariant: { groupIndex, optionIndex in
                     model.selectVariant(groupIndex: groupIndex, optionIndex: optionIndex)
                 },
@@ -596,8 +683,11 @@ public struct ProductSheetsOverlayView: View {
                 onToggleFavorite: { model.toggleFavorite(forProductId: detail.productId) },
                 // 分享 is a host concern — forward the container's host passthrough.
                 onShare: { onShare?() },
-                onDismiss: { dismissDetail() },
-                onZoomImage: { zoomedDetail = detail })
+                onDismiss: { backOrDismiss() },
+                onZoomImage: { zoomedDetail = detail },
+                onOpenRecommendation: { item in openRecommendation(item, mode: .detail) },
+                onQuickAddRecommendation: { item in openRecommendation(item, mode: .addToCart) },
+                onPlayRecommendation: { item in switchRecommendationVideo(item) })
         }
     }
 
@@ -625,6 +715,61 @@ public struct ProductSheetsOverlayView: View {
     /// container actually wires.
     func seekToProductIntroForTesting(_ product: LBProduct) {
         seekToProductIntro(product)
+    }
+
+    /// Test-only hook exposing the SAME 推薦卡卡片本體 / 加購鈕 path `body` wires
+    /// (rb-ios-product-detail-recommendations §5, design.md D1). Lets tests assert the
+    /// resolved-product forwarding to `onProductTap` without mounting SwiftUI gesture handling.
+    ///
+    /// MUST NOT be called from production code, and MUST keep forwarding to the very same
+    /// `openRecommendation(_:mode:)` — a parallel copy would decouple the assertion from what
+    /// the container actually wires.
+    func openRecommendationForTesting(_ item: LBProductRecommendation, mode: ProductSheetActionMode) {
+        openRecommendation(item, mode: mode)
+    }
+
+    /// Test-only hook exposing the SAME 推薦卡播放圖示 path `body` wires
+    /// (rb-ios-product-detail-recommendations §4, design.md D3). Lets tests assert the
+    /// 换片 forward AND — critically — that it touches neither the model (no `closeDetail()`)
+    /// nor the breadcrumb (this is a DIFFERENT trigger path from `openRecommendation`).
+    ///
+    /// MUST NOT be called from production code, and MUST keep forwarding to the very same
+    /// `switchRecommendationVideo(_:)`.
+    func switchRecommendationVideoForTesting(_ item: LBProductRecommendation) {
+        switchRecommendationVideo(item)
+    }
+
+    /// Test-only hook exposing the SAME header 返回/關閉 path `body` wires to the sheets'
+    /// `onDismiss` (rb-ios-product-detail-recommendations §5.4). `detailBreadcrumb` is `@State`,
+    /// which cannot be seeded from outside a live SwiftUI hierarchy (no ViewInspector /
+    /// UI-automation infra in this target — see `DetailBreadcrumbReducer`'s doc comment), so
+    /// exercised this way the breadcrumb always reads its initial empty value: this hook locks
+    /// the EMPTY-breadcrumb branch — `backOrDismiss()` falls back to `dismissDetail()` and forwards
+    /// nothing through `onProductTap` — while `DetailBreadcrumbReducer.popped` (pure-function
+    /// tests in `ProductDetailRecommendationsLogicTests`) locks the actual POP + re-forward the
+    /// non-empty branch performs once `detailBreadcrumb` is populated.
+    ///
+    /// MUST NOT be called from production code, and MUST keep forwarding to the very same
+    /// `backOrDismiss()` — a parallel copy would decouple the assertion from what the container
+    /// actually wires.
+    func backOrDismissForTesting() {
+        backOrDismiss()
+    }
+
+    /// Test-only hook exposing the SAME "真的關閉整個 sheet" path `body` wires to
+    /// `.lbBottomSheet`'s `onDismiss` — lets tests assert `dismissDetail()` itself is reachable
+    /// and forwards nothing through `onProductTap` / mutates no model state, without mounting the
+    /// sheet-stack presenter. (The breadcrumb-CLEAR invariant task 5.5 promises — `detailBreadcrumb
+    /// = []` — is unconditional dead-simple code with no branch to mis-hit; §5.5's "第 1 輪驗收
+    /// 補正" locks the PUSH/POP it must clear via `DetailBreadcrumbReducer`'s pure-function tests,
+    /// since `@State` itself cannot be read back to assert the clear directly outside a live
+    /// SwiftUI hierarchy.)
+    ///
+    /// MUST NOT be called from production code, and MUST keep forwarding to the very same
+    /// `dismissDetail()` — a parallel copy would decouple the assertion from what the container
+    /// actually wires.
+    func dismissDetailForTesting() {
+        dismissDetail()
     }
 
     // NOTE on `goodsGpn` for the restock sheet (D-5): `LBProductDetailState` mirrors
@@ -707,6 +852,54 @@ enum VariantPromptTrigger {
     /// chosen (`selectVariant` cleared the flag) so the add proceeds with no prompt.
     static func shouldPresent(needsVariantSelection: Bool) -> Bool {
         needsVariantSelection
+    }
+}
+
+// MARK: - RecommendationBreadcrumbTrigger — pure decision for the 巢狀 drill-in breadcrumb push
+//
+// (rb-ios-product-detail-recommendations §5, design.md D1). A push happens iff the CURRENTLY
+// shown product actually resolved to a real `LBProduct` — when `onResolveProduct` is unwired
+// (demo / snapshot, no live channel) or the lookup misses, there is nothing meaningful to push
+// (and `onProductTap` itself is typically nil in that same scenario, so nothing is observably
+// lost). Extracted as a pure function so the guard is unit-testable without a live SwiftUI
+// `@State` (unit-test-discipline), mirroring `CartToastTrigger` / `VariantPromptTrigger`.
+enum RecommendationBreadcrumbTrigger {
+    static func shouldPush(currentProduct: LBProduct?) -> Bool {
+        currentProduct != nil
+    }
+}
+
+// MARK: - DetailBreadcrumbReducer — pure push / pop transitions for the breadcrumb array
+//
+// (rb-ios-product-detail-recommendations §5, tasks.md §5.5's "第 1 輪驗收補正"). `openRecommendation`
+// / `backOrDismiss` drive the `@State private var detailBreadcrumb` directly, but `@State` cannot
+// be read back outside of a live SwiftUI hierarchy — `ProductSheetsOverlayView` in this target is
+// only ever exercised via bare struct construction, with no ViewInspector / UI-automation infra
+// (same documented limitation `BottomSheetDragDismissOutcomeTests.swift` extracts pure functions
+// to work around). So testing the RESULT of a push / pop — not just `RecommendationBreadcrumbTrigger
+// .shouldPush`'s boolean gate above it — requires pulling the array transformation itself out of
+// `@State` into these two pure functions, which `openRecommendation` / `backOrDismiss` now delegate
+// to before reassigning `detailBreadcrumb`.
+enum DetailBreadcrumbReducer {
+    /// The breadcrumb AFTER a drill-in (§5.2/§5.3): appends `currentProduct` iff
+    /// `RecommendationBreadcrumbTrigger.shouldPush` allows it (a detail is actually on screen to
+    /// push); returns `breadcrumb` unchanged otherwise (mirrors `onProductTap` itself being a
+    /// no-op in that same demo/snapshot scenario — nothing observably lost).
+    static func pushed(_ breadcrumb: [LBProduct], currentProduct: LBProduct?) -> [LBProduct] {
+        guard RecommendationBreadcrumbTrigger.shouldPush(currentProduct: currentProduct) else {
+            return breadcrumb
+        }
+        return breadcrumb + [currentProduct!]
+    }
+
+    /// The breadcrumb AFTER popping one level for 返回 (§5.4), plus the product to re-open.
+    /// `previous == nil` when `breadcrumb` was already empty — the caller (`backOrDismiss`) falls
+    /// back to `dismissDetail()` in that case, which separately clears the breadcrumb outright
+    /// (§5.5); an already-empty breadcrumb has nothing left for THIS function to do.
+    static func popped(_ breadcrumb: [LBProduct]) -> (remaining: [LBProduct], previous: LBProduct?) {
+        var remaining = breadcrumb
+        let previous = remaining.popLast()
+        return (remaining, previous)
     }
 }
 

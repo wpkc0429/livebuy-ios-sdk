@@ -948,6 +948,26 @@ public struct LivebuyPlayer: UIViewControllerRepresentable {
             onDismiss: { [weak player] in
                 guard let player = player else { return }
                 if let custom = config.onDismiss { custom(player) } else { player.dismiss(animated: true) }
+            },
+            // 「更多商品」推薦格 — productId → 真實 LBProduct（core `channel.goods` ∪
+            // `channel.otherGoods`；`other_goods[]` 本來就是完整 LBProduct 陣列，不需多打一次 API，
+            // rb-ios-product-detail-recommendations §5）。
+            onResolveProduct: { [weak player] productId in
+                guard let channel = player?.channel else { return nil }
+                return channel.goods.first(where: { $0.id == productId })
+                    ?? channel.otherGoods.first(where: { $0.id == productId })
+            },
+            // 推薦卡播放圖示 → 換片（design.md D3），比照上面 `onPickHot` 的核心動作
+            // （`player.load(videoId:)` + `config.onVideoSwitched`）——sheet stack 不連動關閉，
+            // 呼叫端（`ProductSheetsOverlayView`）保證這條路徑 MUST NOT 呼叫 dismissDetail()。
+            // `LBProductRecommendation` 沒有 cover/title/duration，故不比照 `onPickHot` 呼叫
+            // `config.onVideoSwitchedItem`（資料不足，非疏漏）。
+            onSwitchVideo: { [weak player, weak coordinator] videoId in
+                guard let player = player, !videoId.isEmpty else { return }
+                coordinator?.currentVideoId = videoId
+                coordinator?.coverVideoId = videoId
+                player.load(videoId: videoId)
+                config.onVideoSwitched?(videoId)
             })
     }
 

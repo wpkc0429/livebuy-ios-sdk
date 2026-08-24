@@ -97,6 +97,14 @@ public struct PlayerOverlayContext {
     public let onCancel: () -> Void
     public let onRetry: () -> Void
     public let onDismiss: () -> Void
+    /// productId → real `LBProduct` resolver (core `channel.goods ∪ channel.otherGoods`,
+    /// rb-ios-product-detail-recommendations §5). Backs the「更多商品」推薦格's drill-in
+    /// breadcrumb push + recommendation resolution (design.md D1). nil → the product-sheets
+    /// surface degrades to a presentation-only conversion and skips the breadcrumb push.
+    public let onResolveProduct: ((String) -> LBProduct?)?
+    /// 「更多商品」推薦卡播放圖示 → 換片 (design.md D3, mirrors `onPickHot`'s default action).
+    /// nil → the play-icon switch is a no-op.
+    public let onSwitchVideo: ((String) -> Void)?
 
     public init(
         shellModel: PlayerShellModel,
@@ -133,7 +141,9 @@ public struct PlayerOverlayContext {
         onPickHot: @escaping (LBHotItem) -> Void,
         onCancel: @escaping () -> Void,
         onRetry: @escaping () -> Void,
-        onDismiss: @escaping () -> Void
+        onDismiss: @escaping () -> Void,
+        onResolveProduct: ((String) -> LBProduct?)? = nil,
+        onSwitchVideo: ((String) -> Void)? = nil
     ) {
         self.shellModel = shellModel
         self.productModel = productModel
@@ -170,6 +180,8 @@ public struct PlayerOverlayContext {
         self.onCancel = onCancel
         self.onRetry = onRetry
         self.onDismiss = onDismiss
+        self.onResolveProduct = onResolveProduct
+        self.onSwitchVideo = onSwitchVideo
     }
 }
 

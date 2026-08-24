@@ -5,6 +5,53 @@ All notable changes to the Livebuy iOS SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.7.0] - 2026-08-25
+
+> **Minor.** 新增 3 項 host-facing 能力——商品明細/加購 sheet 的 Sale 促銷徽章、`LBProduct` 補上
+> `videoId` 欄位、商品明細新增「商品介紹」區塊＋「更多商品」2×2 推薦格；另把底部 sheet 的拖曳
+> 調高與拖曳收合手勢整併為單一連續手勢並擴大到全部 5 個 sheet。三項新能力皆向後相容、無符號
+> 移除；手勢整併使 `.detail` 呈現的預設高度上限由 v4.6.2 的 90% 改回 50%，見下方 Changed。
+> **iOS + Android 兩端 lockstep**；React Native / Flutter 不在此列車（見
+> [`livebuy-android-sdk/CHANGELOG.md`](../livebuy-android-sdk/CHANGELOG.md#470---2026-08-25)
+> 的 Android 對照段）。
+
+### Added
+
+- **商品明細 / 加購 sheet 新增 Sale 促銷徽章**：商品有原價（劃線價）且未售完時，商品圖 / 96×96
+  縮圖旁顯示一個「Sale」徽章 chip（accent 底色、白字）；純 reference-ui 視覺渲染，不需任何新的
+  資料欄位或 view-model 改動，售完或無原價時不顯示。
+- **`LBProduct` 新增 `videoId` 欄位（`String?`）**：承載 `LBChannel.otherGoods[]` 每筆商品所屬的
+  影片 id（一般 `goods[]` 內項目此欄位為 `nil`），tolerant decode（缺鍵/型別不符 → `nil`）。補齊
+  `component-contracts` 規格先前已要求、但四端從未真正實作的缺口，是下方「更多商品」推薦格能夠
+  換片的必要資料來源。
+- **商品明細新增「商品介紹」文字區 ＋「更多商品」2×2 推薦格**：`.detail` 呈現底部新增商品介紹
+  說明文字（後端 `description` 欄位就緒前，先以固定文案佔位）與最多 4 筆「更多商品」推薦卡片
+  （資料源 `LBChannel.otherGoods`，過濾掉目前商品）。點推薦卡的播放圖示會直接換到該商品所屬
+  影片（沿用既有「容器層直呼 `player.load(videoId:)`」換片機制，比照 EndScreen 熱門推薦的既有
+  模式，不新增換片入口）；點卡片本體或加購鈕會切換到該商品自己的明細/加購畫面——同一個 sheet
+  換內容＋本地返回路徑（非疊出第二層 sheet 實例），header 關閉鈕在有返回路徑時變成「返回」；從
+  推薦卡加購會帶該商品自己的 `videoId`，確保購物車去重鍵 `(goodsId, videoId)` 正確。商品卡新增
+  `hideSub`/`onPlayClick` 兩個渲染參數，grid 呈現的播放鈕改為右上角呼吸動畫圓鈕＋獨立加購圓鈕，
+  既有 row 呈現的播放提示改為「看講解」文字膠囊（既有加購鈕不動）。
+
+### Changed
+
+- **底部 sheet 拖曳調高與拖曳收合整併為單一連續手勢，並擴大到全部 5 個 bottom sheet**：先前僅
+  商品明細 / 加購 / 補貨通知三張 sheet 可選擇性拖曳調高（下限寫死 25%），本版起商品列表抽屜與
+  影片資訊面板也一併具備拖曳調高能力；往上拖調高、往下拖收合合併成同一條手勢——高度下限改為
+  「該次呈現實際渲染出的高度」而非寫死值，超出下限才轉為既有的拖曳收合位移（沿用既有 100pt
+  累積位移門檻與彈回/滑出動畫，門檻本身不變）。**商品明細（`.detail`）呈現的預設高度上限由
+  v4.6.2 的 90% 改回 50%（內容自適應）**——90% 現在只在使用者主動拖曳到頂時才出現，不再是開啟
+  就逼近全螢幕的預設值；如果你的 host 依賴 v4.6.2「明細一開啟就是 90%」的行為，這個預設值本版
+  已改變。`.addToCart` 與補貨通知既有固定 40% 高度不受影響。
+
+### Fixed
+
+- **拖曳調整高度過程中的掉幀式抖動**（iOS-only）：拖曳期間，`LBSheetScaffold` 先前只丟棄量測
+  結果、但排版量測動作本身（4 個 `GeometryReader`）仍隨每次觸控取樣持續執行，慢速拖曳時因此
+  明顯掉幀。本版把量測動作本身在拖曳期間整個移出 view tree（而非只丟棄結果），修掉這個
+  v4.6.2 的 release-time 抖動修復未觸及的另一個抖動來源。不影響任何計算邏輯或 public API。
+
 ## [4.6.2] - 2026-08-24
 
 > **Patch.** 觀看人數進場假 0 修復 + 一批 reference-ui 視覺/互動細節收斂，無新增符號、無破壞性

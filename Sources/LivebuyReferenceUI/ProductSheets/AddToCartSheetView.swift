@@ -41,6 +41,10 @@ public struct AddToCartSheetView: View {
     /// 加入購物車 sheet honours the merchant's `extensions.show_stock` setting exactly like the full
     /// 商品明細 sheet does. Default `true` → snapshot-neutral.
     public let showStock: Bool
+    /// Whether the header close icon reads as「返回」(non-empty `detailBreadcrumb`,
+    /// rb-ios-product-detail-recommendations §5) — forwarded verbatim to the wrapped
+    /// `ProductDetailSheetView`. Default `false` → existing call sites byte-identical.
+    public let showsBackAffordance: Bool
 
     private let onSelectVariant: ((_ groupIndex: Int, _ optionIndex: Int) -> Void)?
     private let onSetQty: ((Int) -> Void)?
@@ -64,6 +68,7 @@ public struct AddToCartSheetView: View {
         addToCartInFlight: Bool = false,
         live: Bool = false,
         showStock: Bool = true,
+        showsBackAffordance: Bool = false,
         onSelectVariant: ((_ groupIndex: Int, _ optionIndex: Int) -> Void)? = nil,
         onSetQty: ((Int) -> Void)? = nil,
         onInc: (() -> Void)? = nil,
@@ -83,6 +88,7 @@ public struct AddToCartSheetView: View {
         self.addToCartInFlight = addToCartInFlight
         self.live = live
         self.showStock = showStock
+        self.showsBackAffordance = showsBackAffordance
         self.onSelectVariant = onSelectVariant
         self.onSetQty = onSetQty
         self.onInc = onInc
@@ -108,6 +114,7 @@ public struct AddToCartSheetView: View {
             // 商家的庫存文案設定原樣轉發（rb-ios-show-stock-caption-toggle）——閘在被包裝的
             // `ProductDetailSheetView.qtyRow`，本 wrapper 不自行判斷。
             showStock: showStock,
+            showsBackAffordance: showsBackAffordance,
             onSelectVariant: onSelectVariant,
             onSetQty: onSetQty,
             onInc: onInc,

@@ -29,18 +29,27 @@ public struct SheetHeaderCloseButton: View {
     /// The resolved reference-ui theme (FIRST positional argument, always).
     public let theme: ReferenceUITheme
 
-    /// Host / container-wired dismiss. nil for demo / snapshot instances — tap is a no-op.
+    /// Host / container-wired dismiss (or, when `isBack` is true, "go back one level").
+    /// nil for demo / snapshot instances — tap is a no-op.
     private let onTap: (() -> Void)?
 
-    public init(theme: ReferenceUITheme, onTap: (() -> Void)? = nil) {
+    /// `true` when a non-empty `detailBreadcrumb` means this affordance currently reads
+    /// as「返回」rather than「✕ 關閉」(rb-ios-product-detail-recommendations §5). Draws a
+    /// `chevron.left` glyph instead of `xmark` and a distinct accessibility id
+    /// (`sheetHeaderBack`) so E2E can assert which state is showing. Default `false` →
+    /// every EXISTING call site (which never passes this) is byte-identical.
+    private let isBack: Bool
+
+    public init(theme: ReferenceUITheme, isBack: Bool = false, onTap: (() -> Void)? = nil) {
         self.theme = theme
+        self.isBack = isBack
         self.onTap = onTap
     }
 
     public var body: some View {
         Button(action: { onTap?() }) {
             ZStack {
-                Image(systemName: "xmark")
+                Image(systemName: isBack ? "chevron.left" : "xmark")
                     .font(.system(size: 16, weight: .regular))
                     .foregroundColor(theme.text)
             }
@@ -48,6 +57,6 @@ public struct SheetHeaderCloseButton: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(PlainButtonStyle())
-        .accessibilityIdentifier(LBAccessibilityID.sheetHeaderClose)
+        .accessibilityIdentifier(isBack ? LBAccessibilityID.sheetHeaderBack : LBAccessibilityID.sheetHeaderClose)
     }
 }
