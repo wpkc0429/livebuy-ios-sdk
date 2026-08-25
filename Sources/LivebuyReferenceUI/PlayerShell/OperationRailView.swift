@@ -133,9 +133,13 @@ public struct OperationRailView: View {
                 Circle()
                     .fill(Self.pillBackground)
                 // Share uses the hand-drawn `ShareGlyph` (design `Icons.share` three-node share);
-                // every other kind keeps its SF Symbol (rb-ios-share-icon-design-align).
+                // serviceLink uses the hand-drawn `ContactGlyph` (design `Icons.contact` dual
+                // speech-bubble + question-mark, rb-ios-icon-parity); every other kind keeps its
+                // SF Symbol (rb-ios-share-icon-design-align).
                 if kind == .share {
                     ShareGlyph(size: Self.pillGlyphSize, color: .white)
+                } else if kind == .serviceLink {
+                    ContactGlyph(size: Self.pillGlyphSize, color: .white)
                 } else {
                     Image(systemName: Self.symbolName(for: kind))
                         .font(.system(size: Self.pillGlyphSize, weight: .semibold))
@@ -180,7 +184,7 @@ public struct OperationRailView: View {
         case .like:           return "heart.fill"        // Icons.heartFill
         case .share:          return "square.and.arrow.up" // unused for .share — pillButton draws ShareGlyph (Icons.share)
         case .subtitle:       return "captions.bubble"   // Icons.cc
-        case .serviceLink:    return "bubble.left.fill"  // Icons.chat (聯繫商家)
+        case .serviceLink:    return "bubble.left.fill"  // unused for .serviceLink — pillButton draws ContactGlyph (Icons.contact)
         case .guestNameEdit:  return "pencil"            // edit display name
         case .more:           return "ellipsis"          // more menu
         }

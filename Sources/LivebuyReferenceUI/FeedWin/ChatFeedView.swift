@@ -334,8 +334,7 @@ public struct ChatFeedView: View {
                 }
             }) {
                 HStack(spacing: 4) {
-                    Image(systemName: "arrow.down")
-                        .font(.system(size: 10, weight: .bold))
+                    ArrowDownGlyph(size: 10, color: .white)
                     Text(Self.returnToLatestLabel)
                         .font(.system(size: 11.5 * theme.fontScale, weight: .semibold))
                 }
@@ -998,9 +997,7 @@ private struct PinnedMessageBanner: View {
 
     var body: some View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-            Image(systemName: "pin.fill")
-                .font(.system(size: 10, weight: .bold))
-                .foregroundColor(theme.accent)
+            PinFillGlyph(size: 10, color: theme.accent)
             (Text(namePrefix).fontWeight(.bold) + Text(pinned.text))
                 .font(.system(size: 12, weight: .medium))
                 .foregroundColor(.white)

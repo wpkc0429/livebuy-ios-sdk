@@ -24,14 +24,16 @@ extension EnvironmentValues {
 // MARK: - Drag-resize height override (rb-ios-sheetkit-resize-dismiss-unify, originally
 // rb-ios-product-sheet-resize-fav-inline)
 //
-// `BottomSheetChrome` (the presenter) measures the drag and computes a live height FRACTION;
-// `LBSheetScaffold` (the leaf) is what actually computes `cap` / drives the body frame. This
-// environment key is the one channel between them: `BottomSheetChrome` sets it (non-nil) once
-// the user has dragged the handle at least once during the CURRENT presentation; `nil` (the
-// default) means "no override — use the leaf's own `capFraction` / `fillToCap`". EVERY
-// `.lbBottomSheet(...)` call site (both the `isPresented:` and `item:` overloads) can set this
-// to non-nil — the resize/dismiss gesture is now universal across all 5 real bottom sheets, not
-// an opt-in limited to the product-sheet stack (see `BottomSheetChrome.dragGesture` below).
+// `BottomSheetChrome` (the presenter) measures the UP-drag (resize) gesture and computes a live
+// height FRACTION; `LBSheetScaffold` (the leaf) is what actually computes `cap` / drives the body
+// frame. This environment key is the one channel between them: `BottomSheetChrome` sets it
+// (non-nil) once the user has dragged the handle UP at least once during the CURRENT
+// presentation; `nil` (the default) means "no override — use the leaf's own `capFraction` /
+// `fillToCap`". EVERY `.lbBottomSheet(...)` call site (both the `isPresented:` and `item:`
+// overloads) can set this to non-nil — the resize gesture is universal across all 5 real bottom
+// sheets, not an opt-in limited to the product-sheet stack. The DOWN-drag (dismiss) gesture never
+// touches this key at all (see `BottomSheetChrome.dragGesture` below —
+// rb-ios-sheetkit-resize-dismiss-separate-gestures).
 private struct SheetHeightFractionOverrideKey: EnvironmentKey {
     static let defaultValue: CGFloat? = nil
 }
@@ -43,20 +45,26 @@ extension EnvironmentValues {
     }
 }
 
-// MARK: - Drag-in-progress signal (rb-ios-sheetkit-resize-dismiss-unify)
+// MARK: - Resize-in-progress signal (rb-ios-sheetkit-resize-dismiss-separate-gestures, originally
+// `lbSheetIsDragging` from rb-ios-sheetkit-resize-dismiss-unify)
 //
 // `LBSheetScaffold` reads this to FREEZE its header/footer/body `GeometryReader` measurements
-// while a resize/dismiss drag gesture is actively tracking touch moves (see the anti-jitter note
-// on `LBSheetScaffold`'s `onPreferenceChange` handlers below). `BottomSheetChrome` sets it
-// `true` for the span of `dragGesture` (`onChanged` ... `onEnded`) and `false` otherwise.
-private struct SheetIsDraggingKey: EnvironmentKey {
+// while the UP-drag (resize) branch of `dragGesture` is actively tracking touch moves (see the
+// anti-jitter note on `LBSheetScaffold`'s `onPreferenceChange` handlers below). `BottomSheetChrome`
+// sets it `true` only for the span of the RESIZE branch (`onChanged` when `translation.height < 0`
+// ... `onEnded`) — the DOWN-drag (dismiss) branch never sets this `true`: a dismiss drag never
+// touches `lbSheetHeightFractionOverride`, so it never triggers the `LBSheetScaffold` re-layout
+// feedback loop this freeze exists to prevent (see `dragGesture` below — the two branches are
+// independent judgments that share no live calculation, only the `translation.height` sign that
+// routes between them).
+private struct SheetIsResizingKey: EnvironmentKey {
     static let defaultValue: Bool = false
 }
 
 extension EnvironmentValues {
-    var lbSheetIsDragging: Bool {
-        get { self[SheetIsDraggingKey.self] }
-        set { self[SheetIsDraggingKey.self] = newValue }
+    var lbSheetIsResizing: Bool {
+        get { self[SheetIsResizingKey.self] }
+        set { self[SheetIsResizingKey.self] = newValue }
     }
 }
 
@@ -119,10 +127,10 @@ struct LBSheetScaffold<Header: View, BodyContent: View, Footer: View>: View {
     /// (any of the 5 real bottom sheets). `nil` (the default — before the first drag this
     /// presentation) → this scaffold's own `fillToCap` / `capFraction` decide `cap`, unaffected.
     @Environment(\.lbSheetHeightFractionOverride) private var heightFractionOverride
-    /// Whether a resize/dismiss drag gesture is CURRENTLY tracking touch moves
-    /// (rb-ios-sheetkit-resize-dismiss-unify) — see the anti-jitter note on the
-    /// `onPreferenceChange` handlers below.
-    @Environment(\.lbSheetIsDragging) private var isDragging
+    /// Whether the UP-drag (resize) branch of the handle gesture is CURRENTLY tracking touch
+    /// moves (rb-ios-sheetkit-resize-dismiss-separate-gestures) — see the anti-jitter note on the
+    /// `onPreferenceChange` handlers below. Never set `true` by the DOWN-drag (dismiss) branch.
+    @Environment(\.lbSheetIsResizing) private var isResizing
 
     /// `true` → 固定高度填滿到 cap（content 頂部對齊、footer 釘底、不足處下方留白、超出則捲動），
     /// body-fill 行為對齊設計稿；cap 固定 0.4 螢幕（rb-ios-compact-sheet-cap-and-footer；原
@@ -189,37 +197,41 @@ struct LBSheetScaffold<Header: View, BodyContent: View, Footer: View>: View {
             }
         } else {
             VStack(spacing: 0) {
-                header().background(sheetHeightReader(SheetHeaderHeightKey.self, active: !isDragging))
+                header().background(sheetHeightReader(SheetHeaderHeightKey.self, active: !isResizing))
                 ScrollView {
-                    bodyContent().background(sheetHeightReader(SheetContentHeightKey.self, active: !isDragging))
+                    bodyContent().background(sheetHeightReader(SheetContentHeightKey.self, active: !isResizing))
                 }
                 // `effectiveFillToCap`（`fillToCap` 或使用者已拖曳出高度覆寫）：固定填滿到 bodyMax
                 // （content 頂部對齊、下方留白 / 超出捲動）→ sheet 固定 = cap。否則 content-sized（既有行為）。
                 .frame(height: effectiveFillToCap ? bodyMax : (bodyH <= 0 ? bodyMax : min(bodyH, bodyMax)))
-                footer().background(sheetHeightReader(SheetFooterHeightKey.self, active: !isDragging))
+                footer().background(sheetHeightReader(SheetFooterHeightKey.self, active: !isResizing))
             }
             // Anti-jitter freeze (rb-ios-sheetkit-resize-dismiss-unify, hardened by
-            // rb-ios-sheet-resize-drag-render-cost-jitter): while a drag gesture is actively
-            // tracking touch moves (`isDragging == true`), these three `GeometryReader`s are
-            // UNMOUNTED entirely (see the `active:` overload of `sheetHeightReader` above) — not
-            // merely present-but-ignored. The original fix (guarding the `onPreferenceChange`
-            // write below with `if !isDragging`) only stopped the *result* from reaching `@State`;
-            // the `GeometryReader`s themselves kept re-running their layout-measurement pass on
-            // every touch-move sample regardless, a real per-frame cost (3 readers here + one more
-            // in `BottomSheetChrome.card` for the resize floor) that could miss a frame budget and
+            // rb-ios-sheet-resize-drag-render-cost-jitter, rescoped to the UP-drag/resize branch
+            // ONLY by rb-ios-sheetkit-resize-dismiss-separate-gestures — the DOWN-drag/dismiss
+            // branch never sets `isResizing == true`, since dismiss never touches
+            // `heightFractionOverride` and therefore never triggers the feedback loop this freeze
+            // exists to prevent): while the resize branch is actively tracking touch moves
+            // (`isResizing == true`), these three `GeometryReader`s are UNMOUNTED entirely (see the
+            // `active:` overload of `sheetHeightReader` above) — not merely present-but-ignored.
+            // The original fix (guarding the `onPreferenceChange` write below with `if
+            // !isResizing`) only stopped the *result* from reaching `@State`; the
+            // `GeometryReader`s themselves kept re-running their layout-measurement pass on every
+            // touch-move sample regardless, a real per-frame cost (3 readers here + one more in
+            // `BottomSheetChrome.card` for the resize floor) that could miss a frame budget and
             // show up as a persistent stutter during the drag itself — most visible on slow drags,
             // where the same-size hitch is a larger fraction of the expected per-frame motion.
             // Unmounting removes that cost outright. `cap` / `bodyMax` recompute from a FROZEN
             // header/footer pair instead, driven purely by `heightFractionOverride` (no round trip
-            // through this scaffold's own layout). Measurement resumes immediately once the
-            // gesture ends (`isDragging` flips back to `false`, remounting the readers), so content
+            // through this scaffold's own layout). Measurement resumes immediately once the resize
+            // gesture ends (`isResizing` flips back to `false`, remounting the readers), so content
             // that changes BETWEEN gestures (e.g. the add-to-cart CTA spinner altering footer
-            // height) is still picked up correctly. The `if !isDragging` guards below are kept as a
+            // height) is still picked up correctly. The `if !isResizing` guards below are kept as a
             // defensive no-op belt-and-braces — they should never fire while unmounted, since an
             // unmounted `GeometryReader` reports no preference at all.
-            .onPreferenceChange(SheetHeaderHeightKey.self) { if !isDragging { headerH = $0 } }
-            .onPreferenceChange(SheetFooterHeightKey.self) { if !isDragging { footerH = $0 } }
-            .onPreferenceChange(SheetContentHeightKey.self) { if !isDragging { bodyH = $0 } }
+            .onPreferenceChange(SheetHeaderHeightKey.self) { if !isResizing { headerH = $0 } }
+            .onPreferenceChange(SheetFooterHeightKey.self) { if !isResizing { footerH = $0 } }
+            .onPreferenceChange(SheetContentHeightKey.self) { if !isResizing { bodyH = $0 } }
         }
     }
 }
@@ -236,28 +248,49 @@ struct LBSheetScaffold<Header: View, BodyContent: View, Footer: View>: View {
 //     it sits ABOVE the host content it also blocks the video gesture layer below.
 //   • bottom-anchored card with the shared `SheetGrabHandle` + `theme.background` +
 //     `TopRoundedRectangle(20)` + the house shadow.
-//   • UNIFIED drag-to-resize + drag-to-dismiss on the HANDLE strip
-//     (rb-ios-sheetkit-resize-dismiss-unify, replacing the prior two independent states — an
-//     up-drag-only resize opt-in + a down-drag-only dismiss): the sheet content's height FLOOR
-//     is THIS presentation's own default/resting height (`floorFraction`, latched once from the
-//     first real measurement of `sheetContent()` alone — see `CardHeightKey` below), the CEILING is a shared
-//     `resizeCeilingFraction` (90%) across all 5 real bottom sheets. Dragging UP grows the
-//     height toward the ceiling; dragging DOWN shrinks it back toward the floor — only once the
-//     floor is reached does FURTHER downward drag convert into the `dragOffset` dismiss-peek
-//     (100pt threshold, unchanged from before). See `dragState(...)` for the pure state-machine
-//     math and its equivalence proof for sheets the user never drags taller than their floor.
+//   • drag-to-resize (UP) + drag-to-dismiss (DOWN) on the HANDLE strip as TWO STRUCTURALLY
+//     INDEPENDENT judgments (rb-ios-sheetkit-resize-dismiss-separate-gestures), routed purely by
+//     the sign of `value.translation.height` at each touch sample — replacing the prior
+//     `rb-ios-sheetkit-resize-dismiss-unify` design, which computed BOTH through one shared pure
+//     function (`dragState`) and one shared freeze flag every touch sample regardless of
+//     direction. That shared state machine needed 3 follow-up jitter-fix rounds, and every one of
+//     those rounds' own root-cause diagnosis says the jitter "only happens during up-drag
+//     resize" — dismiss was never the source, yet was forced to share the same machinery.
+//       - UP-drag (resize): the sheet content's height FLOOR is THIS presentation's own
+//         default/resting height (`floorFraction`, latched once from the first real measurement
+//         of `sheetContent()` alone — see `CardHeightKey` below), the CEILING is a shared
+//         `resizeCeilingFraction` (90%) across all 5 real bottom sheets. Dragging UP grows the
+//         height toward the ceiling, clamped at the floor on the low end. Driven by the pure
+//         function `resizedHeightFraction(...)` — see below.
+//       - DOWN-drag (dismiss): BYTE-FOR-BYTE independent of the resize branch — reads none of
+//         `heightFraction` / `floorFraction` / `resizeBaseFraction`. `dragOffset` is exactly
+//         `max(0, translation.height)`; past the 100pt threshold on release, dismiss (via the
+//         unchanged `dragReleaseOutcome(...)`); otherwise bounce back to 0. This is exactly the
+//         `rb-ios-sheet-drag-dismiss-jitter` logic, predating even `rb-ios-sheetkit-resize-
+//         dismiss-unify` — restored verbatim, not re-derived.
 //   • scrim `.opacity` + card `.move(edge:.bottom)` enter/exit transitions.
-//   • Anti-jitter freeze while a resize/dismiss drag is tracking touch moves
-//     (rb-ios-sheetkit-resize-dismiss-unify, hardened by
-//     rb-ios-sheet-resize-drag-render-cost-jitter): `LBSheetScaffold` UNMOUNTS its
-//     header/footer/body `GeometryReader`s entirely for the gesture's duration
-//     (`lbSheetIsDragging` environment key) — not merely discards their result — breaking BOTH
-//     the one-frame-behind feedback loop that produced the original visible jitter (prior
-//     resize-only state changing `heightFraction` on every touch move) AND the ongoing per-frame
-//     layout-measurement COST of four live `GeometryReader`s during any drag, which could miss a
-//     frame budget and show up as a persistent stutter through the drag itself (most visible on
-//     slow drags). `BottomSheetChrome.card`'s own `CardHeightKey` reader is similarly unmounted
-//     once `floorFraction` latches, since nothing consumes it past that point anyway.
+//   • Anti-jitter freeze while the UP-drag (resize) branch is tracking touch moves — SCOPED to
+//     resize only, never triggered by a dismiss drag (`rb-ios-sheetkit-resize-dismiss-unify`,
+//     hardened by `rb-ios-sheet-resize-drag-render-cost-jitter` and
+//     `rb-ios-sheet-drag-render-drawinggroup`, rescoped by
+//     `rb-ios-sheetkit-resize-dismiss-separate-gestures`): `LBSheetScaffold` UNMOUNTS its
+//     header/footer/body `GeometryReader`s entirely for the resize gesture's duration
+//     (`lbSheetIsResizing` environment key) — not merely discards their result — breaking BOTH
+//     the one-frame-behind feedback loop that produced the original visible jitter (resize
+//     changing `heightFraction` on every touch move) AND the ongoing per-frame layout-measurement
+//     COST of four live `GeometryReader`s during a resize drag, which could miss a frame budget
+//     and show up as a persistent stutter through the drag itself (most visible on slow drags).
+//     `BottomSheetChrome.card`'s own `CardHeightKey` reader is similarly unmounted once
+//     `floorFraction` latches, since nothing consumes it past that point anyway.
+//     `BottomSheetChrome.card` also flattens itself via `.drawingGroup()` during a resize drag
+//     (see `cardSurface`), gated to `isResizing == true` only, so `.shadow()` shadows one
+//     pre-rendered layer per touch sample instead of the whole card subtree — a compositing-cost
+//     dimension the GeometryReader-unmount fix never touched. This is a code-reading-driven
+//     hypothesis with no Instruments/on-device frame-rate profiling behind it; whether it
+//     actually fixes user-visible jitter needs manual Simulator/device confirmation (see
+//     `rb-ios-sheetkit-resize-dismiss-separate-gestures`'s design.md Non-Goals — this change does
+//     not re-litigate whether the resize branch's own jitter is fully fixed, only that dismiss no
+//     longer shares its machinery).
 //
 // Presentation state stays with the CONTAINER (`isPresented` / `item` bindings); the presenter
 // only renders chrome + forwards `onDismiss`. `DragGesture` / `.offset` / `withAnimation` /
@@ -283,7 +316,8 @@ public extension View {
     /// Drag-to-resize + drag-to-dismiss (rb-ios-sheetkit-resize-dismiss-unify) apply
     /// UNCONDITIONALLY to every presentation through this overload — there is no longer an
     /// opt-in flag (the prior `resizable: Bool` parameter is removed); see
-    /// `BottomSheetChrome.dragGesture` for the unified gesture.
+    /// `BottomSheetChrome.dragGesture` for the two independent branches
+    /// (rb-ios-sheetkit-resize-dismiss-separate-gestures).
     func lbBottomSheet<Item: Identifiable, SheetContent: View>(
         theme: ReferenceUITheme,
         item: Binding<Item?>,
@@ -482,11 +516,12 @@ struct BottomSheetChrome<SheetContent: View>: View {
     /// threshold semantics bit-for-bit — only the two dismiss-side actions changed (see
     /// `SheetDragReleaseOutcome.dismiss`), not the threshold comparison itself. Extracted for
     /// unit testing (rb-ios-sheet-drag-dismiss-jitter) — call as
-    /// `BottomSheetChrome<EmptyView>.dragReleaseOutcome(...)`. Signature / behavior UNCHANGED by
-    /// rb-ios-sheetkit-resize-dismiss-unify — only the caller now feeds it
-    /// `dragState(...).dragOffset` (the points dragged PAST the resize floor) instead of the raw
-    /// gesture translation; the two are numerically identical whenever the user never drags the
-    /// sheet taller than its floor this presentation (see `dragState` below).
+    /// `BottomSheetChrome<EmptyView>.dragReleaseOutcome(...)`. Signature / behavior UNCHANGED
+    /// across every change that has touched this file — `rb-ios-sheetkit-resize-dismiss-unify`
+    /// briefly routed it through the merged `dragState(...).dragOffset`;
+    /// `rb-ios-sheetkit-resize-dismiss-separate-gestures` reverted the CALLER back to feeding it
+    /// the raw dismiss-branch gesture translation directly (see `dragGesture` below) — this
+    /// function itself was never touched by either change.
     static func dragReleaseOutcome(
         translationHeight: CGFloat,
         offscreenDistance: CGFloat
@@ -496,49 +531,40 @@ struct BottomSheetChrome<SheetContent: View>: View {
             : .bounceBack
     }
 
-    /// Pure: the unified live `(heightFraction, dragOffset)` pair for a continuous handle drag
-    /// (rb-ios-sheetkit-resize-dismiss-unify) — replaces the prior TWO independent states (an
-    /// up-drag-only `resizedHeightFraction` + a down-drag-only raw `dragOffset`) with ONE state
-    /// machine shared by every bottom sheet. `baseFraction` is the fraction in effect when the
+    /// Pure: the live height fraction for the UP-drag (resize) branch of a continuous handle drag
+    /// (rb-ios-sheetkit-resize-dismiss-separate-gestures — the resize-only half of what used to
+    /// be the merged `dragState(...)`; the dismiss half is no longer computed by any shared
+    /// function, see `dragGesture` below). `baseFraction` is the fraction in effect when the
     /// CURRENT gesture began (so consecutive drags compose); `floorFraction` is THIS
     /// presentation's own default/resting height (captured once — see the `CardHeightKey`
-    /// `onPreferenceChange` handler below); `translationHeight` is the gesture's cumulative
-    /// vertical translation (negative = up = taller); `screenHeight` is the reference screen
-    /// height.
+    /// `onPreferenceChange` handler below, NOT a fixed constant — see `fallbackFloorFraction`'s
+    /// doc comment for why a fixed floor was a known defect of the pre-unification design);
+    /// `translationHeight` is the gesture's cumulative vertical translation (negative = up =
+    /// taller); `screenHeight` is the reference screen height.
     ///
     /// The card's fraction tracks `baseFraction - translationHeight/screenHeight`, clamped to
-    /// `[floorFraction, resizeCeilingFraction]`; only once dragging DOWN would push the fraction
-    /// BELOW `floorFraction` does the excess (in points) show up as `dragOffset` instead — the
-    /// two are mutually exclusive at every instant (`dragOffset > 0` implies
-    /// `heightFraction == floorFraction`). Guards `screenHeight <= 0` by returning
-    /// `(baseFraction, 0)` unchanged (defensive; never hit in practice —
+    /// `[floorFraction, resizeCeilingFraction]`. Guards `screenHeight <= 0` by returning
+    /// `baseFraction` unchanged (defensive; never hit in practice —
     /// `UIScreen.main.bounds.height` is always positive).
-    ///
-    /// Equivalence with the pre-unification behavior when the user never drags the sheet taller
-    /// than its floor this presentation (`baseFraction == floorFraction`): `dragOffset` reduces
-    /// to exactly `max(0, translationHeight)` — the same raw down-drag formula `BottomSheetChrome`
-    /// used before this change — so `VideoInfoPanelView` / `ProductListView`, and any sheet the
-    /// user simply pulls down without first dragging up, keep the EXACT prior dismiss-threshold
-    /// behavior.
-    static func dragState(
+    static func resizedHeightFraction(
         baseFraction: CGFloat,
         floorFraction: CGFloat,
         translationHeight: CGFloat,
         screenHeight: CGFloat
-    ) -> (heightFraction: CGFloat, dragOffset: CGFloat) {
-        guard screenHeight > 0 else { return (baseFraction, 0) }
+    ) -> CGFloat {
+        guard screenHeight > 0 else { return baseFraction }
         let candidate = baseFraction + (-translationHeight / screenHeight)
-        let heightFraction = min(resizeCeilingFraction, max(floorFraction, candidate))
-        let dragOffset = max(0, floorFraction - candidate) * screenHeight
-        return (heightFraction, dragOffset)
+        return min(resizeCeilingFraction, max(floorFraction, candidate))
     }
 
     @State private var dragOffset: CGFloat = 0
-    /// Live drag-resize result (rb-ios-sheetkit-resize-dismiss-unify). `nil` = the user hasn't
-    /// dragged this presentation yet — the leaf's own default cap applies.
+    /// Live drag-resize result (rb-ios-sheetkit-resize-dismiss-unify), written ONLY by the
+    /// UP-drag (resize) branch of `dragGesture`. `nil` = the user hasn't dragged UP this
+    /// presentation yet — the leaf's own default cap applies.
     @State private var heightFraction: CGFloat?
-    /// The fraction in effect at the START of the CURRENT drag gesture; `nil` between gestures.
-    /// Captured once per gesture (first sample), cleared in `onEnded`.
+    /// The fraction in effect at the START of the CURRENT resize gesture; `nil` between resize
+    /// gestures. Captured once per resize gesture (first up-drag sample), cleared in `onEnded`.
+    /// Never touched by the dismiss branch.
     @State private var resizeBaseFraction: CGFloat?
     /// `sheetContent()`'s last-measured on-screen height (pt) — NOT the whole card, deliberately
     /// EXCLUDING the grab handle above it (fed by `CardHeightKey`, measured on `sheetContent()`
@@ -555,12 +581,14 @@ struct BottomSheetChrome<SheetContent: View>: View {
     /// `heightFraction`. `nil` until that first measurement lands; resets to `nil` on the next
     /// presentation (fresh `@State`, same lifecycle as `heightFraction`).
     @State private var floorFraction: CGFloat?
-    /// Whether the resize/dismiss drag gesture is CURRENTLY tracking touch moves
-    /// (rb-ios-sheetkit-resize-dismiss-unify) — forwarded to `LBSheetScaffold` via
-    /// `lbSheetIsDragging` so it can freeze its own measurements for the gesture's duration (see
-    /// the anti-jitter note there). `true` for the span of `dragGesture.onChanged` ...
-    /// `.onEnded`; `false` otherwise.
-    @State private var isDragging = false
+    /// Whether the UP-drag (resize) branch of the handle gesture is CURRENTLY tracking touch
+    /// moves (rb-ios-sheetkit-resize-dismiss-separate-gestures) — forwarded to `LBSheetScaffold`
+    /// via `lbSheetIsResizing` so it can freeze its own measurements for the resize gesture's
+    /// duration (see the anti-jitter note there). `true` only for the span of the resize branch
+    /// (`dragGesture.onChanged` when `translation.height < 0` ... `.onEnded`); the DOWN-drag
+    /// (dismiss) branch never sets this `true` — it has no reason to, since dismiss never touches
+    /// `lbSheetHeightFractionOverride`.
+    @State private var isResizing = false
 
     var body: some View {
         ZStack {
@@ -587,6 +615,76 @@ struct BottomSheetChrome<SheetContent: View>: View {
     }
 
     private var card: some View {
+        cardSurface
+            .shadow(color: Color.black.opacity(0.18), radius: 14, x: 0, y: -4)
+            .offset(y: max(0, dragOffset))
+    }
+
+    // MARK: - Drag-time compositing flatten (rb-ios-sheet-drag-render-drawinggroup, round 4)
+    //
+    // round-3 (rb-ios-sheet-resize-drag-render-cost-jitter) unmounted the header/footer/body/
+    // CardHeightKey `GeometryReader`s during a drag, on the hypothesis that their layout-
+    // measurement pass — even with its result discarded — was the persistent, touch-sample-rate
+    // cost behind the "stutter, more visible on slow drags" symptom. The user re-tested on device
+    // afterward and the jitter did NOT go away (if anything, worse) — that hypothesis is
+    // disproved or at least not the (sole) root cause. round-3's own design.md had already named
+    // `.drawingGroup()` as the next candidate and recorded why it was deferred at the time (risk
+    // to `sheetContent()`'s interactive subviews' hit-testing, and to the snapshot
+    // `ImageRenderer` path) — this round revisits that call now that the user has confirmed they
+    // want it.
+    //
+    // `.drawingGroup()` flattens everything ABOVE it in the modifier chain into one Metal-backed
+    // offscreen layer. Placed here — after `.clipShape(...)`, before `.shadow(...)` in `card` —
+    // it means `.shadow()` only has to shadow ONE flattened layer per re-render instead of
+    // shadowing every descendant of the `VStack` individually (SwiftUI's default behavior for
+    // `.shadow()` on a compound subtree with no prior flatten: each leaf view that draws
+    // something gets its own shadow pass, composited separately). `card`'s `body` is forced to
+    // re-evaluate on EVERY touch-move sample during a drag (`dragOffset` / `heightFraction`
+    // changing), so that per-sample shadow/compositing cost is exactly the kind of
+    // touch-sample-rate-proportional persistent cost the "slow drag more visible" symptom
+    // fingerprints — a DIFFERENT dimension from round-3's layout-measurement cost, untouched by
+    // that fix. `.offset(y:)` stays OUTSIDE (after) this, in `card` above — it's a cheap pure
+    // layout translation of the already-flattened layer, not something that needs flattening
+    // itself.
+    //
+    // Gated to `isResizing == true` only (not resident, and — since
+    // rb-ios-sheetkit-resize-dismiss-separate-gestures — never true for a dismiss drag either,
+    // only the UP-drag/resize branch) — three reasons:
+    //   1. Structural snapshot safety: the `.lbSheetHeightUncapped` `ImageRenderer` snapshot path
+    //      never simulates a gesture (round-3 design.md confirmed this), so `isResizing` is
+    //      always `false` there — `.drawingGroup()` never mounts on that path BY CONSTRUCTION,
+    //      not merely "in practice", so baselines are guaranteed byte-identical without needing
+    //      re-verification of `.drawingGroup()`'s own rendering fidelity under `ImageRenderer`.
+    //   2. Resting-state fidelity: `.drawingGroup()` rasterizes via Metal, which carries a small
+    //      theoretical risk of subtly different text antialiasing vs. native Core Animation
+    //      layer compositing. Scoping it to the drag window keeps the sheet's resting/static
+    //      appearance (the vast majority of a sheet's on-screen time) on the exact same rendering
+    //      path as before this change.
+    //   3. Hit-testing: re-examined round-3's deferral reason — SwiftUI hit-testing is driven by
+    //      view geometry (frames), not by the rasterized pixel output `.drawingGroup()` produces;
+    //      flattening a subtree's DRAWING does not change its hit-testing coordinate space, so
+    //      buttons / `ScrollView` / gesture recognizers inside `sheetContent()` are expected to
+    //      keep responding normally. That said, this expectation rests on documented SwiftUI
+    //      behavior, not on an actual touch test on a real device (none attached to this dev
+    //      machine) — gating to the drag window keeps this untested assumption's exposure limited
+    //      to the span a user's finger is on the grab handle (not generally poking buttons inside
+    //      the sheet at the same time), rather than the card's entire lifetime.
+    //
+    // See design.md "Decisions" §1–2 for the full write-up, including what to try next if this
+    // round's hypothesis also turns out wrong (widen to resident, or narrow the flattened scope).
+    @ViewBuilder
+    private var cardSurface: some View {
+        let surface = cardContent
+            .background(theme.background)
+            .clipShape(TopRoundedRectangle(radius: 20))
+        if isResizing {
+            surface.drawingGroup()
+        } else {
+            surface
+        }
+    }
+
+    private var cardContent: some View {
         VStack(spacing: 0) {
             SheetGrabHandle()
                 .contentShape(Rectangle())   // whole handle strip is the drag target
@@ -594,9 +692,10 @@ struct BottomSheetChrome<SheetContent: View>: View {
             // The leaf owns its own half-screen cap + body scroll via `LBSheetScaffold`
             // (pinned header/footer, scrollable body — rb-ios-sheet-pinned-header-footer). The
             // presenter only draws the grab handle + card chrome. `heightFraction` (non-nil once
-            // the user has dragged this presentation) and `isDragging` are forwarded via
+            // the user has dragged UP this presentation) and `isResizing` are forwarded via
             // environment so the leaf's `LBSheetScaffold` can override its own cap and freeze its
-            // measurements while dragging (rb-ios-sheetkit-resize-dismiss-unify).
+            // measurements while the RESIZE branch is dragging (rb-ios-sheetkit-resize-dismiss-
+            // unify, rescoped to resize-only by rb-ios-sheetkit-resize-dismiss-separate-gestures).
             //
             // `CardHeightKey` is measured HERE — on `sheetContent()` alone, NOT the outer VStack
             // — because `LBSheetScaffold.cap` (what `heightFractionOverride` ultimately drives)
@@ -626,7 +725,7 @@ struct BottomSheetChrome<SheetContent: View>: View {
             // removes that cost outright, not just its (already-discarded) result.
             sheetContent()
                 .environment(\.lbSheetHeightFractionOverride, heightFraction)
-                .environment(\.lbSheetIsDragging, isDragging)
+                .environment(\.lbSheetIsResizing, isResizing)
                 .background(sheetHeightReader(CardHeightKey.self, active: floorFraction == nil))
                 .onPreferenceChange(CardHeightKey.self) { newHeight in
                     measuredCardHeight = newHeight
@@ -644,34 +743,56 @@ struct BottomSheetChrome<SheetContent: View>: View {
                     }
                 }
         }
-        .background(theme.background)
-        .clipShape(TopRoundedRectangle(radius: 20))
-        .shadow(color: Color.black.opacity(0.18), radius: 14, x: 0, y: -4)
-        .offset(y: max(0, dragOffset))
     }
 
+    // MARK: - Drag gesture (rb-ios-sheetkit-resize-dismiss-separate-gestures)
+    //
+    // Two structurally INDEPENDENT branches, routed purely by the sign of the CURRENT touch
+    // sample's `translation.height` — mirrors the pre-`rb-ios-sheetkit-resize-dismiss-unify`
+    // structure. The resize branch never reads `dragOffset` (beyond resetting it to 0 when it
+    // takes over, discarding a same-gesture down-peek that reversed upward past 0); the dismiss
+    // branch never reads `heightFraction` / `floorFraction` / `resizeBaseFraction` at all — the
+    // two share no live calculation, only this routing decision.
     private var dragGesture: some Gesture {
         DragGesture()
             .onChanged { value in
-                isDragging = true
+                guard value.translation.height < 0 else {
+                    // DISMISS branch — byte-for-byte the pre-rb-ios-sheetkit-resize-dismiss-unify
+                    // down-drag logic (rb-ios-sheet-drag-dismiss-jitter): the raw translation IS
+                    // the peek offset, full stop. No floor, no ceiling, no resize state consulted.
+                    isResizing = false
+                    dragOffset = max(0, value.translation.height)
+                    return
+                }
+                // RESIZE branch — dragging UP grows the card toward the shared 90% ceiling from
+                // THIS presentation's own floor (its default/resting height, latched once — see
+                // `CardHeightKey` above). Discards any partial down-peek `dragOffset` this same
+                // continuous gesture may have accrued before reversing upward past 0, so the two
+                // mutually-exclusive visual effects (offset vs. live height) never combine.
+                isResizing = true
+                dragOffset = 0
                 let screenHeight = UIScreen.main.bounds.height
                 let floor = floorFraction
                     ?? (measuredCardHeight > 0 ? measuredCardHeight / screenHeight : Self.fallbackFloorFraction)
                 let base = resizeBaseFraction ?? heightFraction ?? floor
                 if resizeBaseFraction == nil { resizeBaseFraction = base }
-                let state = Self.dragState(
+                heightFraction = Self.resizedHeightFraction(
                     baseFraction: base,
                     floorFraction: floor,
                     translationHeight: value.translation.height,
                     screenHeight: screenHeight)
-                heightFraction = state.heightFraction
-                dragOffset = state.dragOffset
             }
-            .onEnded { _ in
-                isDragging = false
+            .onEnded { value in
+                isResizing = false
                 resizeBaseFraction = nil   // always clear — the next gesture starts fresh
+                // Released while the gesture's NET translation was still upward (resize): the
+                // resized height is KEPT as-is (no snap-back, no dismiss check) — matches the
+                // pre-rb-ios-sheetkit-resize-dismiss-unify `guard value.translation.height >= 0
+                // else { return }`. `dragOffset` is guaranteed 0 here (the resize branch above
+                // always resets it), so there's nothing to animate even if this guard weren't here.
+                guard value.translation.height >= 0 else { return }
                 switch Self.dragReleaseOutcome(
-                    translationHeight: dragOffset,
+                    translationHeight: value.translation.height,
                     offscreenDistance: UIScreen.main.bounds.height
                 ) {
                 case .dismiss(let targetOffset):
@@ -686,12 +807,8 @@ struct BottomSheetChrome<SheetContent: View>: View {
                         onDismiss()
                     }
                 case .bounceBack:
-                    // `dragOffset == 0` here means the gesture never pushed the height past the
-                    // floor (pure resize, up OR down) — the resulting `heightFraction` is KEPT
-                    // as-is; this animation is then a harmless no-op (nothing to spring back).
-                    // `dragOffset > 0` but under threshold means the sheet was already at the
-                    // floor and the user peeked past it without reaching the dismiss threshold —
-                    // spring the peek back to 0 (sheet rests at its floor height).
+                    // Released under the 100pt threshold while net-downward (or exactly at 0):
+                    // spring the peek back to 0 (sheet rests at its current height).
                     withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
                         dragOffset = 0
                     }

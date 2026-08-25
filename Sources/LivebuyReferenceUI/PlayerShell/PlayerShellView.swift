@@ -1013,9 +1013,7 @@ private struct RestrictionMaskView: View {
         ZStack {
             Color.black.opacity(0.78)
             VStack(spacing: 10) {
-                Image(systemName: "lock.fill")
-                    .font(.system(size: 30, weight: .semibold))
-                    .foregroundColor(.white)
+                LockGlyph(size: 30, color: .white)
                 Text("此內容限定會員等級觀看")
                     .font(.system(size: 15, weight: .bold))
                     .foregroundColor(.white)

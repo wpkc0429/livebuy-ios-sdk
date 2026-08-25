@@ -486,10 +486,12 @@ public struct VideoInfoPanelView: View {
     /// forwards its host-wired intent and is inert (but still drawn) when nil.
     private var footer: some View {
         VStack(spacing: 10) {
-            footerButton(title: Self.storefrontLabel, systemImage: "house.fill",
-                         kind: .primary, action: onOpenStorefront)
-            footerButton(title: Self.contactLabel, systemImage: "message.fill",
-                         kind: .ghost, action: onContactMerchant)
+            footerButton(title: Self.storefrontLabel, kind: .primary, action: onOpenStorefront) { fg in
+                HouseFillGlyph(size: 16, color: fg)
+            }
+            footerButton(title: Self.contactLabel, kind: .ghost, action: onContactMerchant) { fg in
+                ContactGlyph(size: 16, color: fg)
+            }
         }
         .padding(.horizontal, 18)
         .padding(.bottom, 18)
@@ -499,17 +501,19 @@ public struct VideoInfoPanelView: View {
 
     /// One full-width footer button mirroring the design `LBPButton` (radius 12,
     /// 14pt vertical padding, 15pt / weight-700 label, icon + label, gap 8). Primary
-    /// = accent fill + white; ghost = sunken fill + theme text.
-    private func footerButton(
-        title: String, systemImage: String, kind: FooterButtonKind, action: (() -> Void)?
+    /// = accent fill + white; ghost = sunken fill + theme text. `icon` receives the
+    /// resolved foreground color (`fg`) so hand-drawn Glyphs tint the same as the
+    /// label (rb-ios-icon-parity — `houseFill` / `contact` replace SF Symbol
+    /// `house.fill` / `message.fill`).
+    private func footerButton<Icon: View>(
+        title: String, kind: FooterButtonKind, action: (() -> Void)?,
+        @ViewBuilder icon: (Color) -> Icon
     ) -> some View {
         let bg: Color = (kind == .primary) ? theme.accent : Self.bgSunken
         let fg: Color = (kind == .primary) ? .white : theme.text
         return Button(action: { action?() }) {
             HStack(spacing: 8) {
-                Image(systemName: systemImage)
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(fg)
+                icon(fg)
                 Text(title)
                     .font(.system(size: 15 * theme.fontScale, weight: .bold))
                     .foregroundColor(fg)

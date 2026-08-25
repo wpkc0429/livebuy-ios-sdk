@@ -98,6 +98,18 @@ public final class ProductSheetsModel: ObservableObject {
     /// Variant-picker snapshot (`DefaultVariantPicker.state`) — chip `groups`,
     /// current `selection`, resolved `selectedSpec` / `selectedSpecificationId`.
     @Published public private(set) var variant: LBVariantState
+    /// Cascading purchasability snapshot for the CURRENTLY bound template's variant picker
+    /// (`DefaultVariantPicker.optionAvailability`, rb-ios-variant-cascading-availability-template)
+    /// — one entry per `variant.groups` entry, matched by `groupIndex`. Deliberately NOT
+    /// `@Published`: the source itself is a read-through computed property (no caching, matching
+    /// `DefaultVariantPicker.state`'s own pattern) — SwiftUI already re-evaluates this alongside
+    /// `variant` whenever a `@Published` write in `refresh()` fires `objectWillChange`, so a
+    /// second stored/`@Published` copy would just be a second maintenance path for the same data
+    /// (rb-ios-variant-cascading-availability-ui). `[]` for a demo / snapshot instance (no bound
+    /// template — `template` is nil).
+    public var optionAvailability: [LBVariantGroupAvailability] {
+        template?.variantPicker.optionAvailability ?? []
+    }
     /// Qty-stepper snapshot (`DefaultQtyStepper.state`) — `{ qty, min, max }`.
     /// Sold-out / out-of-stock → `min == max == qty == 0`.
     @Published public private(set) var qty: LBQtyState
@@ -396,12 +408,75 @@ public final class ProductSheetsModel: ObservableObject {
         return template?.goodsTracking.awaitEnabled(for: goodsGpn) ?? false
     }
 
-    /// 商品說明（`LBProduct.brief`）— 由 `products` 快照以 `productId` 解析（D-4 同模式：
+    /// 商品說明（`LBProduct.brief`）— PRIMARY 由 `products` 快照以 `productId` 解析（D-4 同模式：
     /// `LBProductDetailState` 不帶 `brief`，只有 `productId`；`brief` 在原始 `LBProduct` 上）。
-    /// 無對應商品（或 demo 無 products）回 `""`，呼叫端據此 gate 不畫說明區塊
-    /// （rb-ios-product-sheet-detail-polish 問題 4）。
+    /// PRIMARY 查找落空（`""`）時，退回 `recommendationResolvedProducts` 快取
+    /// （rb-ios-recommendation-product-intro-carry-through，見該屬性文件）——涵蓋「更多商品」推薦卡
+    /// 解析自 `channel.otherGoods`、本就不在 `products` 快照裡的情境。兩者皆無對應商品回 `""`，
+    /// 呼叫端據此 gate 不畫說明區塊（rb-ios-product-sheet-detail-polish 問題 4）。
     public func brief(forProductId productId: String) -> String {
-        products.first(where: { $0.id == productId })?.brief ?? ""
+        let fromSnapshot = products.first(where: { $0.id == productId })?.brief ?? ""
+        return fromSnapshot.isEmpty ? (recommendationResolvedProducts[productId]?.brief ?? "") : fromSnapshot
+    }
+
+    /// 商品介紹（`LBProduct.description`，`add-product-description-core-ios`）— 與
+    /// `brief(forProductId:)` 同一 PRIMARY-then-FALLBACK 模式（`LBProductDetailState` 不帶
+    /// `description`，只有 `productId`；`description` 在原始 `LBProduct` 上；FALLBACK 同樣讀
+    /// `recommendationResolvedProducts`，見該屬性文件）。兩者皆無對應商品、或該商品的 `description`
+    /// 本身就是空字串，皆回 `""`——呼叫端（`ProductDetailSheetView.productIntroSection`）收到 `""`
+    /// 時 MUST NOT 顯示整個區塊（含標題），不存在任何 fallback 文案
+    /// （`rb-ios-product-intro-bgcolor-and-hide-empty` 對 `rb-ios-product-intro-real-data`
+    /// 「恆顯示 + fallback 文案」決定的明確反轉）。
+    public func description(forProductId productId: String) -> String {
+        let fromSnapshot = products.first(where: { $0.id == productId })?.description ?? ""
+        return fromSnapshot.isEmpty ? (recommendationResolvedProducts[productId]?.description ?? "") : fromSnapshot
+    }
+
+    // MARK: - Recommendation-resolved product cache (rb-ios-recommendation-product-intro-carry-through)
+
+    /// productId → the REAL `LBProduct` resolved via a host-wired `onResolveProduct` closure when
+    /// `ProductSheetsOverlayView.openRecommendation(_:mode:)` opens a「更多商品」推薦卡 (sourced
+    /// from core `channel.otherGoods`). Populated there (via `cacheRecommendationResolvedProduct`)
+    /// at resolve time; consulted as a FALLBACK by `brief(forProductId:)` / `description(forProductId:)`
+    /// above when the PRIMARY `products` snapshot lookup misses — a recommendation resolved from
+    /// `channel.otherGoods` is never in `products` (== `productOverlay.productsIntroducingFirst`,
+    /// scoped to the CURRENT VIDEO's own `goods`), so without this fallback its `brief`/`description`
+    /// always resolved to `""` even when the backend genuinely sent real values.
+    ///
+    /// Deliberately a PLAIN (non-`@Published`) stored property, NOT merged into the `products`
+    /// snapshot itself: `products` backs `ProductListView` / other family-3 surfaces that read it,
+    /// and widening ITS search scope to include `otherGoods` would be a broader, harder-to-audit
+    /// change than this narrowly-scoped fallback cache (see the change's design.md Decision).
+    ///
+    /// Lives on this class — rather than as `@State` on `ProductSheetsOverlayView` — as a
+    /// CORRECTNESS requirement, not a style choice: `@State`'s persistent-identity storage is only
+    /// reliably installed once SwiftUI mounts a view into a live rendering graph; a bare
+    /// `ProductSheetsOverlayView(...)` constructed directly (every unit test in this module does
+    /// this) never reaches that installation step, so a `@State`-held cache does not reliably
+    /// survive across the two separate calls this fallback needs (`openRecommendation` writing,
+    /// then a later `brief`/`description` read) — confirmed empirically by a failing test attempt
+    /// during this change's implementation. This class is a single, already-retained,
+    /// class-based, per-player-session instance (owned by the host's coordinator and shared by
+    /// reference across every call), so a plain stored property here has no such caveat: a write
+    /// is visible to every subsequent read, unconditionally, in both tests and live rendering.
+    ///
+    /// `internal` (module-scoped, NOT `public`): only `ProductSheetsOverlayView` (same
+    /// `LivebuyReferenceUI` module) reads/writes it via `cacheRecommendationResolvedProduct`; it is
+    /// not part of this class's public API surface, and MUST NOT be read directly by any other
+    /// family-3 surface (the ONLY sanctioned readers are `brief(forProductId:)` /
+    /// `description(forProductId:)` above). Unbounded for this instance's lifetime (accepted
+    /// trade-off — bounded by realistic distinct-recommendation-taps-per-session, see design.md
+    /// Risks / Trade-offs).
+    var recommendationResolvedProducts: [String: LBProduct] = [:]
+
+    /// Cache a real `LBProduct` resolved for a「更多商品」推薦卡
+    /// (rb-ios-recommendation-product-intro-carry-through) — called by
+    /// `ProductSheetsOverlayView.openRecommendation(_:mode:)` at resolve time, BEFORE forwarding
+    /// through `onProductTap`. See `recommendationResolvedProducts`'s doc for the full rationale.
+    /// Safe to call with a presentation-only `asDisplayProduct` degradation too (its `brief`/
+    /// `description` are always `""`, so caching it is a harmless no-op for the fallback).
+    func cacheRecommendationResolvedProduct(_ product: LBProduct) {
+        recommendationResolvedProducts[product.id] = product
     }
 
     /// Resolve the goods-tracking key (`goodsGpn`) for a product detail from the

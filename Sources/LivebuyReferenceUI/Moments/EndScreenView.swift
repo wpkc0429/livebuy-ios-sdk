@@ -440,9 +440,7 @@ public struct EndScreenView: View {
                 hotPage = (hotPage + 1) % pageCount
             }) {
                 HStack(spacing: 5) {
-                    Image(systemName: "arrow.clockwise")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundColor(.white)
+                    ArrowClockwiseGlyph(size: 12, color: .white)
                     Text(Self.shuffleLabel)
                         .font(.system(size: 12 * theme.fontScale, weight: .semibold))
                         .foregroundColor(.white)

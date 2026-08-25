@@ -685,9 +685,7 @@ public struct WinClaimModalView: View {
             ZStack {
                 RoundedRectangle(cornerRadius: 10)
                     .fill(theme.accent.opacity(0.10))
-                Image(systemName: "gift")
-                    .font(.system(size: 20, weight: .semibold))
-                    .foregroundColor(theme.accent)
+                GiftGlyph(size: 20, color: theme.accent)
             }
             .frame(width: 40, height: 40)
 

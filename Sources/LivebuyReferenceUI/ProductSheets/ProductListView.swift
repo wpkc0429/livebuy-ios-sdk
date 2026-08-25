@@ -362,12 +362,15 @@ public struct ProductListView: View {
         }
     }
 
-    // MARK: - Bottom cart CTA (LBPCartCTA — bag glyph + label + count)
+    // MARK: - Bottom cart CTA (LBPCartCTA — cartFill glyph + label + count)
+    //
+    // `CartFillGlyph`（design `Icons.cartFill`）取代已退役的 `ShopBagGlyph`（`Icons.bag`
+    // 在此 footer 尺寸下不易辨識，見 `design/contract/icon-authoring.md`，rb-ios-icon-parity）。
 
     private var cartCTA: some View {
         Button(action: { onOpenCart?() }) {
             HStack(spacing: 10) {
-                ShopBagGlyph(size: 20, color: .white)
+                CartFillGlyph(size: 20, color: .white)
                 Text(Self.cartLabel)
                     .font(.system(size: 16 * theme.fontScale, weight: .bold))
                     .foregroundColor(.white)

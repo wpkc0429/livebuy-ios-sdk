@@ -26,6 +26,11 @@ public struct AddToCartSheetView: View {
     public let theme: ReferenceUITheme
     public let detail: LBProductDetailState
     public let variant: LBVariantState
+    /// Cascading purchasability snapshot — forwarded VERBATIM to the wrapped
+    /// `ProductDetailSheetView`, which owns the actual disabled-chip rendering
+    /// (rb-ios-variant-cascading-availability-ui). Default `[]` → existing call sites fail open
+    /// (every chip available), byte-identical to before this parameter existed.
+    public let optionAvailability: [LBVariantGroupAvailability]
     public let qty: LBQtyState
     public let cartCount: Int
     public let needsVariantSelection: Bool
@@ -61,6 +66,7 @@ public struct AddToCartSheetView: View {
         theme: ReferenceUITheme,
         detail: LBProductDetailState,
         variant: LBVariantState,
+        optionAvailability: [LBVariantGroupAvailability] = [],
         qty: LBQtyState,
         cartCount: Int,
         needsVariantSelection: Bool,
@@ -81,6 +87,7 @@ public struct AddToCartSheetView: View {
         self.theme = theme
         self.detail = detail
         self.variant = variant
+        self.optionAvailability = optionAvailability
         self.qty = qty
         self.cartCount = cartCount
         self.needsVariantSelection = needsVariantSelection
@@ -104,6 +111,7 @@ public struct AddToCartSheetView: View {
             theme: theme,
             detail: detail,
             variant: variant,
+            optionAvailability: optionAvailability,
             qty: qty,
             cartCount: cartCount,
             needsVariantSelection: needsVariantSelection,

@@ -145,6 +145,16 @@ public struct ProductDetailSheetView: View {
     public let detail: LBProductDetailState
     /// Variant-picker snapshot (`DefaultVariantPicker.state`). Read-only.
     public let variant: LBVariantState
+    /// Cascading purchasability snapshot for the CURRENT variant selection
+    /// (`DefaultVariantPicker.optionAvailability`, rb-ios-variant-cascading-availability-template)
+    /// — one entry per `variant.groups` entry, matched by `groupIndex` (NOT array position).
+    /// `variantPickers` uses this to grey out / disable chips that can no longer resolve to any
+    /// in-stock SKU (rb-ios-variant-cascading-availability-ui). Read-only. Default `[]` → any
+    /// group with no matching `groupIndex` entry FAILS OPEN to "every option available" — so
+    /// EVERY EXISTING call site (previews, snapshot tests, `AddToCartSheetView`'s not-yet-wired
+    /// callers, other family-3 tests) that never passes this renders byte-identical to before
+    /// this parameter existed.
+    public let optionAvailability: [LBVariantGroupAvailability]
     /// Qty-stepper snapshot (`DefaultQtyStepper.state`) — `{ qty, min, max }`. Read-only.
     public let qty: LBQtyState
     /// Per-session successful-add count (`DefaultCartCTA.state.count`). The cart CTA
@@ -182,6 +192,18 @@ public struct ProductDetailSheetView: View {
     /// → 不畫（使既有無 brief 的 demo / baseline byte-identical）。`.addToCart` 呈現不畫。Read-only.
     public let brief: String
 
+    /// 商品介紹（`LBProduct.description` — `add-product-description-core-ios`）—「商品介紹」
+    /// 文字區塊（`productIntroSection`）的文字來源。與上面的 `brief`（商品說明）是完全獨立、
+    /// 語意不同的欄位；`LBProductDetailState` 同樣不帶 `description`，故由容器 / `ProductSheetsModel`
+    /// 從 `productOverlay.products` 快照以 `detail.productId` 解析後傳入
+    /// （`description(forProductId:)`，比照 `brief(forProductId:)` 同一模式）。**現在與 `brief`
+    /// 規則一致**（`rb-ios-product-intro-bgcolor-and-hide-empty` 對同一天稍早
+    /// `rb-ios-product-intro-real-data`「恆顯示 + fallback」決定的明確反轉,非疏漏）：空字串時
+    /// `productIntroSection` 整塊（含標題）MUST NOT 顯示,不再有任何 fallback 文案。呼叫端把此值
+    /// 與 `showsProductIntro` AND 起來（見該旗標文件）。`.addToCart` 呈現不畫（`productIntroSection`
+    /// 本身就不在該分支被呼叫）。Read-only.
+    public let description: String
+
     /// Backend / merchant-driven REMAINING-STOCK-COUNT gate (rb-ios-show-stock-caption-toggle).
     /// A by-value presentation flag fed from `ProductSheetsModel.showStock` (sourced from
     /// `LivebuyPlayerConfig.showStock`, itself normalized by the host from the wire value
@@ -210,14 +232,17 @@ public struct ProductDetailSheetView: View {
     /// gate below), only `.detail` does.
     public let showsRecommendations: Bool
 
-    /// Whether the「商品介紹」text block (design R21) is drawn (rb-ios-product-detail-recommendations
-    /// §2). Default `true` — this is genuinely new DEFAULT-ON content for every `.detail`
-    /// presentation (unlike `showsRecommendations`, it is NOT gated by any data — see
-    /// `productIntroSection`'s fallback-copy note). Existing PRE-CHANGE snapshot fixtures
-    /// (`ProductDetailSheetViewSnapshotTests`) explicitly pass `false` here to keep their
-    /// locked baseline PNGs byte-identical (CLAUDE.local.md「不要動的地方」— those PNGs MUST NOT
-    /// be regenerated); real host call sites leave this at its `true` default so the new
-    /// section actually ships. `.addToCart` never draws it regardless (body-content gate below).
+    /// Whether the「商品介紹」text block (design R21) is drawn AT ALL if there is data to show
+    /// (rb-ios-product-detail-recommendations §2). Default `true` — this is the "feature enabled"
+    /// switch, unchanged in meaning by `rb-ios-product-intro-bgcolor-and-hide-empty`. It is now
+    /// ANDed with a DATA-LAYER gate: the block only actually renders when `showsProductIntro ==
+    /// true` **AND** `description` is non-empty (see `description`'s doc above — the fallback-copy
+    /// path that used to make this flag data-independent has been removed). Existing PRE-CHANGE
+    /// snapshot fixtures (`ProductDetailSheetViewSnapshotTests`) explicitly pass `false` here to
+    /// keep their locked baseline PNGs byte-identical (CLAUDE.local.md「不要動的地方」— those PNGs
+    /// MUST NOT be regenerated); real host call sites leave this at its `true` default, and the
+    /// section actually ships whenever the resolved `description` is non-empty. `.addToCart` never
+    /// draws it regardless (body-content gate below).
     public let showsProductIntro: Bool
 
     /// Whether the header's close icon currently reads as「返回」rather than「✕ 關閉」
@@ -278,6 +303,7 @@ public struct ProductDetailSheetView: View {
         theme: ReferenceUITheme,
         detail: LBProductDetailState,
         variant: LBVariantState,
+        optionAvailability: [LBVariantGroupAvailability] = [],
         qty: LBQtyState,
         cartCount: Int,
         needsVariantSelection: Bool,
@@ -288,6 +314,7 @@ public struct ProductDetailSheetView: View {
         live: Bool = false,
         isLive: Bool = false,
         brief: String = "",
+        description: String = "",
         showStock: Bool = true,
         showsRecommendations: Bool = true,
         showsProductIntro: Bool = true,
@@ -309,6 +336,7 @@ public struct ProductDetailSheetView: View {
         self.theme = theme
         self.detail = detail
         self.variant = variant
+        self.optionAvailability = optionAvailability
         self.qty = qty
         self.cartCount = cartCount
         self.needsVariantSelection = needsVariantSelection
@@ -319,6 +347,7 @@ public struct ProductDetailSheetView: View {
         self.live = live
         self.isLive = isLive
         self.brief = brief
+        self.description = description
         self.showStock = showStock
         self.showsRecommendations = showsRecommendations
         self.showsProductIntro = showsProductIntro
@@ -418,73 +447,227 @@ public struct ProductDetailSheetView: View {
         LBSheetScaffold(fillToCap: presentation == .addToCart) {
             header
         } bodyContent: {
-            VStack(alignment: .leading, spacing: 0) {
-                // `.addToCart` (購買) uses the design's compact 96×96 product card (aligned with
-                // NotifyRestockSheetView); `.detail` (瀏覽) keeps the 4:3 large photo.
-                if presentation == .addToCart {
-                    compactProductCard
-                } else {
-                    productPhoto
-                    // Sale 徽章（rb-ios-product-sale-badge，design `screens.jsx` ProductDetailSheet
-                    // L797-828）— 畫在照片之後、名稱之前；顯示時名稱上緣間距收縮為 6pt（對齊設計稿
-                    // `marginTop: onSale && !product.sold ? 6 : 12`），不顯示時維持既有 12pt。
-                    if showsSaleBadge {
-                        saleBadge
-                            .padding(.top, 12)
-                    }
-                    productName
-                        .padding(.top, showsSaleBadge ? 6 : 12)
-                    priceRow
-                        .padding(.top, 10)
-                    // 商品說明（`brief`）— 只在 `.detail`、且 brief 非空時畫（對齊設計 `ProductDetailSheet`
-                    // 的說明文字：12pt / textDim / 多行；rb-ios-product-sheet-detail-polish 問題 4）。
-                    if !brief.isEmpty {
-                        briefDescription
-                            .padding(.top, 10)
-                    }
-                }
-
-                if !variant.groups.isEmpty {
-                    hairline.padding(.vertical, 18)
-                    variantPickers
-                }
-
-                hairline.padding(.vertical, 18)
-                qtyRow
-
-                // Add-to-cart failure banner (retryable), only when the route-B
-                // add threw (D-3). Sits above the footer so it reads as feedback.
-                if addToCartFailed {
-                    failureBanner.padding(.top, 16)
-                }
-
-                // 收藏鈕 inline 模式：body 內文區塊最下方單獨置中一行（design R19，
-                // rb-ios-product-sheet-resize-fav-inline）— 只在 `.detail` 呈現畫（`.addToCart`
-                // 不畫收藏 / 分享，既有規則不變）。
-                if presentation == .detail {
-                    favButtonInline
-                        .frame(maxWidth: .infinity, alignment: .center)
-                        .padding(.top, 16)
-
-                    // 商品介紹 + 更多商品（design R21，rb-ios-product-detail-recommendations）—
-                    // 只在 `.detail` 呈現畫，接在收藏鈕之後（既有內容之後新增，對齊設計稿
-                    // ProductDetailSheet 底部新增段落）。
-                    if showsProductIntro {
-                        productIntroSection
-                            .padding(.top, 20)
-                    }
-
-                    if showsRecommendations {
-                        recommendationsSection
-                            .padding(.top, 20)
-                    }
-                }
+            // `.addToCart` and `.detail` no longer share one flat body: `.detail`'s body is
+            // LAYERED (gray scroll-area + white content blocks, rb-ios-product-intro-bgcolor-and-
+            // hide-empty, see `detailBodyContent`); `.addToCart` has no such layering in its
+            // design source (`AddToCartSheet`) and keeps the prior flat structure verbatim
+            // (`addToCartBodyContent`).
+            if presentation == .addToCart {
+                addToCartBodyContent
+            } else {
+                detailBodyContent
             }
-            .padding(.horizontal, 16)
-            .padding(.top, 6)
-            .padding(.bottom, 12)
         } footer: {
             footer
+        }
+    }
+
+    // MARK: - `.addToCart` body (compact card + shared middle — UNCHANGED by
+    // rb-ios-product-intro-bgcolor-and-hide-empty; no background layering, no favButton/intro/
+    // recommendations — see `detailBodyContent` for the `.detail`-only layered structure)
+
+    private var addToCartBodyContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // `.addToCart` (購買) uses the design's compact 96×96 product card (aligned with
+            // NotifyRestockSheetView).
+            compactProductCard
+            variantQtyFailureBlock
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 6)
+        .padding(.bottom, 12)
+    }
+
+    // MARK: - `.detail` body — LAYERED per design `ProductDetailSheet`'s outer `bgSunken`
+    // scrollable wrapper + inner `bg`-white blocks (rb-ios-product-intro-bgcolor-and-hide-empty,
+    // design.md D1/D2/D3; design source `screens.jsx:805-895`: `<div style={{flex:1,
+    // overflow:'auto', background: theme.surface.bgSunken}}>` wrapping a `padding:'0 16px 16px'`
+    // white thumb block + two `marginTop:20, padding:'16px'` white blocks).
+    //
+    // Previously the WHOLE body (this block + productIntro + recommendations) was one flat
+    // `VStack` with no background of its own — the only white came from the SHARED SheetKit
+    // presenter's card chrome (`BottomSheetChrome.cardSurface`, `BottomSheetPresenter.swift`,
+    // OUT OF SCOPE for this change), so the existing `.padding(.top, 20)` gaps before 商品介紹 /
+    // 更多商品 had nothing gray to show through them. This restructuring paints `bgSunken` as an
+    // ADDITIONAL layer on `detailBodyContent`'s own `VStack`, sitting in front of (visually
+    // covering) that shared white for exactly this body's frame — the header and footer (drawn
+    // by sibling `LBSheetScaffold` slots, not part of `bodyContent`) are untouched and stay on
+    // the chrome's white, matching the design (its `bgSunken` div covers only the scrollable
+    // body).
+    //
+    // BOTTOM EDGE (rb-ios-product-detail-bottom-gray-gap-fix): the restructuring above used to
+    // close with an OUTER `.padding(.bottom, 12)` on the WHOLE `VStack`, applied BEFORE
+    // `.background(Self.bgSunken)` — i.e. that trailing 12pt inset sat OUTSIDE every section's
+    // own white `theme.background` wrapper, so scrolled to the very bottom it always painted
+    // `bgSunken` gray beneath whichever section happened to render last (usually「更多商品」, but
+    // 「商品介紹」or even the thumb block itself when both are hidden — see `trailingSection`
+    // below). There is no outer trailing padding anymore: the SAME 12pt is now folded into
+    // whichever section's OWN `.padding(.bottom, …)` runs BEFORE that section's own
+    // `.background(theme.background)` — same total gap, but drawn white, INSIDE the white card,
+    // never gray, in every reachable combination of which sections are visible.
+    private var detailBodyContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            // Thumb-to-favButton block — own white background wrapper (design `padding:'0 16px
+            // 16px'`: horizontal 16, bottom 16, top 0). The existing `.padding(.top, 6)`
+            // header→content gap is kept INSIDE this white block (not the outer gray level) so
+            // that specific gap stays white-on-white, pixel-continuous with the pre-change
+            // baseline (design.md D3) — the 20pt gaps below are the only intentionally-gray
+            // gaps; the sheet's final bottom inset is folded into whichever section is last (see
+            // `trailingSection` / `trailingBottomInset(for:base:)` below), never left outside a
+            // white wrapper.
+            detailThumbBlock
+                .padding(.horizontal, 16)
+                .padding(.top, 6)
+                .padding(.bottom, trailingBottomInset(for: .thumbBlock, base: 16))
+                .background(theme.background)
+
+            // 商品介紹（design R21）— 只在 `showsProductIntro`（功能開關）AND `description` 非空
+            // （資料層 gate）都成立時才畫，含標題整塊；空字串時整塊不畫，不再有 fallback 文案
+            // （rb-ios-product-intro-bgcolor-and-hide-empty，反轉同一天稍早
+            // rb-ios-product-intro-real-data 的「恆顯示 + fallback」決定）。
+            if showsProductIntroSection {
+                productIntroSection
+                    .padding(.horizontal, 16)
+                    .padding(.top, 16)
+                    .padding(.bottom, trailingBottomInset(for: .productIntro, base: 16))
+                    .background(theme.background)
+                    .padding(.top, 20)
+            }
+
+            // 更多商品（design R21）— 白色 wrapper 額外 AND `!recommendationItems.isEmpty`
+            // （而非只看 `showsRecommendations`）：`recommendationsSection` 本身 0 筆時已渲染為
+            // 空（`@ViewBuilder` 的 `if !items.isEmpty`），本次新增 `.background()` 前這是無害的
+            // （空 padding 落在同色白底上不可見）；新增背景後若不額外 gate，0 筆時會在灰底上畫出
+            // 一個看得見的空白色方塊（design.md D4）。
+            if showsRecommendations && !recommendationItems.isEmpty {
+                recommendationsSection
+                    .padding(.horizontal, 16)
+                    .padding(.top, 16)
+                    .padding(.bottom, trailingBottomInset(for: .recommendations, base: 16))
+                    .background(theme.background)
+                    .padding(.top, 20)
+            }
+        }
+        .background(Self.bgSunken)
+    }
+
+    /// Test-only hook exposing the SAME `.detail` body subtree `body` renders (mirrors
+    /// `qtyRowForTesting`), so unit tests can pixel-sample the ACTUAL rendered bottom edge and
+    /// assert it is never `bgSunken` (rb-ios-product-detail-bottom-gray-gap-fix).
+    ///
+    /// MUST NOT be called from production code (it is on no `body` path, so it costs zero
+    /// pixels), and MUST keep returning the very same `detailBodyContent` — never a parallel
+    /// copy, which would decouple the assertions from what is actually drawn.
+    var detailBodyContentForTesting: some View { detailBodyContent }
+
+    // MARK: - Trailing section (rb-ios-product-detail-bottom-gray-gap-fix)
+    //
+    // Which of the THREE `.detail` body sections ends up LAST VISIBLE depends on two
+    // independent gates (`showsProductIntroSection`, and `showsRecommendations &&
+    // !recommendationItems.isEmpty`) — `detailThumbBlock` is the only UNCONDITIONAL one (always
+    // rendered), so it is the fallback when both the other two are hidden.
+    // `trailingBottomInset(for:base:)` uses this to decide which section's OWN bottom padding
+    // (INSIDE its `theme.background` wrapper) absorbs the sheet's final `bottomGapInset`, so
+    // `Self.bgSunken` never shows below the last visible white content, in any of the three
+    // reachable combinations.
+
+    /// Which `.detail` body section is currently last (pure — a plain `enum`, mirroring the
+    /// file's established `showsStockCaption` / `showsSaleBadge` / `showsProductIntroSection`
+    /// truth-table-testable static-func pattern).
+    enum DetailBodyTrailingSection: Equatable {
+        case thumbBlock, productIntro, recommendations
+    }
+
+    /// THE single predicate deciding which section is last. `showsRecommendationsSection` takes
+    /// the ALREADY-ANDed `showsRecommendations && !recommendationItems.isEmpty` — the exact
+    /// condition the call site gates rendering on — so this function never re-derives it and can
+    /// never drift from what `detailBodyContent` actually renders.
+    static func trailingSection(
+        showsProductIntroSection: Bool,
+        showsRecommendationsSection: Bool
+    ) -> DetailBodyTrailingSection {
+        if showsRecommendationsSection { return .recommendations }
+        if showsProductIntroSection { return .productIntro }
+        return .thumbBlock
+    }
+
+    /// Instance wrapper over the static predicate above — reads this view's own gating inputs,
+    /// mirroring `showsProductIntroSection`'s instance-property-wraps-static-func pattern.
+    private var trailingSection: DetailBodyTrailingSection {
+        Self.trailingSection(
+            showsProductIntroSection: showsProductIntroSection,
+            showsRecommendationsSection: showsRecommendations && !recommendationItems.isEmpty)
+    }
+
+    /// The sheet's final bottom breathing room — was the removed outer `.padding(.bottom, 12)`,
+    /// UNCHANGED in value, only in WHERE it is drawn (rb-ios-product-detail-bottom-gray-gap-fix).
+    private static let bottomGapInset: CGFloat = 12
+
+    /// `base` for every section that is NOT last, `base + bottomGapInset` for whichever one
+    /// `trailingSection` says IS last — i.e. the same total gap as before this fix, just moved
+    /// inside the white wrapper of the section that actually needs it.
+    private func trailingBottomInset(for section: DetailBodyTrailingSection, base: CGFloat) -> CGFloat {
+        base + (trailingSection == section ? Self.bottomGapInset : 0)
+    }
+
+    /// The `.detail`-only「縮圖～收藏鈕」content — photo/badge/name/price/brief, the shared
+    /// variant/qty/failure block, then the qty→fav hairline + inline favorite button. Wrapped by
+    /// `detailBodyContent` in its own white background (see above); this computed property is
+    /// content only, no padding/background of its own (the caller supplies both).
+    private var detailThumbBlock: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            productPhoto
+            // Sale 徽章（rb-ios-product-sale-badge，design `screens.jsx` ProductDetailSheet
+            // L797-828）— 畫在照片之後、名稱之前；顯示時名稱上緣間距收縮為 6pt（對齊設計稿
+            // `marginTop: onSale && !product.sold ? 6 : 12`），不顯示時維持既有 12pt。
+            if showsSaleBadge {
+                saleBadge
+                    .padding(.top, 12)
+            }
+            productName
+                .padding(.top, showsSaleBadge ? 6 : 12)
+            priceRow
+                .padding(.top, 10)
+            // 商品說明（`brief`）— 只在 `.detail`、且 brief 非空時畫（對齊設計 `ProductDetailSheet`
+            // 的說明文字：12pt / textDim / 多行；rb-ios-product-sheet-detail-polish 問題 4）。
+            if !brief.isEmpty {
+                briefDescription
+                    .padding(.top, 10)
+            }
+
+            variantQtyFailureBlock
+
+            // 收藏鈕 inline 模式：body 內文區塊最下方單獨置中一行（design R19，
+            // rb-ios-product-sheet-resize-fav-inline）。收藏鈕之前補一條 hairline 分隔線（design
+            // `screens.jsx` ProductDetailSheet 數量列與收藏鈕之間的分隔線；對齊 Android
+            // `ProductDetailSheet.kt` 的 `Hairline(...vertical = 18.dp)`，
+            // rb-ios-product-sheet-qty-fav-divider）。hairline 自身的 `.padding(.vertical, 18)`
+            // 即為收藏鈕之前的全部間距，故不額外加 top padding（比照本檔另兩處既有 hairline
+            // 呼叫後不再額外加 top padding 的慣例）。
+            hairline.padding(.vertical, 18)
+            favButtonInline
+                .frame(maxWidth: .infinity, alignment: .center)
+        }
+    }
+
+    /// Variant pickers (if any) + qty row + add-to-cart failure banner — IDENTICAL content in
+    /// BOTH presentations, factored out so `addToCartBodyContent` / `detailThumbBlock` don't
+    /// duplicate it (rb-ios-product-intro-bgcolor-and-hide-empty design.md D2). Unchanged
+    /// behavior from before this restructuring.
+    @ViewBuilder
+    private var variantQtyFailureBlock: some View {
+        if !variant.groups.isEmpty {
+            hairline.padding(.vertical, 18)
+            variantPickers
+        }
+
+        hairline.padding(.vertical, 18)
+        qtyRow
+
+        // Add-to-cart failure banner (retryable), only when the route-B
+        // add threw (D-3). Sits above the footer so it reads as feedback.
+        if addToCartFailed {
+            failureBanner.padding(.top, 16)
         }
     }
 
@@ -749,6 +932,10 @@ public struct ProductDetailSheetView: View {
                         selected: variant.selection[gi],
                         theme: theme,
                         disabled: addToCartInFlight,
+                        // Looked up by `groupIndex`, NOT array position (rb-ios-variant-cascading-
+                        // availability-ui) — a group with no matching entry (or a caller that never
+                        // passes `optionAvailability`) fails open via `isVariantOptionAvailable`.
+                        availableOptions: optionAvailability.first(where: { $0.groupIndex == gi })?.availableOptions,
                         onSelect: { oi in onSelectVariant?(gi, oi) })
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -886,6 +1073,22 @@ public struct ProductDetailSheetView: View {
         hasOriginalPrice && !isSoldOut
     }
 
+    /// THE single predicate deciding whether variant chip `optionIndex` (within one group) is
+    /// purchasable (rb-ios-variant-cascading-availability-ui). `availableOptions` is one group's
+    /// `LBVariantGroupAvailability.availableOptions` (parallel to that group's `options`, same
+    /// index). FAILS OPEN to `true` (available) when `availableOptions` is `nil` OR does not
+    /// cover `optionIndex` — a group with no cascading-availability data yet (or a caller that
+    /// never wires `optionAvailability` at all) MUST render every chip exactly as it did before
+    /// this predicate existed. A `static func` (not inlined in `WrapChips`, which is `private`
+    /// and therefore unreachable from `@testable import` unit tests) so the truth table is
+    /// directly unit-testable, mirroring `showsSaleBadge` / `showsStockCaption`. `WrapChips`'s
+    /// `.disabled(...)` AND its Button action closure's tap guard both call this SAME function —
+    /// never a duplicated equivalent — so the two can never silently disagree.
+    static func isVariantOptionAvailable(_ optionIndex: Int, in availableOptions: [Bool]?) -> Bool {
+        guard let flags = availableOptions, flags.indices.contains(optionIndex) else { return true }
+        return flags[optionIndex]
+    }
+
     // MARK: - Footer (sticky 加入購物車 CTA + cart-CTA badge)
     //
     // Primary 加入購物車 (LBPButton primary). DISABLED when sold out (qty.max == 0) —
@@ -989,19 +1192,43 @@ public struct ProductDetailSheetView: View {
 
     // MARK: - 商品介紹 (design R21, rb-ios-product-detail-recommendations §2)
     //
-    // Resource GAP (proposal.md `## Depends On` — 不依賴 bullet): iOS `LBProduct` / core
-    // 目前 MUST NOT 帶 `description` 欄位（待後端上線後另立 core change）。在該欄位就緒前，此
-    // 區塊 SHALL 恆顯示設計稿 fallback 文案「商品介紹內容」。此規則與上面的「商品說明」
-    // (`brief`, `briefDescription`, 「空字串不畫」) **刻意不同**——商品介紹一律顯示，MUST NOT
-    // 因為沒有資料就整塊不畫。DO NOT "fix" this to mirror `briefDescription`'s empty-hides rule.
+    // HIDE-WHEN-EMPTY (rb-ios-product-intro-bgcolor-and-hide-empty): this block now mirrors
+    // `briefDescription`'s pattern EXACTLY — unconditional body, emptiness gate lives at the
+    // CALL SITE (`detailBodyContent`: `if showsProductIntroSection { ... }`).
+    // `description` is the REAL `LBProduct.description` (`add-product-description-core-ios`,
+    // wire key `description`, tolerant decode → `""`), resolved by the container /
+    // `ProductSheetsModel.description(forProductId:)` from the `products` snapshot, same D-1
+    // sub-view input pattern as `brief`.
+    //
+    // This REVERSES the same-day `rb-ios-product-intro-real-data` decision (「商品介紹區塊恆顯示，
+    // 空字串退回 fallback 常數 productIntroFallback」) per explicit user instruction — the block
+    // (含標題) now behaves IDENTICALLY to `brief`'s 「空字串不畫」rule instead of being
+    // deliberately different from it. There is no fallback copy left; `productIntroFallback` has
+    // been removed as dead code.
+
+    /// THE single predicate deciding whether the「商品介紹」text block is drawn AT ALL
+    /// (rb-ios-product-intro-bgcolor-and-hide-empty). ANDs the「功能開關」`showsProductIntro`
+    /// with a DATA-LAYER gate (`!description.isEmpty`) — mirrors the file's established
+    /// truth-table-testable static func pattern (`showsStockCaption(showStock:isSoldOut:)`,
+    /// `showsSaleBadge(hasOriginalPrice:isSoldOut:)`), so unit tests can exercise the truth
+    /// table directly without going through a snapshot render.
+    static func showsProductIntroSection(showsProductIntro: Bool, description: String) -> Bool {
+        showsProductIntro && !description.isEmpty
+    }
+
+    /// Instance wrapper over the static predicate above — reads this view's own
+    /// `showsProductIntro` / `description` inputs, mirroring `showsSaleBadge`'s
+    /// instance-property-wraps-static-func pattern.
+    private var showsProductIntroSection: Bool {
+        Self.showsProductIntroSection(showsProductIntro: showsProductIntro, description: description)
+    }
 
     private var productIntroSection: some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(Self.productIntroTitle)
                 .font(.system(size: 14 * theme.fontScale, weight: .bold))
                 .foregroundColor(theme.text)
-            // No real data source yet (see gap note above) — always the fallback copy.
-            Text(Self.productIntroFallback)
+            Text(description)
                 .font(.system(size: 12 * theme.fontScale))
                 .foregroundColor(Self.textDim)
                 .lineSpacing(4)
@@ -1012,18 +1239,21 @@ public struct ProductDetailSheetView: View {
         .accessibilityIdentifier(LBAccessibilityID.productIntro)
     }
 
-    // MARK: - 更多商品 (design R21, rb-ios-product-detail-recommendations §3/§4/§5)
+    // MARK: - 更多商品 (design R21, rb-ios-product-detail-recommendations §3/§4/§5;
+    // cap raised 4→12 by rb-ios-recommendations-cap-raise-to-twelve)
     //
     // Reads `detail.recommendations` (`[LBProductRecommendation]`,
-    // `expose-other-goods-recommendations-template`), `.prefix(4)` — the truncation-to-4
-    // decision is THIS layer's job (that template change's design.md D1). 0 筆 → whole
-    // section (incl. title) hidden; < 4 → shows the actual count, no blank placeholder
-    // cards. A plain chunked `VStack`/`HStack` (NOT `LazyVGrid`) — `ImageRenderer` never
-    // materializes lazy containers (see `ProductListView.rows`'s same documented
-    // constraint), so a real grid container would snapshot BLANK.
+    // `expose-other-goods-recommendations-template`), `.prefix(12)` — the truncation
+    // decision is THIS layer's job (that template change's design.md D1; cap value itself
+    // raised from the original 4 by rb-ios-recommendations-cap-raise-to-twelve). 0 筆 →
+    // whole section (incl. title) hidden; < 12 → shows the actual count, no blank
+    // placeholder cards. A plain chunked `VStack`/`HStack` (NOT `LazyVGrid`) —
+    // `ImageRenderer` never materializes lazy containers (see `ProductListView.rows`'s
+    // same documented constraint), so a real grid container would snapshot BLANK. 12
+    // items chunk into 6 rows of 2 via the same `pairedRows` helper, unchanged.
 
     private var recommendationItems: [LBProductRecommendation] {
-        Array(detail.recommendations.prefix(4))
+        Array(detail.recommendations.prefix(12))
     }
 
     @ViewBuilder
@@ -1218,7 +1448,6 @@ public struct ProductDetailSheetView: View {
     static let failureTitle = "加入購物車失敗,請稍後再試"
     // 商品介紹 + 更多商品（design R21，rb-ios-product-detail-recommendations）
     static let productIntroTitle = "商品介紹"
-    static let productIntroFallback = "商品介紹內容"
     static let recommendationsTitle = "更多商品"
     // 「請選規格」copy moved to `SelectVariantPromptModalView` (prompt hoisted to the container's
     // overlay root — ios-variant-prompt-overlay-fix).
@@ -1258,6 +1487,11 @@ public struct ProductDetailSheetView: View {
 // rows. Each chip mirrors `LBPVariantPicker`'s pill: accent-outlined + accent-tinted when
 // selected, neutral stroke otherwise. Option text is never truncated (no `.lineLimit`),
 // so a single option wider than a row wraps to multiple lines with its full text visible.
+//
+// Cascading purchasability (rb-ios-variant-cascading-availability-ui): a chip whose option is
+// currently unavailable (`availableOptions`) dims via `unavailableOpacity` and is `.disabled` —
+// the selected/unselected color branching above is untouched, so an unavailable-but-selected
+// chip keeps its accent styling, just dimmed (design.md D2 in that change).
 
 private struct WrapChips: View {
     let groupIndex: Int
@@ -1267,6 +1501,12 @@ private struct WrapChips: View {
     /// Locked while an addcart request is in flight (cart-add-loading-state) — chips dim and
     /// stop accepting taps so the payload can't change mid-send. Default false → unchanged.
     var disabled: Bool = false
+    /// Per-option cascading purchasability (rb-ios-variant-cascading-availability-ui), parallel
+    /// to `options` (same index) — one group's `LBVariantGroupAvailability.availableOptions`.
+    /// `nil` (default), or an array that does not cover a given index, FAILS OPEN to available
+    /// via `ProductDetailSheetView.isVariantOptionAvailable` — every EXISTING call site that
+    /// never passes this renders byte-identical to before this parameter existed.
+    var availableOptions: [Bool]? = nil
     let onSelect: (Int) -> Void
 
     /// Chips per row for the iOS 14/15 fallback path only — fixed so the chunked layout
@@ -1312,10 +1552,31 @@ private struct WrapChips: View {
         return out
     }
 
+    /// Cascading-unavailable chips dim via THIS opacity — deliberately NOT the same value as the
+    /// whole-group in-flight lock's `0.5` above (different semantics: in-flight is a temporary
+    /// lock that lifts on its own, unavailable is a data-driven "not currently purchasable"
+    /// state). The two compose multiplicatively when both apply (an in-flight AND unavailable
+    /// chip ends up dimmer than either alone) — see design.md D3 (rb-ios-variant-cascading-
+    /// availability-ui) for the full rationale.
+    private static let unavailableOpacity: Double = 0.4
+
     private func chip(index i: Int) -> some View {
         let isSelected = (selected == i)
-        return Button(action: { onSelect(i) }) {
+        let isAvailable = ProductDetailSheetView.isVariantOptionAvailable(i, in: availableOptions)
+        return Button(action: {
+            // Defense-in-depth alongside `.disabled(...)` below (same "guard + disabled" idiom
+            // as `stepButton(systemName:enabled:action:)` elsewhere in this file) — an unavailable
+            // chip's tap MUST NOT reach `onSelect` / `onSelectVariant` / `template.selectVariant`
+            // (rb-ios-variant-cascading-availability-ui). The template itself still permits
+            // selecting any in-range option; this reference-ui guard is the deliberate UX choice
+            // left to this layer by the dependency's design.md.
+            guard isAvailable else { return }
+            onSelect(i)
+        }) {
             Text(options[i])
+                // Selected ↔ unselected color/weight branching is UNCHANGED by availability — an
+                // unavailable-but-selected chip keeps the accent styling (still legible as "your
+                // pick"), only dimmed below (design.md D2).
                 .font(.system(size: 13 * theme.fontScale, weight: isSelected ? .bold : .medium))
                 .foregroundColor(isSelected ? theme.accent : theme.text)
                 .padding(.horizontal, 14)
@@ -1331,7 +1592,8 @@ private struct WrapChips: View {
                 .contentShape(Rectangle())
         }
         .buttonStyle(PlainButtonStyle())
-        .disabled(disabled)
+        .disabled(disabled || !isAvailable)
+        .opacity(isAvailable ? 1 : Self.unavailableOpacity)
         .accessibilityIdentifier(LBAccessibilityID.variantChip(groupIndex, i))
     }
 }

@@ -220,9 +220,7 @@ public struct LiveBottomBarView: View {
                     Circle()
                         .fill(Color.white)
                         .shadow(color: Color.black.opacity(0.2), radius: 5, x: 0, y: 4)
-                    Image(systemName: Self.bagSymbol)
-                        .font(.system(size: Self.iconGlyphSize, weight: .semibold))
-                        .foregroundColor(theme.accent)
+                    BagGlyph(size: Self.iconGlyphSize, color: theme.accent)
                 }
                 .frame(width: Self.iconSize, height: Self.iconSize)
 
@@ -372,7 +370,7 @@ private extension LiveBottomBarView {
     static let chatClosedPlaceholder = "聊天室已關閉"
 
     // glyphs (match OperationRailView.symbolName mapping)
-    static let bagSymbol = "bag"                    // Icons.bag
+    // bag 改用自繪 BagGlyph（Icons.bag fill+鏤空環），不再用 SF symbol（rb-ios-icon-parity）。
     // 設定暱稱 改用自繪 PersonEditGlyph（人頭 + 鉛筆 badge），不再用 SF `person.fill`
     // （rb-align-nickname-icon-person-edit）。
     // share 改用自繪 ShareGlyph（Icons.share 三節點），不再用 SF symbol（rb-ios-share-icon-design-align）。

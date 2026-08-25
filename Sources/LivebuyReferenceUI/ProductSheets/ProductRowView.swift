@@ -57,10 +57,19 @@ public struct ProductRowView: View {
     /// `.row` (default) or `.grid` (design R21).
     public let layout: ProductRowLayout
 
-    /// Hides the secondary text line under the product name (struck-through original
-    /// price / 已售完 sub-line). Default `false` (existing `.row` behavior unchanged).
-    /// The「更多商品」推薦格 call site MUST pass `true` (`LBProductRecommendation` carries
-    /// no original-price / narrating data to show there).
+    /// `.row`: hides the secondary text line under the product name (struck-through
+    /// original price + current price + status pill, OR 已售完 sub-line). Default
+    /// `false` (existing `.row` behavior unchanged).
+    ///
+    /// `.grid` (add-recommendation-original-price-reference-ui-ios): does **NOT** gate
+    /// the original-price strikethrough — mirrors design source
+    /// `design/templates/minimal/sdk-components.jsx`'s `LBPProductRow` grid branch,
+    /// where `hideSub` only gates an unrelated `p.sub` caption field (`{!hideSub &&
+    /// p.sub}`) and the strikethrough (`p.was`) is unconditional. `ProductRowView` has
+    /// no `.grid`-specific counterpart to that `p.sub` caption yet, so `hideSub`
+    /// currently has NO effect on `.grid` at all — this is an honest reflection of
+    /// current scope, not a removed feature. The「更多商品」推薦格 call site still
+    /// passes `true` (reserved for if/when a `.grid` sub-caption data source is added).
     public let hideSub: Bool
 
     /// `.row`-only: playback-mode overlay decision inputs (rb-ios-product-row-status-overlay).
@@ -175,16 +184,16 @@ public struct ProductRowView: View {
         }
     }
 
-    // MARK: - `.row` layout — BYTE-IDENTICAL to the pre-extraction `productRow(_:index:)`
+    // MARK: - `.row` layout — matches design R21's `row` play-hint pill
     //
-    // DELIBERATE DEVIATION (baseline protection — see the spec Requirement's note): design
-    // R21 changes the `row` play-hint visual globally (black-circle icon → bottom「看講解」
-    // text pill), but `ProductListView`'s 5 existing snapshot baselines lock the CURRENT
-    // black-circle pixels and MUST NOT be regenerated without explicit user confirmation
-    // (CLAUDE.local.md「不要動的地方」). So `.row` intentionally KEEPS the existing visual
-    // here; only the ACTION wiring gains the `onPlayClick ?? onSeekToIntro` fallback
-    // (task 1.3), which is a behavior-only change invisible to snapshot pixels for the
-    // existing call site (`onPlayClick` defaults nil there).
+    // `rb-ios-product-row-play-hint-pill`: the play-hint visual for `showPlay` now matches
+    // design R21 (`sdk-components.jsx` ~1146-1156) — a bottom-centered white translucent
+    // text pill「看講解」— replacing the prior black-circle icon. This is an EXPLICITLY
+    // user-authorized regeneration of the 5 existing snapshot baselines that used to lock
+    // the black-circle pixels (`product-list-drawer-populated` /
+    // `product-sheets-overlay-list-presented` / `product-list-search-open` /
+    // `product-list-search-no-results` / `product-list-outsoon-hot-labels`). The ACTION
+    // wiring (`onPlayClick ?? onSeekToIntro` fallback) is unchanged by this visual swap.
 
     private var rowBody: some View {
         HStack(spacing: 12) {
@@ -195,13 +204,23 @@ public struct ProductRowView: View {
                     RemoteStillImageView(url: url, contentMode: .scaleAspectFill)
                 }
                 if overlay.showPlay {
-                    ZStack {
-                        Circle().fill(Color.black.opacity(0.5))
-                        Image(systemName: "play.fill")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundColor(.white)
+                    VStack(spacing: 0) {
+                        Spacer(minLength: 0)
+                        HStack(spacing: 3) {
+                            Image(systemName: "play.fill")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundColor(Self.playHintText)
+                            Text(Self.playHintLabel)
+                                .font(.system(size: 9.5, weight: .semibold))
+                                .foregroundColor(Self.playHintText)
+                                .lineLimit(1)
+                                .fixedSize()
+                        }
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                        .background(Capsule().fill(Color.white.opacity(0.75)))
+                        .padding(.bottom, 4)
                     }
-                    .frame(width: 26, height: 26)
                 }
                 if isIntroducing {
                     VStack(spacing: 0) {
@@ -270,7 +289,9 @@ public struct ProductRowView: View {
             .accessibilityIdentifier(LBAccessibilityID.productRowDetail(index))
 
             HStack(spacing: 8) {
-                rowOutlineIcon("doc.text", action: onOpenProduct)
+                rowOutlineGlyph(action: onOpenProduct) {
+                    DetailGlyph(size: 16, color: theme.accent)
+                }
                 if overlay.showShare {
                     rowOutlineGlyph(action: onShareProduct) {
                         ShareGlyph(size: 16, color: theme.accent)
@@ -291,20 +312,6 @@ public struct ProductRowView: View {
                     .frame(height: 1)
             }
         )
-    }
-
-    private func rowOutlineIcon(_ systemName: String, action: (() -> Void)?) -> some View {
-        Button(action: { action?() }) {
-            ZStack {
-                Circle().stroke(theme.accent, lineWidth: 1)
-                Image(systemName: systemName)
-                    .font(.system(size: 14, weight: .regular))
-                    .foregroundColor(theme.accent)
-            }
-            .frame(width: 30, height: 30)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(PlainButtonStyle())
     }
 
     private func rowOutlineGlyph<Glyph: View>(action: (() -> Void)?, @ViewBuilder glyph: () -> Glyph) -> some View {
@@ -356,8 +363,20 @@ public struct ProductRowView: View {
     // only when `onPlayClick` is provided — task 4.1's videoId-nil gate lives at the
     // CALLER, which simply omits `onPlayClick` in that case) + name + price row with an
     // independent accent cart circle (hidden when sold out, design R21 "p.sold 時不顯示").
-    // `hideSub` is expected `true` at the recommendations call site (no secondary line to
-    // show there) but the row honours it either way, mirroring `.row`.
+    // `hideSub` is expected `true` at the recommendations call site (reserved for a
+    // future `.grid`-specific sub-caption; NOT the original-price strikethrough — see
+    // `hideSub`'s doc comment above, add-recommendation-original-price-reference-ui-ios).
+    //
+    // Price cell + cart button layout (rb-ios-product-row-price-cart-layout-fix): the
+    // current price and (optional) struck-through original price live in ONE
+    // leading-aligned VStack (original price is the SECOND child, i.e. BELOW the current
+    // price) — mirrors design source `sdk-components.jsx:1116-1129`'s flex column, where
+    // `p.was` is the column's second child under `p.price`. That price VStack and the
+    // cart button are siblings inside a `.bottom`-aligned HStack (mirrors the design's
+    // outer `alignItems:'flex-end'`), so the cart button always stays pinned to the row's
+    // bottom edge whether the price cell is 1 line (price only) or 2 lines (price +
+    // original-price strikethrough) tall — it must never be pushed down or stay centered
+    // when the second line appears.
 
     private var gridBody: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -373,7 +392,7 @@ public struct ProductRowView: View {
                 }
             }
             .aspectRatio(1, contentMode: .fit)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .clipShape(RoundedRectangle(cornerRadius: 14))
 
             Text(product.name)
                 .font(.system(size: 13 * theme.fontScale, weight: .semibold))
@@ -382,27 +401,38 @@ public struct ProductRowView: View {
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
 
-            if !hideSub && !soldOut && !product.originalPriceShow.isEmpty
-                && product.originalPriceShow != product.priceShow {
-                Text(product.originalPriceShow)
-                    .font(.system(size: 11 * theme.fontScale))
-                    .foregroundColor(Self.textDim)
-                    .strikethrough(true, color: Self.textDim)
-            }
+            HStack(alignment: .bottom, spacing: 6) {
+                VStack(alignment: .leading, spacing: 0) {
+                    if soldOut {
+                        Text(Self.soldOutLabel)
+                            .font(.system(size: 13 * theme.fontScale, weight: .bold))
+                            .foregroundColor(Self.soldOutColor)
+                    } else {
+                        Text(product.priceShow)
+                            .font(.system(size: 14 * theme.fontScale, weight: .heavy))
+                            .foregroundColor(Self.saleColor)
 
-            HStack(alignment: .center, spacing: 6) {
-                if soldOut {
-                    Text(Self.soldOutLabel)
-                        .font(.system(size: 13 * theme.fontScale, weight: .bold))
-                        .foregroundColor(Self.soldOutColor)
-                } else {
-                    Text(product.priceShow)
-                        .font(.system(size: 14 * theme.fontScale, weight: .heavy))
-                        .foregroundColor(Self.saleColor)
+                        // NOT gated by `hideSub` (add-recommendation-original-price-reference-ui-ios)
+                        // — matches design source `LBPProductRow` grid branch, where the
+                        // strikethrough (`p.was`) is unconditional and `hideSub` only gates the
+                        // unrelated `p.sub` caption. See `hideSub`'s doc comment above. Placed
+                        // BELOW the current price, same VStack (rb-ios-product-row-price-cart-
+                        // layout-fix) — see this method's header comment.
+                        if !product.originalPriceShow.isEmpty
+                            && product.originalPriceShow != product.priceShow {
+                            Text(product.originalPriceShow)
+                                .font(.system(size: 11 * theme.fontScale))
+                                .foregroundColor(Self.textDim)
+                                .strikethrough(true, color: Self.textDim)
+                        }
+                    }
                 }
                 Spacer(minLength: 0)
                 // Independent accent cart circle — design R21 "p.sold 時不顯示" (simply
-                // hidden, not converted to a bell like `.row`'s rowCartButton).
+                // hidden, not converted to a bell like `.row`'s rowCartButton). Sibling of
+                // the price VStack above in a `.bottom`-aligned HStack, so it stays pinned
+                // to the row's bottom edge regardless of the price cell's height
+                // (rb-ios-product-row-price-cart-layout-fix).
                 if !soldOut {
                     gridCartButton
                 }
@@ -410,12 +440,8 @@ public struct ProductRowView: View {
         }
         .padding(10)
         .background(
-            RoundedRectangle(cornerRadius: 12)
+            RoundedRectangle(cornerRadius: 14)
                 .fill(theme.background)
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .stroke(Self.stroke, lineWidth: 1)
         )
         .contentShape(Rectangle())
         .onTapGesture { onOpenProduct?() }
@@ -486,6 +512,10 @@ public struct ProductRowView: View {
     static let outSoonLabel = "即將售完"
     static let hotLabel = "熱賣中"
 
+    /// `.row` play-hint pill text/icon color (design R21, `rb-ios-product-row-play-hint-pill`).
+    static let playHintText = Color(hex: "#111111") ?? Color.black
+    static let playHintLabel = "看講解"
+
     static let breathDuration: Double = 0.9
     static let breathOpacityMin: Double = 0.55
     static let breathOpacityMax: Double = 1.0
@@ -517,11 +547,18 @@ public struct ProductRowView: View {
 // recommendation from core `LivebuyPlayerViewController.channel?.otherGoods` (matched
 // by `productId`) instead — see the "商品明細新增『商品介紹』文字區與『更多商品』推薦格"
 // spec Requirement. This conversion exists ONLY to feed `ProductRowView`'s pixels.
+//
+// `originalPriceShow` is a direct pass-through of the receiver's own field
+// (add-recommendation-original-price-reference-ui-ios) — `LBProductRecommendation`
+// gained this field in `add-recommendation-original-price-template-ios`; the source
+// product's own `""` (no original price) flows through unchanged, same as
+// `priceShow: priceShow` immediately below.
 extension LBProductRecommendation {
     var asDisplayProduct: LBProduct {
         LBProduct(
             id: productId, goodsNo: "", goodsGpn: "", name: name,
-            price: 0, priceShow: priceShow, originalPrice: nil, originalPriceShow: "",
+            price: 0, priceShow: priceShow, originalPrice: nil,
+            originalPriceShow: originalPriceShow,
             stock: soldOut == 1 ? 0 : 1, pic: pic, photos: pic.isEmpty ? [] : [pic],
             brief: "", soldOut: soldOut, isHot: 0, isOutSoon: 0, narrateStatus: 0,
             isAwait: 0, isAwaitNotice: 0, beginTime: nil, endTime: nil, diversionUrl: "",

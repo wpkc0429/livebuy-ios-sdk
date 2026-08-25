@@ -154,15 +154,14 @@ public struct AuthGateModalView: View {
 
     // MARK: - Overhanging accent lock badge (LBPAuthGate brand badge)
     //
-    // accent fill + white `lock.fill` SF Symbol + `theme.background` ring + soft
-    // accent shadow. Reads instantly as "login required" and keeps it on-brand.
+    // accent fill + white `LockGlyph`（closed padlock, design `Icons.lock`, replaces SF
+    // Symbol `lock.fill` — rb-ios-icon-parity）+ `theme.background` ring + soft accent
+    // shadow. Reads instantly as "login required" and keeps it on-brand.
 
     private var lockBadge: some View {
         ZStack {
             Circle().fill(theme.accent)
-            Image(systemName: "lock.fill")
-                .font(.system(size: 24 * theme.fontScale, weight: .semibold))
-                .foregroundColor(.white)
+            LockGlyph(size: 24 * theme.fontScale, color: .white)
         }
         .frame(width: 60, height: 60)
         .overlay(Circle().stroke(theme.background, lineWidth: 4))

@@ -631,22 +631,18 @@ public struct PlayerHeaderBarView: View {
     // bottom-right floating preview (host-owned, reusing `FloatingWidgetView`). info /
     // share live in the side rail; mute is the tap-to-unmute gesture on the video area.
 
+    /// A 36×36 round glass icon button (live-chrome.jsx iconBtn) drawing the
+    /// hand-drawn `PipGlyph` (design `Icons.pip` — frame + inset rect + directional
+    /// arrow, rb-ios-icon-parity; replaces SF Symbol `pip.enter`). Inert when
+    /// `onMinimize` is nil — still rendered so the chrome is visually complete.
     private var iconCluster: some View {
-        glassIconButton(systemName: "pip.enter", action: onMinimize)
-            .accessibilityIdentifier(LBAccessibilityID.playerMinimize)
-    }
-
-    /// A 36×36 round glass icon button (live-chrome.jsx iconBtn). Inert when its
-    /// action is nil — still rendered so the chrome is visually complete.
-    private func glassIconButton(systemName: String, action: (() -> Void)?) -> some View {
-        Button(action: { action?() }) {
-            Image(systemName: systemName)
-                .font(.system(size: 16 * theme.fontScale, weight: .semibold))
-                .foregroundColor(onGlass)
+        Button(action: { onMinimize?() }) {
+            PipGlyph(size: 16 * theme.fontScale, color: onGlass)
                 .frame(width: 36, height: 36)
                 .background(Circle().fill(iconGlass))
         }
         .buttonStyle(PlainButtonStyle())
+        .accessibilityIdentifier(LBAccessibilityID.playerMinimize)
     }
 
     // MARK: - Pure helpers

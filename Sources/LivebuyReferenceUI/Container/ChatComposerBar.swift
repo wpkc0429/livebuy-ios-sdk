@@ -118,9 +118,7 @@ public struct ChatComposerBar: View {
                 .accessibilityIdentifier(LBAccessibilityID.chatComposer)
 
             Button(action: send) {
-                Image(systemName: "arrow.up.circle.fill")
-                    .font(.system(size: 30))
-                    .foregroundColor(canSend ? theme.accent : Color.white.opacity(0.35))
+                ArrowUpCircleFillGlyph(size: 30, color: canSend ? theme.accent : Color.white.opacity(0.35))
             }
             .disabled(!canSend)
             .accessibilityIdentifier(LBAccessibilityID.chatSend)

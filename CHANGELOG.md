@@ -5,6 +5,54 @@ All notable changes to the Livebuy iOS SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.8.0] - 2026-08-25
+
+> **Minor.** 延續 v4.7.0 剛上線的「更多商品」推薦格，本輪多項精進＋新增商品選項可購性計算＋
+> icon 對齊新版設計稿。有 2 項 package-internal BREAKING（非 public API 簽章變更，見下方
+> Changed）：推薦格導覽簡化（移除巢狀 breadcrumb 返回）、拖曳手勢局部回退為調高/收合各自獨立
+> 判斷。**iOS + Android 兩端 lockstep**；React Native / Flutter 不在此列車（見
+> [`livebuy-android-sdk/CHANGELOG.md`](../livebuy-android-sdk/CHANGELOG.md#480---2026-08-25)
+> 的 Android 對照段）。
+
+### Added
+
+- **商品選項不可購性計算＋disabled 攔截**：多層規格選項（如顏色×尺寸）改用精確比對取代先前的
+  子字串搜尋，不可購組合顯示 disabled 灰階並攔截點擊。
+- **`LBProduct` 新增 `description` 欄位（`String?`）**：承載商品真實介紹文字，tolerant decode
+  （缺鍵/型別不符 → `nil`）。
+- **「更多商品」推薦格新增原價劃線顯示**：推薦卡片新增原價欄位透傳與劃線渲染。
+- **icon 對齊新版設計稿**：14 顆自繪 glyph 對齊 `icons.jsx` 新版設計來源，34 張 snapshot
+  baseline 重生。純視覺，不影響互動行為。
+- **商品袋 row 播放提示改為「看講解」白底膠囊**：對齊設計稿 R21，tap handler 邏輯不變。
+- **商品明細數量列與收藏鈕間補分隔線**：純視覺排版補強。
+- **`product-detail-drag` QA 調查用 XCTHitchMetric 量測工具**（Example app 內，investigation-only，
+  非回歸測試套件一部分）：量測底部 sheet 拖曳過程的掉幀情況，供人工讀數判讀，不隨 SDK 出貨。
+
+### Changed
+
+- **⚠️ 「更多商品」推薦格導覽簡化（BREAKING，reference-ui 內部行為，非 public API）**：移除
+  v4.7.0 引入的 breadcrumb 逐層返回機制，header 關閉鈕永遠是「✕ 全部關閉」；播放圖示換片後
+  額外呼叫既有的 `dismissDetail()`，整個商品 sheet stack 隨換片一併關閉（v4.7.0 是「换片不連動
+  dismiss」）。如果你的 host 依賴 v4.7.0「推薦格巢狀返回」行為，本版已改變。
+- **「更多商品」推薦格上限 4 → 12**。
+- **換片時一併關閉外層商品袋/清單抽屜**：先前換片後外層抽屜若已開啟會維持開著，本版起一併關閉。
+- **商品介紹文字區改顯示真實資料**：v4.7.0 上線時固定顯示佔位文案，本版接上真實
+  `LBProduct.description`；**沒有真實介紹文字時整個區塊（含標題）都不顯示**，不再顯示佔位文案
+  （比照既有 `brief` 欄位「空字串不畫」規則對齊）。背景分層同步改為外層灰底＋白色內容卡片。
+- **更多商品卡片版面調整**：原價移到售價下方、加購鈕貼齊卡片底部；grid 卡片移除邊框。
+- **⚠️ 底部 sheet 拖曳手勢局部回退為各自獨立判斷（BREAKING，iOS-only）**：v4.7.0 剛整併的
+  「拖曳調高」與「拖曳收合」單一連續手勢，本版 iOS 端局部撤回，改回各自獨立判斷、不共用連續
+  量測狀態機。僅影響 iOS；Android 維持 v4.7.0 的整併手勢不變。使用者體感（上拖調高、下拖收合）
+  預期不受影響，差異在內部狀態機是否共用。
+
+### Fixed
+
+- **拖曳調整高度過程中的掉幀式抖動（round-4）**：round-3（v4.7.0 已修）的修法實機重測後抖動並
+  未真正消失，本版拖曳期間卡片改用 `.drawingGroup()` 攤平降低陰影/合成成本。待人工實機再次確認
+  手感。
+- **推薦資料源改從容器持久快取退回提供**：修正特定邊界情況（容器快取命中但欄位為空）下漏抓
+  推薦資料的問題；純技術韌性修正，行為對使用者不可見。
+
 ## [4.7.0] - 2026-08-25
 
 > **Minor.** 新增 3 項 host-facing 能力——商品明細/加購 sheet 的 Sale 促銷徽章、`LBProduct` 補上

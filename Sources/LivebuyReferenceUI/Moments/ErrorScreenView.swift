@@ -124,14 +124,23 @@ public struct ErrorScreenView: View {
         }
     }
 
-    /// Kind-specific SF Symbol glyph (mirrors the design's per-kind SVG icons:
-    /// `.stream` → struck-through wifi, `.notFound` → magnifier, `.outdated` →
-    /// up-arrow). All iOS-13+ SF Symbols.
-    private var glyph: String {
+    /// Kind-specific glyph (mirrors the design's per-kind SVG icons: `.stream` →
+    /// struck-through wifi, `.notFound` → magnifier, `.outdated` → up-arrow-in-circle).
+    /// `.stream` / `.outdated` are hand-drawn (`Icons.wifiSlash` / `Icons.arrowUpCircle`,
+    /// rb-ios-icon-parity — replace SF Symbol `wifi.slash` / `arrow.up.circle`);
+    /// `.notFound` keeps SF Symbol `magnifyingglass` (unchanged, outside this change's
+    /// 14-icon scope).
+    @ViewBuilder
+    private var glyph: some View {
         switch error.kind {
-        case .stream:   return "wifi.slash"
-        case .notFound: return "magnifyingglass"
-        case .outdated: return "arrow.up.circle"
+        case .stream:
+            WifiSlashGlyph(size: 26, color: iconTint)
+        case .notFound:
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 26, weight: .semibold))
+                .foregroundColor(iconTint)
+        case .outdated:
+            ArrowUpCircleGlyph(size: 26, color: iconTint)
         }
     }
 
@@ -167,9 +176,7 @@ public struct ErrorScreenView: View {
                 .fill(iconTint.opacity(0.14))
                 .overlay(
                     Circle().stroke(iconTint.opacity(0.40), lineWidth: 1))
-            Image(systemName: glyph)
-                .font(.system(size: 26, weight: .semibold))
-                .foregroundColor(iconTint)
+            glyph
         }
         .frame(width: 60, height: 60)
     }
@@ -228,9 +235,7 @@ public struct ErrorScreenView: View {
     private var retryPrimaryButton: some View {
         Button(action: { onRetry?() }) {
             HStack(spacing: 7) {
-                Image(systemName: "arrow.clockwise")
-                    .font(.system(size: 14, weight: .bold))
-                    .foregroundColor(.white)
+                ArrowClockwiseGlyph(size: 14, color: .white)
                 Text(Self.retryLabel)
                     .font(.system(size: 15 * theme.fontScale, weight: .bold))
                     .foregroundColor(.white)

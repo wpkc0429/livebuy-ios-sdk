@@ -64,7 +64,12 @@ public struct LBCartRequest: Equatable {
 /// minimal: just enough to render a recommendation card and switch videos
 /// (`videoId`) — NOT the full `LBProduct` (no `specifications` / `specOptions`;
 /// a tap into the nested detail re-maps a full `LBProductDetailState` via the
-/// existing `onProductTap` path instead).
+/// existing `onProductTap` path instead). `originalPriceShow` is the one
+/// exception carved out of that "deliberately minimal" set
+/// (add-recommendation-original-price-template-ios) — it was simply missing
+/// from D2's original field list, not a decision to omit it; reference-ui's
+/// `.grid` card strikethrough rendering needs it to show a struck-through
+/// original price alongside `priceShow`.
 public struct LBProductRecommendation: Equatable {
     public let productId: String
     public let name: String
@@ -77,15 +82,21 @@ public struct LBProductRecommendation: Equatable {
     public let videoId: String?
     /// 0/1 — mirrors `LBProduct.soldOut` (API integer, not boolean).
     public let soldOut: Int
+    /// Struck-through original price display string — direct mirror of
+    /// `LBProduct.originalPriceShow` (same convention as
+    /// `LBProductDetailState.originalPriceShow`). `""` when the source product
+    /// has no original price (add-recommendation-original-price-template-ios).
+    public let originalPriceShow: String
 
     public init(productId: String, name: String, priceShow: String, pic: String,
-                videoId: String?, soldOut: Int) {
+                videoId: String?, soldOut: Int, originalPriceShow: String = "") {
         self.productId = productId
         self.name = name
         self.priceShow = priceShow
         self.pic = pic
         self.videoId = videoId
         self.soldOut = soldOut
+        self.originalPriceShow = originalPriceShow
     }
 }
 
@@ -185,13 +196,17 @@ public final class DefaultProductSheet {
     /// design.md D1/D2): excludes `productId` itself from `otherGoods` (data-correctness
     /// concern, owned by template — see design.md D1) and maps the remainder into the
     /// minimal `LBProductRecommendation` shape. Does NOT truncate to any card count —
-    /// truncation is reference-ui's job (design.md D1).
+    /// truncation is reference-ui's job (design.md D1). `originalPriceShow` is a direct
+    /// passthrough of the source `LBProduct.originalPriceShow` (add-recommendation-
+    /// original-price-template-ios) — already `""` on the source when there is no
+    /// original price, so no extra nil/empty handling is needed here.
     static func recommendations(from otherGoods: [LBProduct], excluding productId: String) -> [LBProductRecommendation] {
         otherGoods
             .filter { $0.id != productId }
             .map {
                 LBProductRecommendation(productId: $0.id, name: $0.name, priceShow: $0.priceShow,
-                                        pic: $0.pic, videoId: $0.videoId, soldOut: $0.soldOut)
+                                        pic: $0.pic, videoId: $0.videoId, soldOut: $0.soldOut,
+                                        originalPriceShow: $0.originalPriceShow)
             }
     }
 
@@ -214,6 +229,29 @@ public struct LBVariantGroup: Equatable {
     public init(label: String, options: [String]) {
         self.label = label
         self.options = options
+    }
+}
+
+/// One spec-option group's CASCADING purchasability snapshot
+/// (rb-ios-variant-cascading-availability-template). `availableOptions[i]` corresponds
+/// to `LBVariantGroup.options[i]` (same order, same length) — `true` when choosing that
+/// value, together with whatever is CURRENTLY chosen in every OTHER group, still resolves
+/// to at least one `stock > 0` `LBSpec`. Read via `DefaultVariantPicker.optionAvailability`
+/// (or the underlying pure `DefaultVariantPicker.optionAvailability(groups:selection:specifications:)`),
+/// which returns one `LBVariantGroupAvailability` per `groups` entry, in the same order.
+///
+/// This is a PURE DERIVATION for host/reference-ui to decide which chips to grey out /
+/// disable, and how the not-yet-chosen groups should re-narrow once an earlier group is
+/// picked (multi-group "cascading" disable). It does NOT gate `selectVariant(groupIndex:
+/// optionIndex:)` — the template still allows selecting any in-range option regardless of
+/// its availability flag; whether to block the tap in the UI is a reference-ui decision.
+public struct LBVariantGroupAvailability: Equatable {
+    public let groupIndex: Int
+    public let availableOptions: [Bool]
+
+    public init(groupIndex: Int, availableOptions: [Bool]) {
+        self.groupIndex = groupIndex
+        self.availableOptions = availableOptions
     }
 }
 
@@ -271,6 +309,15 @@ public final class DefaultVariantPicker {
                        selectedSpec: selectedSpec, selectedSpecificationId: selectedSpecificationId)
     }
 
+    /// Cascading purchasability snapshot for the CURRENT `groups` / `selection` /
+    /// `specifications` (rb-ios-variant-cascading-availability-template). Read-through,
+    /// recomputed on every access (no caching, no mutation, no notification) — matches
+    /// the `state` computed-property pattern. See `LBVariantGroupAvailability` /
+    /// `optionAvailability(groups:selection:specifications:)` for the shape and algorithm.
+    public var optionAvailability: [LBVariantGroupAvailability] {
+        Self.optionAvailability(groups: groups, selection: selection, specifications: specifications)
+    }
+
     /// Re-seed groups / specifications for a NEW product and CLEAR any selection
     /// (D1 — new detail resets variant). When the product has no spec groups,
     /// `groups` is empty and `selectedSpec` becomes the single spec (if any) so a
@@ -319,23 +366,102 @@ public final class DefaultVariantPicker {
     }
 
     /// PURE resolver (testable in isolation): returns the matching `LBSpec` ONLY
-    /// when EVERY group has a chosen option AND a spec whose `name` contains all
-    /// chosen option values exists. Returns nil while selection is incomplete or
-    /// no spec matches (D2 — incomplete selection ⇒ no specId ⇒ add-to-cart guard
-    /// rejects).
+    /// when EVERY group has a chosen option AND a spec whose `name` matches all
+    /// chosen option values (via `specNameMatches`, see below) exists. Returns nil
+    /// while selection is incomplete or no spec matches (D2 — incomplete selection
+    /// ⇒ no specId ⇒ add-to-cart guard rejects).
     static func selectedSpec(groups: [LBVariantGroup], selection: [Int: Int],
                              specifications: [LBSpec]) -> LBSpec? {
         guard !groups.isEmpty else { return specifications.first }
         // Every group must be chosen.
         guard selection.count == groups.count else { return nil }
-        let chosenValues: [String] = groups.indices.compactMap { gi -> String? in
+        let chosen: [(groupIndex: Int, value: String)] = groups.indices.compactMap { gi -> (Int, String)? in
             guard let oi = selection[gi], oi >= 0, oi < groups[gi].options.count else { return nil }
-            return groups[gi].options[oi]
+            return (gi, groups[gi].options[oi])
         }
-        guard chosenValues.count == groups.count else { return nil }
-        // A spec matches when its `name` contains all chosen option values.
+        guard chosen.count == groups.count else { return nil }
+        // A spec matches when its `name` matches every chosen option value
+        // (rb-ios-variant-cascading-availability-template — precise per-group matching,
+        // see `specNameMatches` doc comment for why plain `.contains` is unsafe here).
         return specifications.first { spec in
-            chosenValues.allSatisfy { spec.name.contains($0) }
+            chosen.allSatisfy { specNameMatches(spec.name, value: $0.value, siblingOptions: groups[$0.groupIndex].options) }
+        }
+    }
+
+    // MARK: - Cascading availability (rb-ios-variant-cascading-availability-template)
+    //
+    // Backing algorithm for `optionAvailability` (public instance property above) and the
+    // precise spec-name matcher shared with `selectedSpec` (D2 refactor — the two resolvers
+    // MUST agree on what counts as a match, or a UI built on `optionAvailability` could
+    // disagree with what `selectedSpec` actually resolves once the user finishes selecting).
+
+    /// PURE matcher (testable in isolation): does `name` correspond to `value`, one option
+    /// chosen for a SINGLE spec-option group, WITHOUT being fooled by another option in the
+    /// SAME group that happens to contain `value` as a literal substring?
+    ///
+    /// `LBSpec.name`'s multi-group join convention (what separator, if any, the backend uses
+    /// to concatenate e.g. a chosen color + a chosen size into one spec name) has no
+    /// documented/verified format anywhere in this repo, and every existing fixture only
+    /// exercises a single spec-option group — so this deliberately does NOT assume any
+    /// separator (unlike splitting `name` into tokens by a guessed delimiter, which would
+    /// silently break full-selection resolution if the guess is wrong). Instead it stays
+    /// substring-based (like the code this replaces) but first MASKS OUT of `name` any other
+    /// option in `siblingOptions` (the full option list of `value`'s OWN group) that is
+    /// STRICTLY LONGER than `value` and itself contains `value` as a substring — e.g. group
+    /// `[S, XS]`: checking `value == "S"` against `name == "XS"` first removes the sibling
+    /// `"XS"` from `name` (leaving `""`), so the leftover no longer contains `"S"` and the
+    /// match correctly fails. Checking `value == "XS"` finds no longer sibling containing
+    /// `"XS"` itself, so `name` is used as-is and the match correctly succeeds.
+    ///
+    /// Known simplification: does not attempt to fully disambiguate pathological cases where
+    /// the SAME literal string is reused as an option value across two DIFFERENT groups and
+    /// also happens to collide as a substring in a spec name — real product catalogs (color /
+    /// size / capacity …) are not expected to hit this (see design.md D1 Risks).
+    static func specNameMatches(_ name: String, value: String, siblingOptions: [String]) -> Bool {
+        let longerSiblings = siblingOptions.filter {
+            $0 != value && $0.count > value.count && $0.contains(value)
+        }
+        let masked = longerSiblings.reduce(name) { $0.replacingOccurrences(of: $1, with: "") }
+        return masked.contains(value)
+    }
+
+    /// PURE (testable in isolation): for EVERY group in `groups`, for EVERY option value in
+    /// that group, computes whether choosing that value — together with whatever is
+    /// CURRENTLY chosen (`selection`) in every OTHER group — still resolves to at least one
+    /// `stock > 0` `LBSpec`. Returns one `LBVariantGroupAvailability` per `groups` entry, IN
+    /// THE SAME ORDER, each holding a `[Bool]` parallel to that group's `options`.
+    ///
+    /// A group's OWN currently-chosen option is NOT held fixed when evaluating that SAME
+    /// group's own options — every option in a group (including the one already selected) is
+    /// re-checked against the OTHER groups' current selections only. This means that once a
+    /// combination becomes invalid across two dimensions (e.g. picking a 2nd group's value
+    /// that has no in-stock spec together with the 1st group's already-chosen value), BOTH
+    /// group's conflicting chips report unavailable, not just the one just tapped — standard
+    /// cascading-picker UX. Callers that want a different policy (e.g. never flag the
+    /// group's own current selection) can special-case that themselves; this function reports
+    /// the full, unfiltered result.
+    ///
+    /// `groups.isEmpty` (no-spec product) → `[]` (nothing to render).
+    static func optionAvailability(groups: [LBVariantGroup], selection: [Int: Int],
+                                   specifications: [LBSpec]) -> [LBVariantGroupAvailability] {
+        guard !groups.isEmpty else { return [] }
+        return groups.indices.map { gi in
+            let group = groups[gi]
+            // Values currently chosen in every OTHER group (this group's own selection is
+            // deliberately excluded — see doc comment above).
+            let otherChosen: [(groupIndex: Int, value: String)] = groups.indices.compactMap { ogi in
+                guard ogi != gi, let oi = selection[ogi], oi >= 0, oi < groups[ogi].options.count else { return nil }
+                return (ogi, groups[ogi].options[oi])
+            }
+            let flags = group.options.map { value -> Bool in
+                let candidates = otherChosen + [(groupIndex: gi, value: value)]
+                return specifications.contains { spec in
+                    spec.stock > 0 && candidates.allSatisfy {
+                        specNameMatches(spec.name, value: $0.value, siblingOptions: groups[$0.groupIndex].options)
+                    }
+                }
+            }
+            return LBVariantGroupAvailability(groupIndex: gi, availableOptions: flags)
         }
     }
 }
