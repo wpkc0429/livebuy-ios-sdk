@@ -167,6 +167,49 @@ public struct LivebuyPlayerConfig {
     /// product this flag is a no-op (the caption is already hidden).
     public var showStock: Bool = true
 
+    /// Whether the header's subscribe affordance (the small +/✓ badge overlaid on the avatar,
+    /// `PlayerHeaderBarView.subscribeBadge`) renders at all. Default `false` — HIDDEN unless a
+    /// host opts in (rb-ios-subscribe-favorite-visibility-toggle, product decision: 訂閱功能改為
+    /// 預設關閉隱藏，host 可設定開啟顯示). Pure client-side render-visibility gate: the underlying
+    /// subscribe FEATURE (`simulateSubscribeTap` / `PlayerShellModel.toggleSubscribe()` → core +
+    /// `SUBSCRIBE_CHANGED`) is completely UNCHANGED and keeps working — a host that hides the
+    /// badge can still drive subscribe state through its own UI. Unlike `showViewerCount` /
+    /// `titleScroll` / `showStock` above (which mirror an existing merchant/backend setting and
+    /// default `true` to preserve prior behavior), this flag has NO backend counterpart —
+    /// `sdkConfig` is untouched by this change — and its default is intentionally the OPPOSITE
+    /// direction (opt-in, not opt-out).
+    ///
+    /// Delivered to `PlayerHeaderBarView` via `SwiftUI.Environment` (`\.lbShowSubscribe`,
+    /// injected once at the overlay root next to `continuousAnimationGate` /
+    /// `PowerProfileMotionEnvironment`) rather than a `PlayerShellModel` field + explicit
+    /// `PlayerHeaderBarView` init parameter — the pattern `showViewerCount` / `titleScroll` /
+    /// `showStock` above use — because this change's scope is `LivebuyPlayer.swift` +
+    /// `PlayerHeaderBarView.swift` + `ProductDetailSheetView.swift` only and MUST NOT touch
+    /// `PlayerShellModel.swift` / `PlayerShellView.swift`. The environment key's own default
+    /// (`PlayerHeaderBarView.swift`'s `lbShowSubscribe`) is `true`, so every OTHER construction
+    /// path (direct `PlayerHeaderBarView` use, `demo(...)`, existing snapshot / unit tests) keeps
+    /// showing the badge, byte-identical to before this change — only `LivebuyPlayer` explicitly
+    /// overrides it with this (now `false`-by-default) config value.
+    public var showSubscribe: Bool = false
+
+    /// Whether the product-detail sheet's inline 收藏（到貨追蹤 type=1）toggle
+    /// (`ProductDetailSheetView.favButtonInline`, plus its preceding hairline divider) renders at
+    /// all. Default `false` — HIDDEN unless a host opts in (rb-ios-subscribe-favorite-visibility-
+    /// toggle, same product decision as `showSubscribe`: 商品收藏功能改為預設關閉隱藏). Pure
+    /// client-side render-visibility gate: the underlying favorite / await-restock feature
+    /// (`ProductSheetsModel.toggleFavorite` → `DefaultGoodsTracking.toggleAwait(_:)`) is
+    /// completely UNCHANGED. No backend counterpart (`sdkConfig` is untouched); the default is
+    /// intentionally opt-in, the opposite direction from `showStock` above.
+    ///
+    /// Delivered to `ProductDetailSheetView` via `SwiftUI.Environment` (`\.lbShowFavorite`,
+    /// injected at the same overlay-root call site as `showSubscribe`) for the identical
+    /// file-scope reason — this change MUST NOT touch `ProductSheetsModel.swift` /
+    /// `ProductSheetsOverlayView.swift`. The environment key's own default is `true`, so every
+    /// OTHER construction path (direct `ProductDetailSheetView` use, `demo(...)`, existing
+    /// snapshot / unit tests) keeps showing the button, byte-identical to before this change —
+    /// only `LivebuyPlayer` overrides it with this (now `false`-by-default) config value.
+    public var showFavorite: Bool = false
+
     /// Fired when an IN-PLACE switch (hot-pick / watch-next) changes the shown
     /// video, with the NEW video id (R3), so a host can keep its own "current video" state
     /// in sync (e.g. a minimized preview shows the right video). Default `nil`.
@@ -412,7 +455,18 @@ public struct LivebuyPlayer: UIViewControllerRepresentable {
             // never instantiates a concrete surface type itself.
             let context = makeOverlayContext(player: player, template: template,
                                              theme: theme, coordinator: coordinator)
+            // rb-ios-subscribe-favorite-visibility-toggle: inject the two host-configurable
+            // visibility gates via Environment (see `LivebuyPlayerConfig.showSubscribe` /
+            // `.showFavorite` doc comments for why Environment rather than a model field —
+            // this change's file scope excludes `PlayerShellModel.swift` / `PlayerShellView.swift`
+            // / `ProductSheetsModel.swift` / `ProductSheetsOverlayView.swift`). Applied at the
+            // SAME overlay root `PowerProfileMotionEnvironment` already injects
+            // `continuousAnimationGate` from, so it reaches every descendant surface
+            // (`PlayerHeaderBarView`'s avatar badge, `ProductDetailSheetView`'s inline favorite
+            // button) regardless of how many composition layers sit in between.
             let overlay = resolveDesign().playerOverlay(context)
+                .environment(\.lbShowSubscribe, config.showSubscribe)
+                .environment(\.lbShowFavorite, config.showFavorite)
             // Wrap the overlay so its continuous decorative animations (win-entry pulse ring,
             // long-title marquee) throttle with the device's thermal power profile + Reduce
             // Motion (ios-power-profile-animation-throttle-reference-ui). The wrapper owns a

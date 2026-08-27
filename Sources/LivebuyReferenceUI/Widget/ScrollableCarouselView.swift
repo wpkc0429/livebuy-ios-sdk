@@ -145,6 +145,16 @@ public struct ScrollableCarouselView: View {
                     cardWidth: cardWidth,
                     live: live,
                     onTapVideo: onTapVideo)
+                    // Bottom padding (rb-ios-carousel-bottom-padding): aligns the
+                    // drop-in strip's bottom whitespace with design's `LBPCarousel`
+                    // scroller (`padding: '0 16px 6px'`) and windowed `CarouselView`'s
+                    // existing `cardRow` (`CarouselView.swift` — `cardWindow.padding
+                    // (.bottom, 6)`). Added HERE (the caller/composition point), NOT
+                    // inside `CarouselRowView` itself — that view is shared by BOTH
+                    // this wrapper and the windowed `CarouselView.cardWindow`, which
+                    // already applies its own `.padding(.bottom, 6)` at ITS call site;
+                    // padding inside `CarouselRowView` would double up there to 12pt.
+                    .padding(.bottom, 6)
             }
         }
         // `widget_bgcolor` fill (rb-ios-scrollable-carousel-bgcolor), mirroring

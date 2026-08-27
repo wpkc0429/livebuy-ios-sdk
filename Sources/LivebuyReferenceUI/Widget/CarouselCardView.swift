@@ -28,7 +28,9 @@ import LivebuyUI
 //     display price). The thumb binds `goods.pic` on the live runtime path (gradient
 //     chip fallback); the price is de-duplicated via `displayPrice(_:)` so a
 //     symbol-bearing wire value does not render a double currency,
-//   • the `LBVideoItem.title` BELOW the thumbnail.
+//   • the `LBVideoItem.title` BELOW the thumbnail — gated by a `showTitle: Bool`
+//     parameter (default `true`; `FloatingWidgetView` passes `false` — see
+//     TITLE VISIBILITY below, rb-ios-floating-widget-hide-title).
 //
 // PRODUCT-CARD MODES (rb-ios-widget-product-card-modes, design R14; the `below`
 // placement was later reversed by design R17 / rb-ios-widget-product-card-below-slot-
@@ -63,6 +65,18 @@ import LivebuyUI
 // whitespace-padded and differently-cased spellings, and any unknown string) to
 // `.inside`. It MUST NOT be duplicated in the view body, and the normalized value
 // MUST NOT be written back into `WidgetModel` / `LBWidgetContent` / core.
+//
+// TITLE VISIBILITY (rb-ios-floating-widget-hide-title): `showTitle: Bool` (default `true`)
+// gates whether `item.title` is drawn below the thumbnail. Carousel row / video-shop grid
+// (the two `WidgetModel`-bound consumers) MUST NOT pass this parameter, so they keep the
+// pre-existing byte-identical rendering. `FloatingWidgetView` passes `showTitle: false`:
+// the design source for that surface, `sdk-components.jsx` `LBPFloatingWidget`, has no
+// title element at all, so the title on the reused card was purely an artifact of reusing
+// this primitive as the floating card's body — not something the design ever called for.
+// `false` removes the title element from the view tree entirely (not a blank-space
+// placeholder), so the card's intrinsic height shrinks by the title's height AND its
+// leading spacing. Independent of `productCard` / the below-row equal-height rule — the
+// two axes never interact.
 //
 // KIND MAPPING (three-way: LIVE → UPCOMING → VOD). The core `LBVideoItem` carries
 // `liveStatus: Int` + `type: Int` + `publishAt: String` (UTC+8):
@@ -164,6 +178,21 @@ public struct CarouselCardView: View {
     /// `.inside` → pixels identical to before this parameter existed.
     public let productCard: String?
 
+    /// Whether to draw the title below the thumbnail (`item.title`). **Default `true`**
+    /// (carousel row / video-shop grid — the two `WidgetModel`-bound consumers — MUST NOT
+    /// pass this parameter, so they keep drawing the title exactly as before this
+    /// parameter existed). `false` (used by `FloatingWidgetView`, rb-ios-floating-widget-
+    /// hide-title) means the title element does NOT exist in the view tree at all — it is
+    /// NOT an empty-string / blank-space placeholder, and the card's intrinsic height
+    /// shrinks accordingly (no fixed-height reservation): the design source for the
+    /// floating surface, `sdk-components.jsx` `LBPFloatingWidget`, has no title element to
+    /// begin with, so this flag lets that one consumer opt OUT of a feature the shared
+    /// primitive draws by default — the same shape as the existing `productCard: String?`
+    /// parameter (carousel/grid opt IN to a feature via a non-default value; here floating
+    /// opts OUT via a non-default value). Independent of `productCard` — the two axes do
+    /// not interact.
+    public let showTitle: Bool
+
     /// Card tap → host-wired exit (→ host → core open player for `item.id`). nil for
     /// demo / snapshot instances — the card is inert. This layer NEVER opens the
     /// player / calls core simulate* itself.
@@ -175,6 +204,7 @@ public struct CarouselCardView: View {
         width: CGFloat = 132,
         live: Bool = false,
         productCard: String? = nil,
+        showTitle: Bool = true,
         onTap: (() -> Void)? = nil
     ) {
         self.item = item
@@ -182,6 +212,7 @@ public struct CarouselCardView: View {
         self.width = width
         self.live = live
         self.productCard = productCard
+        self.showTitle = showTitle
         self.onTap = onTap
     }
 
@@ -209,7 +240,14 @@ public struct CarouselCardView: View {
         Button(action: { onTap?() }) {
             VStack(alignment: .leading, spacing: 8) {
                 thumbnail
-                title
+                // `showTitle` gate (rb-ios-floating-widget-hide-title): `true` (default,
+                // carousel/grid) draws the title exactly as before this flag existed;
+                // `false` (floating) omits the element entirely — a nil optional view
+                // contributes no height AND no spacing (same pattern as `drawsBelowRow`
+                // just below), so the card gets shorter rather than leaving a blank gap.
+                if showTitle {
+                    title
+                }
                 // `below` ONLY — the product card sits UNDER THE TITLE, at the very
                 // bottom of the card (design R17, 2026-08-11: upstream reversed its own
                 // 2026-08-05 decision, which had put this slot BETWEEN the thumbnail and
@@ -585,7 +623,9 @@ public struct CarouselCardView: View {
 
     /// The video title below the thumbnail (LBPCarouselCard 218-224), 1-line clamp,
     /// painted with `theme.text` (the card sits on the host surface, not the dark
-    /// thumbnail).
+    /// thumbnail). Gated by `showTitle` at the call site in `body` — this computed
+    /// property itself is unconditional; when `showTitle == false` it is simply never
+    /// referenced, so it is never built (rb-ios-floating-widget-hide-title).
     private var title: some View {
         Text(item.title)
             .font(.system(size: 12 * theme.fontScale, weight: .semibold))
@@ -1191,6 +1231,16 @@ struct CarouselCardView_Previews: PreviewProvider {
             }
             .frame(width: 460, height: 340)
             .previewDisplayName("product_card modes")
+
+            // showTitle: false (rb-ios-floating-widget-hide-title) — the floating card's
+            // shape: no title, shorter intrinsic height than the default (left) card.
+            HStack(alignment: .top, spacing: 12) {
+                CarouselCardView(item: .demo(id: "demo-vid-005", live: true), theme: theme)
+                CarouselCardView(item: .demo(id: "demo-vid-006", live: true), theme: theme,
+                                 showTitle: false)
+            }
+            .frame(width: 320, height: 320)
+            .previewDisplayName("showTitle: true vs false")
         }
         .padding()
         .background(theme.background)

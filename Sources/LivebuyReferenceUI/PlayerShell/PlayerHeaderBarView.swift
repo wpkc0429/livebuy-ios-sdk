@@ -88,6 +88,36 @@ public enum LBVideoTitleScroll {
     }
 }
 
+// MARK: - Subscribe-badge visibility gate (rb-ios-subscribe-favorite-visibility-toggle)
+//
+// `LivebuyPlayerConfig.showSubscribe` (default `false`, an intentional opt-in product decision —
+// 訂閱功能改為預設關閉隱藏) needs to reach this leaf view WITHOUT this change touching
+// `PlayerShellModel.swift` / `PlayerShellView.swift` (both outside this change's file scope —
+// see `LivebuyPlayerConfig.showSubscribe`'s doc comment). Delivered via `SwiftUI.Environment`
+// instead of an explicit init parameter (a deliberate departure from this file's own documented
+// "SUB-VIEW INPUT PATTERN" of bound-value init params, for that one reason only), mirroring the
+// EXISTING `continuousAnimationGate` precedent: injected once at the `LivebuyPlayer` overlay root
+// (`LivebuyPlayer.swift`), consumed here.
+
+private struct ShowSubscribeKey: EnvironmentKey {
+    /// `true` for every construction path OTHER than `LivebuyPlayer` (direct `PlayerHeaderBarView`
+    /// construction, `demo(...)`, every existing snapshot / unit test) — so nothing outside the
+    /// drop-in container silently loses the badge. Only `LivebuyPlayer` explicitly injects its own
+    /// (now `false`-by-default) `config.showSubscribe`.
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    /// Host-configurable subscribe-badge visibility (`LivebuyPlayerConfig.showSubscribe`).
+    /// `false` → `avatar` renders WITHOUT `subscribeBadge` at all (not merely hidden — the view is
+    /// never constructed). Unset (constructed outside `LivebuyPlayer`) → `true`, byte-identical to
+    /// this module's behavior before this change.
+    var lbShowSubscribe: Bool {
+        get { self[ShowSubscribeKey.self] }
+        set { self[ShowSubscribeKey.self] = newValue }
+    }
+}
+
 /// The family-1 top-bar chrome. Pinned to the top of the player shell; paints the
 /// glassy host pill + round glass control cluster over a dark scrim gradient.
 public struct PlayerHeaderBarView: View {
@@ -203,6 +233,11 @@ public struct PlayerHeaderBarView: View {
     public var onMinimize: (() -> Void)?
     /// Tap on the subscribe affordance (the small badge on the avatar).
     public var onSubscribe: (() -> Void)?
+
+    /// Host-configurable subscribe-badge visibility (rb-ios-subscribe-favorite-visibility-toggle).
+    /// See the `ShowSubscribeKey` / `EnvironmentValues.lbShowSubscribe` doc comments above for why
+    /// this arrives via Environment rather than an init parameter.
+    @Environment(\.lbShowSubscribe) private var showSubscribe
     /// Tap on the host badge (the whole host pill) → the shell opens the
     /// VideoInfoPanel (design `LBPHostBadge onTap → video_info`; presentation-only,
     /// replaces the removed VOD rail `more` pill). The subscribe badge is a nested
@@ -522,8 +557,16 @@ public struct PlayerHeaderBarView: View {
             }
         }
         .frame(width: 28, height: 28)
-        // Subscribe badge sits at the bottom-trailing of the avatar (all layers).
-        .overlay(subscribeBadge, alignment: .bottomTrailing)
+        // Subscribe badge sits at the bottom-trailing of the avatar (all layers). Gated by
+        // `showSubscribe` (rb-ios-subscribe-favorite-visibility-toggle): `false` → NOT
+        // constructed at all (the `if` branch inside `Group` occupies nothing when absent), not
+        // merely visually hidden. `Group { if ... }` (not the iOS-15-only
+        // `.overlay(alignment:content:)` trailing-closure form) keeps this iOS-14-safe, matching
+        // this file's own D-7 constraint.
+        .overlay(
+            Group { if showSubscribe { subscribeBadge } },
+            alignment: .bottomTrailing
+        )
     }
 
     /// Test-only hook exposing the SAME `avatar` subtree `body` renders, so unit tests can

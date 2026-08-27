@@ -86,7 +86,7 @@ public struct FloatingBagButtonView: View {
     // MARK: - Design tokens (LBPBagButton)
 
     private static let size: CGFloat = 48          // 48×48 floating bag
-    private static let glyphSize: CGFloat = 22     // Icons.bag size 22
+    private static let glyphSize: CGFloat = 34     // Icons.bag size 34 (~70% of 48pt button)
     private static let badgeMinWidth: CGFloat = 20 // count chip minWidth
     private static let badgeHeight: CGFloat = 20   // count chip height
     private static let badgeFontSize: CGFloat = 11 // fontSize 11, weight 800

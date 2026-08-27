@@ -220,7 +220,7 @@ public struct LiveBottomBarView: View {
                     Circle()
                         .fill(Color.white)
                         .shadow(color: Color.black.opacity(0.2), radius: 5, x: 0, y: 4)
-                    BagGlyph(size: Self.iconGlyphSize, color: theme.accent)
+                    BagGlyph(size: Self.bagGlyphSize, color: theme.accent)
                 }
                 .frame(width: Self.iconSize, height: Self.iconSize)
 
@@ -353,7 +353,11 @@ private extension LiveBottomBarView {
 
     // iconBtn (36×36 round, rgba(20,20,24,0.6))
     static let iconSize: CGFloat = 36
-    static let iconGlyphSize: CGFloat = 18    // Icons size 18
+    static let iconGlyphSize: CGFloat = 18    // Icons size 18 (nickname / share / like)
+    // 商品袋圖示專屬尺寸（rb-ios-live-bottom-bar-bag-icon-enlarge）：`LBLiveBottomBar` 設計稿
+    // 只有 Icons.bag 用了比其他圖示更大的尺寸（25pt，約佔 36pt 容器 70%），只套用在 bagButton，
+    // 不影響共用 iconGlyphSize（暱稱 / 分享 / 愛心維持 18pt）。
+    static let bagGlyphSize: CGFloat = 25     // Icons.bag size 25 (~70% of 36pt button)
     static let iconButtonBackground = Color(.sRGB, red: 20 / 255, green: 20 / 255, blue: 24 / 255, opacity: 0.6)
 
     // cart badge (minWidth 16 / height 16, fontSize 10 weight 800, 1.5px #fff border)

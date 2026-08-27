@@ -536,7 +536,16 @@ struct LBChatLineRow: View {
         // 性決定，設計稿註解「改回顯示把 display 換成 'flex'」）。`slot` 不放進 HStack 子項，讓
         // bubble 貼齊列最左側起點，不留原本 slot + `spacing: 8` 的空白區塊。`slot` 本身的繪製邏輯
         // 保留在下方不刪，供未來復原（加回 `slot` 子項即可，spacing 值不變）。
-        HStack(alignment: .top, spacing: 8) {
+        //
+        // `alignment: .center`（原為 `.top`，rb-ios-chat-bubble-text-vertical-center 順手修
+        // 正）：對齊設計稿 `moments.jsx` 第 330–335 行 `ACT_ROW` 的 `alignItems: 'center'`——這個
+        // HStack 原本是「24px 圖示 / 頭像 slot + bubble」兩個子項並排，`.top` 會讓 bubble 貼齊
+        // slot 頂端；`rb-ios-feed-avatar-icon-hide` 把 slot 從渲染樹拿掉後，HStack 目前只剩單一
+        // 子項（`bubble` 或 `roleBubble`），單一子項時 alignment 對其自身渲染是 no-op（沒有第二
+        // 個子項可供比較上下對齊），故這裡改成 `.center` 不會讓現有 baseline 的像素跳動——純粹是
+        // 「若 slot 未來依設計稿註解復原顯示」時預先避免 bubble 貼齊 slot 頂端造成明顯偏移的防禦
+        // 性修正。
+        HStack(alignment: .center, spacing: 8) {
             // 無角色 → 既有暱稱內聯前綴氣泡（byte-identical）；有角色 → 角色版型氣泡。
             if hasRole { roleBubble } else { bubble }
         }
@@ -644,8 +653,35 @@ struct LBChatLineRow: View {
     /// `VStack(spacing: 3)` / reply-quote `.padding(.vertical, 3)`) — stacked with
     /// `ChatFeedView.rowGap` the previous value read as excess whitespace between
     /// consecutive single-line viewer messages.
+    ///
+    /// `bubbleText.offset(y:)` (`rb-ios-chat-bubble-text-vertical-center`) compensates for
+    /// `Text`'s own line-box being vertically asymmetric around its glyph ink at this size
+    /// (measured, not assumed — see design.md): even though `.padding(.vertical, 3)` above
+    /// is perfectly symmetric, a rendered isolated guest bubble on a non-black backdrop
+    /// (`chat-feed-guest-bubble-light-bg`, the existing baselines all sit on `Color.black`
+    /// where the `0.42`-alpha bubble is indistinguishable from the backdrop) showed the ink
+    /// sitting measurably closer to the bubble's BOTTOM edge than its top — i.e. `Text`
+    /// reserves more headroom above the glyphs than footroom below them at 11.5pt. The
+    /// offset shifts the ink UP by that measured gap difference so it lands centered
+    /// between the (unchanged) symmetric padding, WITHOUT touching the padding values
+    /// themselves — `ChatLineRowBubblePaddingTests.swift` asserts the single
+    /// `.padding(.vertical, 3)` node's insets are exactly `(3, 3)`, and `.offset` is a
+    /// pure paint-time translation (it does not add/alter any `_PaddingLayout` node or
+    /// change the view's reported size), so that structural assertion is unaffected.
+    ///
+    /// Re-measured after `rb-ios-chat-colon-font-baseline-fix` (see that change's design.md):
+    /// the ORIGINAL `-1.8pt` was measured while the colon segment (`bubbleText`) had NO
+    /// `.font()` modifier and rendered at the ambient (~17pt) default, which inflated that
+    /// segment's line-box height and skewed the whole line's ink asymmetrically low — the
+    /// `-1.8pt` was largely compensating for THAT, not an intrinsic asymmetry of `Text` at
+    /// 11.5pt. Once the colon was given the correct `11.5 * theme.fontScale` font (matching
+    /// the nickname / body on either side of it), re-running the same `.scaleEffect(6)` +
+    /// pixel-bounding-box diagnostic on the same content ("小雨：求鏈接~") showed the ink
+    /// EXACTLY centered (58px / 58px top and bottom gaps at 12x total scale, 0pt diff) with
+    /// NO offset applied at all — so `guestBubbleTextVerticalOffset` is now `0.0`.
     private var bubble: some View {
         bubbleText
+            .offset(y: Self.guestBubbleTextVerticalOffset * theme.fontScale)
             .lineLimit(2)
             .padding(.horizontal, 11)
             .padding(.vertical, 3)
@@ -654,9 +690,43 @@ struct LBChatLineRow: View {
                     .fill(Color.black.opacity(0.42)))
     }
 
+    /// Vertical paint-time compensation (pt, at `fontScale == 1.0`) for the guest bubble's
+    /// text-vs-line-box asymmetry described on `bubble` above. Negative = shift the ink UP.
+    /// Scales with `theme.fontScale` (same convention as the `11.5 * theme.fontScale` font
+    /// sizes) since the underlying asymmetry is a property of the rendered font size, not a
+    /// fixed pixel amount.
+    ///
+    /// `0.0` (was `-1.8` pre-`rb-ios-chat-colon-font-baseline-fix`): re-measured once the
+    /// colon segment got its correct font — see the note on `bubble` above. The `.offset(y:)`
+    /// call is kept in place (rather than removed) so the established measurement-driven
+    /// compensation mechanism stays available if a future content shape or font-render change
+    /// reintroduces a measurable asymmetry; today it is a documented no-op.
+    private static let guestBubbleTextVerticalOffset: CGFloat = 0.0
+
     /// The bubble content: an inline dimmed nickname prefix + the message (design
     /// `LBChatLine`), or just the message when there is no nickname. The message text is
     /// the backend-prebuilt body (NOT name-embedded — design `m.text` is the message only).
+    ///
+    /// The nickname/message separator is a single full-width colon「：」
+    /// (`rb-ios-chat-message-colon-separator`, mirroring the design's `!isHost` branch:
+    /// the nickname is now followed directly by「：」with `marginRight` zeroed out — no
+    /// extra space). This ONLY applies to this general-viewer path (`hasRole == false`);
+    /// `roleBubble` (host / AI / reply, `hasRole == true`) keeps its own independent
+    /// name-row layout and is unaffected.
+    ///
+    /// The colon SHALL carry the SAME `.font()` / `.foregroundColor()` as the nickname
+    /// (`rb-ios-chat-colon-font-baseline-fix`): `moments.jsx` `LBChatLine` (line ~434)
+    /// puts the colon literally INSIDE the same `<span>` as `m.user` — `{m.user}{!isHost
+    /// && '：'}` — sharing that span's `opacity` / `fontWeight`, with `fontSize: 11.5`
+    /// inherited from the shared `ACT_BUBBLE` for every child (nickname / colon / body
+    /// alike). Before this fix `Text("：")` had NO `.font()` modifier at all — SwiftUI
+    /// keeps each concatenated `Text` segment's OWN styling (a segment never inherits a
+    /// neighboring segment's `.font()`), so an un-styled segment falls back to the
+    /// ambient/environment default font (~17pt system body), not the `11.5 *
+    /// theme.fontScale` used everywhere else in this bubble. That size mismatch gave the
+    /// colon glyph a taller line box than the text on either side of it, reading as "not
+    /// vertically centered" — see `guestBubbleTextVerticalOffset` below for the
+    /// re-measurement this fix triggered.
     private var bubbleText: Text {
         let body = Text(text)
             .font(.system(size: 11.5 * theme.fontScale, weight: .regular))
@@ -665,7 +735,9 @@ struct LBChatLineRow: View {
         return Text(userName)
             .font(.system(size: 11.5 * theme.fontScale, weight: .semibold))
             .foregroundColor(.white.opacity(0.72))
-            + Text("  ")   // design `marginRight: 6` between name and message
+            + Text("：")
+                .font(.system(size: 11.5 * theme.fontScale, weight: .semibold))
+                .foregroundColor(.white.opacity(0.72))
             + body
     }
 
@@ -730,13 +802,18 @@ struct LBEventJoinLineRow: View {
 
     var body: some View {
         // Shared message-row language (ACT_ROW gap 8): round crown-glyph slot OUTSIDE the
-        // bubble, `.top`-aligned like `LBChatLineRow`'s avatar + bubble pairing.
+        // bubble, matching `LBChatLineRow`'s avatar + bubble pairing.
         //
         // `rb-ios-feed-avatar-icon-hide`（design R20）：`eventSlot` 不再組裝進渲染樹——對齊
         // 設計稿 `moments.jsx` `ACT_SLOT` 由 `display:'flex'` 改 `display:'none'`（可逆的暫時性
         // 決定）。`bubble` 貼齊列最左側起點，不留原本 slot + `spacing: 8` 的空白。`eventSlot`
         // 繪製邏輯保留在下方不刪，供未來復原。
-        HStack(alignment: .top, spacing: 8) {
+        //
+        // `alignment: .center`（原為 `.top`，rb-ios-chat-bubble-text-vertical-center 順手修
+        // 正，理由同 `LBChatLineRow.body`）：對齊設計稿 `moments.jsx` `ACT_ROW` 的
+        // `alignItems: 'center'`；HStack 目前只剩單一子項（`bubble`），單一子項時 alignment 對
+        // 渲染是 no-op，故不影響現有 baseline，只是為 slot 未來復原顯示預先避免頂端對齊偏移。
+        HStack(alignment: .center, spacing: 8) {
             bubble
         }
         .frame(maxWidth: .infinity, alignment: .leading)

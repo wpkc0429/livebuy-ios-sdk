@@ -108,6 +108,21 @@ public struct VideoInfoPanelView: View {
     /// nil → demo / snapshot 時 pill 仍渲染但點擊 no-op。
     private let onSubscribe: (() -> Void)?
 
+    /// Host-configurable subscribe-pill visibility (rb-ios-subscribe-favorite-visibility-toggle).
+    /// Reuses the SAME `EnvironmentValues.lbShowSubscribe` key `PlayerHeaderBarView.swift` defines
+    /// (this file is the same module, so the `internal` extension property is directly visible —
+    /// no redefinition needed) — one flag, two render sites (header avatar badge + this info-panel
+    /// pill), since both are the SAME subscribe feature (`videoinfo-subscribe-pill-wire-refui`'s own
+    /// doc comment: "Same entry as the header avatar subscribe badge"). Default `true` when unset
+    /// (constructed outside `LivebuyPlayer`), byte-identical to this module's behavior before this
+    /// change; `LivebuyPlayer` overrides it with `LivebuyPlayerConfig.showSubscribe` (now `false` by
+    /// default) at the SAME overlay-root injection point `PlayerHeaderBarView` already reads from —
+    /// `VideoInfoPanelView` is presented via `.lbBottomSheet` from within `PlayerShellView`, itself
+    /// composed inside `PlayerOverlayRootView` (the same `AnyView` `LivebuyPlayer.makeUIViewController`
+    /// injects `.environment(\.lbShowSubscribe, ...)` onto), so no additional injection point is
+    /// needed.
+    @Environment(\.lbShowSubscribe) private var showSubscribe
+
     public init(
         theme: ReferenceUITheme,
         info: LBInfoTabState,
@@ -370,7 +385,14 @@ public struct VideoInfoPanelView: View {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
 
-            subscribePill
+            // Gated by `showSubscribe` (rb-ios-subscribe-favorite-visibility-toggle), same flag
+            // as the header avatar badge (`PlayerHeaderBarView.subscribeBadge`) — both are the
+            // same subscribe feature's UI, so both hide together. `false` → NOT constructed at
+            // all (not merely visually hidden); the row's leading content keeps its existing
+            // `.frame(maxWidth: .infinity, alignment: .leading)` layout unchanged either way.
+            if showSubscribe {
+                subscribePill
+            }
         }
     }
 

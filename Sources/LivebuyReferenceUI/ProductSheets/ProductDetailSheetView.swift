@@ -122,6 +122,36 @@ public enum LBShowStock {
     }
 }
 
+// MARK: - Favorite-button visibility gate (rb-ios-subscribe-favorite-visibility-toggle)
+//
+// `LivebuyPlayerConfig.showFavorite` (default `false`, an intentional opt-in product decision —
+// 商品收藏功能改為預設關閉隱藏) needs to reach this leaf view WITHOUT this change touching
+// `ProductSheetsModel.swift` / `ProductSheetsOverlayView.swift` (both outside this change's file
+// scope — see `LivebuyPlayerConfig.showFavorite`'s doc comment). Delivered via `SwiftUI.Environment`
+// instead of an explicit init parameter (a deliberate departure from this file's own documented
+// "SUB-VIEW INPUT PATTERN" of bound-value init params, for that one reason only), mirroring the
+// `ShowSubscribeKey` precedent in `PlayerHeaderBarView.swift` — injected once at the `LivebuyPlayer`
+// overlay root, consumed here.
+
+private struct ShowFavoriteKey: EnvironmentKey {
+    /// `true` for every construction path OTHER than `LivebuyPlayer` (direct
+    /// `ProductDetailSheetView` construction, `demo(...)`, every existing snapshot / unit test) —
+    /// so nothing outside the drop-in container silently loses the button. Only `LivebuyPlayer`
+    /// explicitly injects its own (now `false`-by-default) `config.showFavorite`.
+    static let defaultValue = true
+}
+
+extension EnvironmentValues {
+    /// Host-configurable favorite-button visibility (`LivebuyPlayerConfig.showFavorite`). `false`
+    /// → `detailThumbBlock` renders WITHOUT `favButtonInline` (and its preceding hairline divider)
+    /// at all. Unset (constructed outside `LivebuyPlayer`) → `true`, byte-identical to this
+    /// module's behavior before this change.
+    var lbShowFavorite: Bool {
+        get { self[ShowFavoriteKey.self] }
+        set { self[ShowFavoriteKey.self] = newValue }
+    }
+}
+
 /// The family-3 product-detail sheet for one `LBProductDetailState`. Renders the
 /// product photo / name / price (with strike-through original), the variant chip
 /// picker (one `LBPVariantPicker` per group), the qty stepper, and the primary
@@ -270,6 +300,11 @@ public struct ProductDetailSheetView: View {
     /// Host-wired 收藏 toggle → `model.toggleFavorite()` → `DefaultGoodsTracking.toggleAwait(goodsGpn)`.
     /// reference-ui NEVER calls core directly. nil for demo / snapshot instances.
     private let onToggleFavorite: (() -> Void)?
+
+    /// Host-configurable favorite-button visibility (rb-ios-subscribe-favorite-visibility-toggle).
+    /// See the `ShowFavoriteKey` / `EnvironmentValues.lbShowFavorite` doc comments above for why
+    /// this arrives via Environment rather than an init parameter.
+    @Environment(\.lbShowFavorite) private var showFavorite
     /// Host-wired 分享 tap (the footer's leading slot, `[分享][CTA]`). Share is a HOST
     /// CONCERN — the headless SDK exposes no share route, so reference-ui simply
     /// FORWARDS the intent to this closure (the container provides it as a host
@@ -644,9 +679,15 @@ public struct ProductDetailSheetView: View {
             // rb-ios-product-sheet-qty-fav-divider）。hairline 自身的 `.padding(.vertical, 18)`
             // 即為收藏鈕之前的全部間距，故不額外加 top padding（比照本檔另兩處既有 hairline
             // 呼叫後不再額外加 top padding 的慣例）。
-            hairline.padding(.vertical, 18)
-            favButtonInline
-                .frame(maxWidth: .infinity, alignment: .center)
+            //
+            // Both the divider AND the button are gated together by `showFavorite`
+            // (rb-ios-subscribe-favorite-visibility-toggle): `false` → NEITHER renders, so hiding
+            // the feature never leaves an orphaned hairline with nothing below it.
+            if showFavorite {
+                hairline.padding(.vertical, 18)
+                favButtonInline
+                    .frame(maxWidth: .infinity, alignment: .center)
+            }
         }
     }
 

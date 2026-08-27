@@ -55,6 +55,17 @@ import LivebuyUI
 // kind-mapping is documented in `CarouselCardView.swift`; the floating surface honours
 // it (NO separate upcoming/replay handling).
 //
+// TITLE SUPPRESSION (rb-ios-floating-widget-hide-title): the reused `CarouselCardView` is
+// constructed with `showTitle: false`, so this surface does NOT draw a title below its
+// thumbnail. The design source `sdk-components.jsx` `LBPFloatingWidget` (590-712) has no
+// title element at all — the reused card's title (drawn by default for the carousel /
+// video-shop grid consumers) was purely an artifact of reusing `CarouselCardView` as this
+// surface's body, not something the design ever called for. Suppressing it is therefore a
+// design-alignment fix, not a new deviation. The card's intrinsic height shrinks
+// accordingly (no fixed-height reservation for the missing title) — this surface never
+// relied on a fixed card height to begin with (`productCard` already varies it: `below`
+// mode, unused here, grows it by 44pt).
+//
 // CLOSE-TAP ISOLATION (sdk-components.jsx 695-696 `e.stopPropagation()`): the close
 // button is a SEPARATE `Button` overlaid on top of the card. SwiftUI hit-testing
 // routes the tap to the front-most interactive view, so a tap on the close fires ONLY
@@ -158,11 +169,21 @@ public struct FloatingWidgetView: View {
             // this surface binds a bare `LBVideoItem` rather than a `WidgetModel`.
             // Leaving the parameter at its default keeps the floating card on the
             // `inside` overlay (rb-ios-widget-product-card-modes).
+            //
+            // NO title here, deliberately (rb-ios-floating-widget-hide-title): the design
+            // source `sdk-components.jsx` `LBPFloatingWidget` (590-712) has no title
+            // element at all — the reused card's title was purely an artifact of reusing
+            // `CarouselCardView` as this surface's body, never something the design asked
+            // for. `showTitle: false` removes the element from the view tree (the card's
+            // intrinsic height shrinks accordingly — see `CarouselCardView`'s TITLE
+            // VISIBILITY doc comment), aligning this surface with the design rather than
+            // introducing a new deviation.
             CarouselCardView(
                 item: video,
                 theme: theme,
                 width: width,
                 live: live,
+                showTitle: false,
                 onTap: { onTap?(video) })
 
             // Top-right round close button (floating-only). A SEPARATE front-most
