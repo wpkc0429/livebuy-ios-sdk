@@ -5,6 +5,29 @@ All notable changes to the Livebuy iOS SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.10.0] - 2026-08-28
+
+> **Minor.** 延續 v4.9.1，本輪 iOS 這輪未觸碰任何已發佈 `ios/Sources/LivebuyReferenceUI` 原始碼——
+> 兩項條目皆為本 repo 內建 `ios/Example` demo app（`ExampleApp` + `ShopHost`）的 host-wiring
+> 修復，**不是**套件本身的行為改變（`LivebuyPlayerConfig.showStock` / `.titleScroll` 契約本身
+> 早已正確、已有測試覆蓋）。整輪判定 minor 的理由來自本輪 RN/Flutter 套件新增的 `titleScroll`
+> 公開能力（不隨本次 iOS/Android tag 對外發佈，見 release notes 說明）。**iOS + Android 兩端
+> lockstep**；React Native / Flutter 不在此列車（見
+> [`livebuy-android-sdk/CHANGELOG.md`](../livebuy-android-sdk/CHANGELOG.md#4100---2026-08-28)
+> 的 Android 對照段）。
+
+### Fixed
+
+- **不顯示庫存設定失效（Example demo app only）**：`ExampleApp` / `ShopHost` 兩個建構
+  `LivebuyPlayerConfig` 的 host 端點先前沒有讀取 `sdkConfig.extensions["show_stock"]` 並轉送，
+  導致後台「不顯示庫存」設定在這兩個 demo app 上被無視。已補上接線。⚠️ 這不是套件行為改變——
+  `LivebuyPlayerConfig.showStock` / `LBShowStock.normalized()` 契約本身一直是對的；如果你自己
+  的 host app 有同樣的接線缺口，會踩到一模一樣的靜默失效。
+- **標題不跑馬燈設定失效（Example demo app only）**：同上兩個建構點沒有讀取
+  `sdkConfig.extensions["video_title_scroll"]` 並轉送進 `LivebuyPlayerConfig.titleScroll`，
+  導致商家「標題不捲動」設定在這兩個 demo app 上永遠無效。已補上接線。⚠️ 同樣不是套件行為
+  改變。
+
 ## [4.9.1] - 2026-08-27
 
 > **Patch.** 延續 v4.9.0，本輪為純 bug fix（3 項 iOS-only 視覺/手勢修復），無新增公開欄位、
