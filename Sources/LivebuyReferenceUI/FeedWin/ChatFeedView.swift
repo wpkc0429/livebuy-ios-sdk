@@ -647,16 +647,19 @@ struct LBChatLineRow: View {
                         .stroke(Color.white.opacity(0.55), lineWidth: 1)))
     }
 
-    /// Translucent dark bubble. ACT_BUBBLE: radius 12, black 0.42, padding h11/v3.
+    /// Translucent dark bubble. ACT_BUBBLE: radius 12, black 0.42, padding h11/v4.
     /// Vertical padding tightened from 5→3 (rb-ios-chat-bubble-padding-tighten) to
     /// align with `roleBubble`'s existing compact-spacing convention (its inner
-    /// `VStack(spacing: 3)` / reply-quote `.padding(.vertical, 3)`) — stacked with
-    /// `ChatFeedView.rowGap` the previous value read as excess whitespace between
-    /// consecutive single-line viewer messages.
+    /// `VStack(spacing: 3)` / reply-quote `.padding(.vertical, 3)`), then widened
+    /// 3→4 (rb-ios-guest-bubble-padding-widen — an owner-directed product judgment
+    /// call to shrink the residual cross-platform visual gap vs Android's guest
+    /// bubble, whose own line-height metrics run taller even at the same nominal
+    /// padding; NOT a design-token realignment, and Android's `vertical = 3.dp`
+    /// is intentionally left unchanged by that change).
     ///
     /// `bubbleText.offset(y:)` (`rb-ios-chat-bubble-text-vertical-center`) compensates for
     /// `Text`'s own line-box being vertically asymmetric around its glyph ink at this size
-    /// (measured, not assumed — see design.md): even though `.padding(.vertical, 3)` above
+    /// (measured, not assumed — see design.md): even though `.padding(.vertical, 4)` above
     /// is perfectly symmetric, a rendered isolated guest bubble on a non-black backdrop
     /// (`chat-feed-guest-bubble-light-bg`, the existing baselines all sit on `Color.black`
     /// where the `0.42`-alpha bubble is indistinguishable from the backdrop) showed the ink
@@ -665,9 +668,15 @@ struct LBChatLineRow: View {
     /// offset shifts the ink UP by that measured gap difference so it lands centered
     /// between the (unchanged) symmetric padding, WITHOUT touching the padding values
     /// themselves — `ChatLineRowBubblePaddingTests.swift` asserts the single
-    /// `.padding(.vertical, 3)` node's insets are exactly `(3, 3)`, and `.offset` is a
+    /// `.padding(.vertical, 4)` node's insets are exactly `(4, 4)`, and `.offset` is a
     /// pure paint-time translation (it does not add/alter any `_PaddingLayout` node or
-    /// change the view's reported size), so that structural assertion is unaffected.
+    /// change the view's reported size), so that structural assertion is unaffected. The
+    /// asymmetry being compensated is intrinsic to the glyph ink within its own line box,
+    /// independent of the surrounding (symmetric) outer padding value, so the 3→4 widening
+    /// is not expected to invalidate the `guestBubbleTextVerticalOffset == 0.0` measurement
+    /// below — confirmed visually against the regenerated `chat-feed-guest-bubble-light-bg`
+    /// baseline (rb-ios-guest-bubble-padding-widen); re-run the diagnostic in that change's
+    /// design.md if a future change alters the line-box asymmetry itself.
     ///
     /// Re-measured after `rb-ios-chat-colon-font-baseline-fix` (see that change's design.md):
     /// the ORIGINAL `-1.8pt` was measured while the colon segment (`bubbleText`) had NO
@@ -684,7 +693,7 @@ struct LBChatLineRow: View {
             .offset(y: Self.guestBubbleTextVerticalOffset * theme.fontScale)
             .lineLimit(2)
             .padding(.horizontal, 11)
-            .padding(.vertical, 3)
+            .padding(.vertical, 4)
             .background(
                 RoundedRectangle(cornerRadius: 12)
                     .fill(Color.black.opacity(0.42)))
@@ -886,13 +895,15 @@ struct LBEventJoinLineRow: View {
     }
 
     /// Trailing CTA row — 加入活動 / 已參加, moved BELOW the text (design re-sync `c3c98733`:
-    /// was inline beside the text).
+    /// was inline beside the text). Top padding `7` matches design source
+    /// `moments.jsx` `marginTop: 7` and Android `EventJoinLine`'s `padding(top = 7.dp)`
+    /// (rb-ios-event-join-cta-margin-top-align — was `4`, a drift from the design value).
     @ViewBuilder
     private var ctaRow: some View {
         if joined {
-            joinedChip.padding(.top, 4)
+            joinedChip.padding(.top, 7)
         } else {
-            joinButton.padding(.top, 4)
+            joinButton.padding(.top, 7)
         }
     }
 

@@ -5,6 +5,25 @@ All notable changes to the Livebuy iOS SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.9.1] - 2026-08-27
+
+> **Patch.** 延續 v4.9.0，本輪為純 bug fix（3 項 iOS-only 視覺/手勢修復），無新增公開欄位、
+> 無行為預設值改變、無 API 簽章變更。**iOS + Android 兩端 lockstep**；React Native / Flutter
+> 不在此列車（本輪未被觸及，見
+> [`livebuy-android-sdk/CHANGELOG.md`](../livebuy-android-sdk/CHANGELOG.md#491---2026-08-27)
+> 的 Android 對照段）。
+
+### Fixed
+
+- **底部 sheet 同手勢調高後反轉關閉視覺瞬跳**：改採 Android 既有的平滑 dismiss 模型
+  （`computeDismissExcessPx`），移除峰值折抵造成的單幀瞬間跳動。
+- **活動公告 CTA 間距對齊設計稿**：「加入活動」按鈕 / 「已參加」chip 的 top padding
+  `4pt` → `7pt`，對齊 `moments.jsx` 與 Android 既有數值。
+- **觀眾留言氣泡 padding 加寬**：垂直 padding `3pt` → `4pt`，縮小與 Android 因文字度量機制
+  導致的視覺厚度落差。
+- **底部 sheet 拖曳調高抖動根因修復（實機驗證）**：定位到 `DragGesture` 座標系統回饋迴路
+  根因並修復，適用於全部 5 個經 `.lbBottomSheet(...)` 呈現的底部 sheet。
+
 ## [4.9.0] - 2026-08-27
 
 > **Minor.** 延續 v4.8.0，本輪新增訂閱/收藏顯示開關（新公開設定欄位）＋底部 sheet 拖曳一系列
