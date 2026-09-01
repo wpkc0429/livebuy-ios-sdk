@@ -5,6 +5,50 @@ All notable changes to the Livebuy iOS SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.11.0] - 2026-09-01
+
+> **Minor.** 延續 v4.10.0，本輪 iOS 新增多項能力：播放器手勢重寫（乾淨模式）、直播抽獎活動入口、
+> VOD/回放播放進度條復原、雙擊送愛心（LIVE + 回放）、字幕 CC 開箱顯示、中獎領獎分頁。含
+> **1 項 ⚠️ BREAKING**（`WinClaimModalView.Stage.confirmClose` 移除，reference-ui-internal
+> 範圍）——比照 v4.5.0/v4.8.0/v4.9.0 先例，含 BREAKING 但整輪仍判定 minor（理由見
+> [release notes](../docs/release-notes/v4.11.0.md)）。
+> **iOS + Android 兩端 lockstep**；React Native / Flutter 同一批主題已落地於套件本身，不隨本次
+> tag 對外發佈（見
+> [`livebuy-android-sdk/CHANGELOG.md`](../livebuy-android-sdk/CHANGELOG.md#4110---2026-09-01)
+> 的 Android 對照段）。
+
+### Added
+
+- **播放器手勢重寫：乾淨模式** — 單擊行為依直播/VOD 分流；長按改為切換「乾淨模式」（隱藏頂欄/
+  底部 bar/聊天等疊層），取代舊版「按住暫停」手勢。
+- **直播抽獎活動入口按鈕與彈窗** — 綁定既有 `activeEvents()`/`ACTIVE_EVENT_STARTED` 資料，首次
+  補上 UI 呈現（非新資料契約）。
+- **VOD / 直播回放播放進度條復原上線** — 依現行設計稿重新上線（先前刻意移除）。
+- **LIVE 進行中雙擊送愛心，擴大到已結束直播回放** — 兩個獨立 change：LIVE 進行中首次落地，同批
+  次擴大到回放（parity 既有 LIVE 行為）。
+- **字幕 CC 開箱即顯示 VTT 內容** — CC 開關先前存在但看不到實際字幕文字，本輪補上真正渲染顯示。
+- **中獎領獎 modal 新增分頁** — 多筆中獎紀錄可翻頁瀏覽；同批活動/中獎入口堆疊順序反轉（活動入口
+  改佔主槽，中獎入口讓位）。
+
+### Changed
+
+- **⚠️ BREAKING — 中獎領獎 modal 關閉機制簡化**：`WinClaimModalView.Stage.confirmClose` /
+  `LocalPhase.confirmClose` 移除，連同 ✕ 關閉鈕與「關閉視窗」二次確認文字鈕；modal 現在**只能
+  透過 scrim（背景遮罩點擊）關閉**。**受影響對象**：直接窮舉 `WinClaimModalView.Stage` enum 的
+  host；走 turnkey 容器或不窮舉內部狀態列舉的 host 不受影響。
+- **中獎入口按鈕改款**：圓形 → 方形，拿掉脈動動畫與數字徽章。
+- **播放進度條平常態細線** `3pt` → `2pt`，消除底部視覺空隙。
+
+### Fixed
+
+- **LIVE 底部 bar 貼底**：拿掉多餘外層 margin，內容真正貼齊底部。
+- **頂欄與 LIVE 底部 bar 拿掉裝飾性漸層**。
+- **播放進度條真正貼底**：消除先前的 8.5pt 底部空隙。
+- **乾淨模式漏隱藏聊天 feed 修復**（範圍遺漏，非 regression）。
+- **直播多商品同時介紹漏標 badge 修復**。
+- **拖曳進度條中切背景（含觸發自動 PiP）後讀數卡住修復**：切背景視同放開手指，回前景後讀數不再
+  卡住。
+
 ## [4.10.0] - 2026-08-28
 
 > **Minor.** 延續 v4.9.1，本輪 iOS 這輪未觸碰任何已發佈 `ios/Sources/LivebuyReferenceUI` 原始碼——

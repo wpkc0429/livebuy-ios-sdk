@@ -72,12 +72,18 @@ public struct ProductListView: View {
     /// placeholder via `RemoteStillImageView` (rb-ios-product-real-images).
     public let live: Bool
 
-    /// The currently-introducing product's id (`DefaultProductOverlayState.introducingProductId`,
-    /// LIVE narrate_status==2). The row whose `product.id` matches draws the「介紹中」bottom
-    /// banner; in LIVE the play/seek affordance is hidden (live has no timeline to scrub). The
-    /// data layer surfaces this list introducing-FIRST (`productsIntroducingFirst`) — this layer
-    /// MUST NOT re-sort. nil (VOD / demo / nothing introducing) → no banner, play shown.
-    public let introducingProductId: String?
+    /// The set of product ids CURRENTLY being introduced live (LIVE narrate_status==2 — the
+    /// backend MAY narrate MULTIPLE products simultaneously). Every row whose `product.id` is a
+    /// member draws the「介紹中」bottom banner (rb-ios-product-bag-multi-narrating — the prior
+    /// single `introducingProductId: String?` could only ever flag ONE row, so a second
+    /// simultaneously-narrating product silently drew no badge); in LIVE the play/seek affordance
+    /// is hidden (live has no timeline to scrub). Sourced from `ProductSheetsModel
+    /// .liveActiveProducts` (← `DefaultPlayerTemplate.liveActiveProducts`, the SAME view-model
+    /// aggregate `PlayerShellModel.liveActiveProducts` already consumes for the pinned-card
+    /// carousel). The data layer surfaces this list introducing-FIRST (`productsIntroducingFirst`)
+    /// — this layer MUST NOT re-sort. Empty (VOD / demo / nothing introducing) → no banner, play
+    /// shown.
+    public let introducingProductIds: Set<String>
 
     /// Playback mode for the thumbnail overlay (rb-ios-product-row-status-overlay):
     /// VOD → play icon; active-live → 介紹中 on the narrating row; replay → 介紹中 on the
@@ -143,7 +149,7 @@ public struct ProductListView: View {
         products: [LBProduct],
         cartCount: Int,
         live: Bool = false,
-        introducingProductId: String? = nil,
+        introducingProductIds: Set<String> = [],
         mode: ProductRowMode? = nil,
         playbackPosition: Int = 0,
         onOpenProduct: ((LBProduct) -> Void)? = nil,
@@ -160,7 +166,7 @@ public struct ProductListView: View {
         self.products = products
         self.cartCount = cartCount
         self.live = live
-        self.introducingProductId = introducingProductId
+        self.introducingProductIds = introducingProductIds
         self.mode = mode
         self.playbackPosition = playbackPosition
         self.onOpenProduct = onOpenProduct
@@ -350,7 +356,8 @@ public struct ProductListView: View {
                         // therefore BYTE-IDENTICAL to the pre-extraction `productRow(_:index:)`
                         // (rb-ios-product-detail-recommendations §1).
                         mode: mode ?? (live ? .live : .vod),
-                        isNarrating: introducingProductId != nil && product.id == introducingProductId,
+                        isNarrating: ProductBagNarratingBadge.isNarrating(
+                            productId: product.id, narratingIds: introducingProductIds),
                         playbackPosition: playbackPosition,
                         onOpenProduct: { onOpenProduct?(product) },
                         onQuickAdd: { (onQuickAdd ?? onOpenProduct)?(product) },
@@ -415,6 +422,21 @@ public struct ProductListView: View {
     static let searchPlaceholder = "搜尋商品名稱"
     static let searchCancel = "取消"
     static let noResultsFormat = "找不到符合「%@」的商品"
+}
+
+// MARK: - ProductBagNarratingBadge — pure multi-product narrating-badge decision
+//
+// Whether a given product row should draw the「介紹中」badge, given the LIVE set of currently-
+// narrating product ids (rb-ios-product-bag-multi-narrating). The backend MAY narrate MULTIPLE
+// products simultaneously — this membership test (rather than a single-id equality check) is
+// what lets EVERY simultaneously-narrating row draw the badge, not just the first. Extracted as
+// a pure function (unit-test-discipline) so the multi-id rule is unit-testable without mounting
+// SwiftUI, mirroring `ProductSheetsOverlayView.swift`'s `CartToastTrigger` /
+// `VariantPromptTrigger` / `CartLoadingFloor` pattern.
+enum ProductBagNarratingBadge {
+    static func isNarrating(productId: String, narratingIds: Set<String>) -> Bool {
+        narratingIds.contains(productId)
+    }
 }
 
 // MARK: - Deterministic demo seed (previews + snapshot tests)

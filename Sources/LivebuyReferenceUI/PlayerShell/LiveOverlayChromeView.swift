@@ -68,6 +68,14 @@ public struct LiveOverlayChromeView: View {
     /// (問題 7, rb-ios-live-now-introducing-carousel).
     public let pinnedProducts: [LBProduct]
 
+    /// Extra bottom inset added to the shared announce/pinned-card row's `.padding(.bottom, 64)`
+    /// (rb-ios-restore-vod-playback-progress-bar). Default `0` keeps every existing call site /
+    /// snapshot baseline pixel-identical. `PlayerShellView` passes a positive value (~36pt)
+    /// while the VOD/replay `PlaybackProgressBarView` is expanded but no longer actively being
+    /// dragged, so the announce banner + pinned card reappear lifted clear of the still-expanded
+    /// transport bar.
+    public let bottomInset: CGFloat
+
     /// Current page in the multi-product pinned-card carousel (only meaningful when
     /// `pinnedProducts.count > 1`). Pure UI `@State`, NOT a view-model.
     @State private var pinnedIndex: Int = 0
@@ -88,18 +96,36 @@ public struct LiveOverlayChromeView: View {
     /// presentation copy — no view-model binding.
     public let showGestureHints: Bool
 
-    /// Whether to draw the「長按畫面 = 暫停 / 繼續」hold-to-pause hint pill within the gesture
-    /// hints. Default `true` → all three pills (snapshot baseline unchanged). `PlayerShellView`
-    /// passes `!model.isLive`：進行中直播（`liveStatus == 1`，串流 + 預錄）禁止手勢暫停 → 該行提示
-    /// MUST NOT 顯示；已結束直播的回放（`isFinishedLiveReplay`, `isLive == false`）仍可暫停 → 保留。
-    /// Only gates the hold pill — the tap-to-mute / swipe hints are unaffected
-    /// （rb-ios-live-hold-pause-suppress）.
+    /// RETIRED gate (rb-ios-gesture-clean-mode-rewrite, supersedes rb-ios-live-hold-pause-
+    /// suppress): used to hide the「長按畫面 = 暫停 / 繼續」hold-to-pause hint pill while
+    /// `model.isLive`. Long-press no longer drives pause/resume — it now toggles `cleanMode`
+    /// (unconditionally, not gated on live/VOD) — so the hold-hint pill (now reading「長按畫面
+    /// = 切換乾淨模式」, see `hintHold`) is ALWAYS shown regardless of this flag. The stored
+    /// property is kept (source compatibility for any existing explicit-`false` call site) but
+    /// no longer read anywhere in `body`.
+    @available(*, deprecated, message: "no longer gates anything; the hold-hint pill is always shown (long-press now toggles cleanMode, not pause)")
     public let showsHoldPauseHint: Bool
+
+    /// LIVE vs VOD flag (`PlayerShellModel.isLive`). Selects the tap-hint pill's copy
+    /// (rb-ios-gesture-clean-mode-rewrite, design R23): `true` → "點擊畫面 = 切換靜音"
+    /// (unchanged copy); `false` (VOD / 已結束直播的回放 / 直播預告倒數) → "點擊畫面 = 切換
+    /// 播放/暫停", matching `PlayerShellView.resolveTapAction(isLive:)`'s actual dispatch.
+    /// Default `true` keeps any call site that doesn't pass it byte-identical to the prior
+    /// unconditional copy.
+    public let isLive: Bool
 
     /// When true, the gesture-hint pills fade out shortly after appearing
     /// (onboarding affordance over a real live video). Defaults to `false` →
     /// static presentation so snapshot baselines stay deterministic.
     public let autoFadeGestureHints: Bool
+
+    /// 「乾淨模式」(rb-ios-gesture-clean-mode-rewrite, design R23, ADDED Requirement
+    /// "LivebuyReferenceUI PlayerShellView 長按切換「乾淨模式」隱藏懸浮 chrome") — `true` hides
+    /// this sub-view's announce banner / host caption / gesture hints, but MUST NOT affect the
+    /// pinned-card carousel (`pinnedCardCarousel`), which stays visible so the viewer can still
+    /// see (and act on) the currently-narrating product while chrome is hidden. Default `false`
+    /// keeps every existing call site byte-identical (this Requirement is fully additive).
+    public let cleanMode: Bool
 
     /// Tap on the pinned-product card → host-wired turnkey product-detail flow
     /// (PlayerShellView forwards to `model.performProductTap`). nil → the card is
@@ -125,22 +151,28 @@ public struct LiveOverlayChromeView: View {
     public init(theme: ReferenceUITheme,
                 announceText: String,
                 pinnedProducts: [LBProduct],
+                bottomInset: CGFloat = 0,
                 live: Bool = false,
                 hostCaption: String = "",
                 showGestureHints: Bool = true,
                 showsHoldPauseHint: Bool = true,
+                isLive: Bool = true,
                 autoFadeGestureHints: Bool = false,
+                cleanMode: Bool = false,
                 onTapPinnedProduct: ((LBProduct) -> Void)? = nil,
                 onDismissPinnedProduct: ((String) -> Void)? = nil,
                 onTapAnnounce: (() -> Void)? = nil) {
         self.theme = theme
         self.announceText = announceText
         self.pinnedProducts = pinnedProducts
+        self.bottomInset = bottomInset
         self.live = live
         self.hostCaption = hostCaption
         self.showGestureHints = showGestureHints
         self.showsHoldPauseHint = showsHoldPauseHint
+        self.isLive = isLive
         self.autoFadeGestureHints = autoFadeGestureHints
+        self.cleanMode = cleanMode
         self.onTapPinnedProduct = onTapPinnedProduct
         self.onDismissPinnedProduct = onDismissPinnedProduct
         self.onTapAnnounce = onTapAnnounce
@@ -158,8 +190,10 @@ public struct LiveOverlayChromeView: View {
         // iOS-15+ `safeAreaInset`. Taps pass through where the design declares
         // `pointerEvents: none` (caption / gesture hints).
         ZStack {
-            // Centered host caption (~46% from the top — `LBLiveHostCaption`).
-            if !hostCaption.isEmpty {
+            // Centered host caption (~46% from the top — `LBLiveHostCaption`). Hidden in
+            // `cleanMode` (rb-ios-gesture-clean-mode-rewrite ADDED Requirement) — the pinned
+            // card itself stays (see `pinnedCardCarousel`, unaffected by `cleanMode`).
+            if !hostCaption.isEmpty && !cleanMode {
                 VStack(spacing: 0) {
                     Spacer(minLength: 0)
                         .frame(maxHeight: .infinity)
@@ -173,8 +207,9 @@ public struct LiveOverlayChromeView: View {
 
             // Centered gesture hints (`LBPGestureHint`). Onboarding affordance:
             // when autoFadeGestureHints is set (real live overlay) they show
-            // briefly then fade out; otherwise static (snapshot-deterministic).
-            if showGestureHints {
+            // briefly then fade out; otherwise static (snapshot-deterministic). Hidden in
+            // `cleanMode` (rb-ios-gesture-clean-mode-rewrite ADDED Requirement).
+            if showGestureHints && !cleanMode {
                 Group {
                     if autoFadeGestureHints {
                         gestureHints
@@ -197,11 +232,14 @@ public struct LiveOverlayChromeView: View {
             VStack(spacing: 0) {
                 Spacer(minLength: 0)
                 HStack(alignment: .bottom, spacing: 8) {
-                    if !announceText.isEmpty {
+                    if !announceText.isEmpty && !cleanMode {
                         // Tappable → host-wired navigation that opens the VideoInfoPanel notice
                         // tab (PlayerShellView: selectInfoTab(.notice) + infoPanelPresented).
                         // PlainButtonStyle keeps the pixels (snapshot baselines unchanged);
                         // inert when onTapAnnounce == nil (live-announce-tap-open-info-panel).
+                        // Hidden in `cleanMode` (rb-ios-gesture-clean-mode-rewrite ADDED
+                        // Requirement) — the pinned card on the trailing side of this SAME
+                        // HStack is UNAFFECTED (see `pinnedCardCarousel`).
                         Button(action: { onTapAnnounce?() }) {
                             announceBanner
                         }
@@ -217,7 +255,10 @@ public struct LiveOverlayChromeView: View {
                 // bottom bar's heart button right margin (rb-ios-live-chat-card-edge-align).
                 .padding(.leading, 8)
                 .padding(.trailing, 10)
-                .padding(.bottom, 64)
+                // `bottomInset` (default 0, additive) lifts the row clear of the VOD/replay
+                // `PlaybackProgressBarView` transport bar while it is expanded but no longer
+                // being actively dragged (rb-ios-restore-vod-playback-progress-bar).
+                .padding(.bottom, 64 + bottomInset)
             }
         }
     }
@@ -464,16 +505,16 @@ public struct LiveOverlayChromeView: View {
 
     // MARK: - LBPGestureHint — centered static gesture hints
 
-    /// Three centered dark hint pills (`LBPGestureHint`): tap-to-mute,
-    /// long-press-pause, swipe-to-switch. Pure static localized copy. The long-press-pause
-    /// pill is omitted when `showsHoldPauseHint == false` (進行中直播禁止手勢暫停 →
-    /// PlayerShellView 傳 `!model.isLive`; rb-ios-live-hold-pause-suppress). tap / swipe 不受影響。
+    /// Three centered dark hint pills (`LBPGestureHint`): tap (依 `isLive` 分流文案), 長按 =
+    /// 切換乾淨模式, swipe-to-switch. Pure static localized copy. ALL THREE always render — the
+    /// former `showsHoldPauseHint`-gated omission of the hold-hint pill is RETIRED
+    /// (rb-ios-gesture-clean-mode-rewrite, supersedes rb-ios-live-hold-pause-suppress): 乾淨模式
+    /// 不分直播/VOD 皆適用，該提示不再有第二層 per-line gate（只受整體 `showGestureHints` /
+    /// `cleanMode` 控制）。
     private var gestureHints: some View {
         VStack(spacing: 8) {
-            gestureHintPill(symbol: "hand.point.up.left.fill", text: Self.hintTap)
-            if showsHoldPauseHint {
-                gestureHintPill(symbol: "hand.raised.fill", text: Self.hintHold)
-            }
+            gestureHintPill(symbol: "hand.point.up.left.fill", text: Self.hintTap(isLive: isLive))
+            gestureHintPill(symbol: "hand.raised.fill", text: Self.hintHold)
             gestureHintPill(symbol: "arrow.up.arrow.down", text: Self.hintSwipe)
         }
     }
@@ -515,8 +556,16 @@ public struct LiveOverlayChromeView: View {
 
     /// Gesture-hint copy (static localized presentation strings, matching
     /// `LBPGestureHint` in `sdk-components.jsx`).
-    static let hintTap = "點擊畫面 = 切換靜音"
-    static let hintHold = "長按畫面 = 暫停 / 繼續"
+    ///
+    /// Tap-hint copy now DEPENDS on `isLive` (rb-ios-gesture-clean-mode-rewrite, design R23,
+    /// matching `PlayerShellView.resolveTapAction(isLive:)`'s actual dispatch): 進行中直播
+    /// 單擊切靜音（文案不變）；VOD／已結束直播的回放／預告倒數單擊切播放/暫停（新文案）。
+    static func hintTap(isLive: Bool) -> String { isLive ? hintTapMute : hintTapPlayPause }
+    static let hintTapMute = "點擊畫面 = 切換靜音"
+    static let hintTapPlayPause = "點擊畫面 = 切換播放/暫停"
+    /// 長按提示文案（rb-ios-gesture-clean-mode-rewrite，取代舊版「長按畫面 = 暫停 / 繼續」）：
+    /// 長按已不再驅動暫停/播放，改驅動乾淨模式，不分直播/VOD。
+    static let hintHold = "長按畫面 = 切換乾淨模式"
     static let hintSwipe = "上下滑動 = 切換影片"
 
     /// The pinned product is "narrating" when `narrateStatus == 2`

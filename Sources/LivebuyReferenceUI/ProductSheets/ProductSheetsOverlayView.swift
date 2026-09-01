@@ -423,7 +423,10 @@ public struct ProductSheetsOverlayView: View {
                 products: model.products,
                 cartCount: model.cartCount,
                 live: live,
-                introducingProductId: model.introducingProductId,
+                // rb-ios-product-bag-multi-narrating: the drawer needs EVERY simultaneously-
+                // narrating product's id, not just the first — `model.introducingProductId`
+                // (single, core's "first" convenience) could only ever flag one row.
+                introducingProductIds: Set(model.liveActiveProducts.map { $0.id }),
                 // Playback mode for the row overlay (VOD play / live 介紹中 / replay
                 // begin-end window). `rowMode` is nil for a demo model → ProductListView
                 // falls back to `live` (baselines byte-identical); a live-bound model

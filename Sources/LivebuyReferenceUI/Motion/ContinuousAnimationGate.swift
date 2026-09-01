@@ -8,10 +8,12 @@ import LivebuySDK
 // ONLY consumes the existing core `LBPowerProfile` contract; it adds NO core / view-model
 // code (dependency direction is one-way `reference-ui → core`).
 //
-// The two continuous (`repeatForever`) decorative animations in this module — the
-// unclaimed-win pulse ring (`WinEntryView`) and the long-title marquee scroll
-// (`MarqueeTitleLoopView`) — keep driving Core Animation forever, heating the device
-// during long live sessions. This gate lets those views SKIP starting their driver when
+// The continuous (`repeatForever`) decorative animation in this module — the
+// long-title marquee scroll (`MarqueeTitleLoopView`) — keeps driving Core Animation
+// forever, heating the device during long live sessions. (The unclaimed-win pulse ring
+// in `WinEntryView` this gate originally also covered was removed entirely in
+// rb-ios-win-entry-restyle; see design/contract/claude-design-sync.md R24.) This gate
+// lets that view SKIP starting its driver when
 // the device is hot (power profile `conservative`/`survival`), when the user enabled
 // Reduce Motion, or when the view is off-screen. It ONLY gates the `withAnimation` start —
 // the animated sub-views still instantiate and lay out at their RESTING position, so the

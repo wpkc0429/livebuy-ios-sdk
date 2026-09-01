@@ -596,6 +596,19 @@ public struct LivebuyPlayer: UIViewControllerRepresentable {
     /// flow publishes back into these snapshots. Plus the on-demand chat composer controller.
     private func buildModels(template: DefaultPlayerTemplate, coordinator: Coordinator) {
         coordinator.model = PlayerShellModel(template: template)
+        // VTT subtitle pipeline (rb-ios-subtitle-vtt-caption-display): a SECOND independent
+        // observer on the SAME template `PlayerShellModel`'s own live init just registered one
+        // on (`template.addObserver` is a multi-subscriber registry — "registering one NEVER
+        // clobbers another", per its doc comment — unlike `LivebuyPlayerViewController
+        // .onChannelRefresh` / `.onMomentStateChange`, both single-owner closures ALREADY
+        // claimed by `TemplateAttachment.swift` for the template's own channel/moment-state
+        // ingestion; reassigning either here would silently break that). Fires on every
+        // moment/chrome state change (not just a genuine channel switch), so
+        // `refreshSubtitleCuesIfChannelChanged` de-dupes on `channel.id`.
+        coordinator.subtitleObserverToken = template.addObserver { [weak coordinator] in
+            refreshSubtitleCuesIfChannelChanged(coordinator: coordinator)
+        }
+        coordinator.subtitleObserverTemplate = template
         // Host-config viewer-count visibility gate (rb-ios-hide-viewer-count-config): a per-shell
         // constant, set once here from `config.showViewerCount` (not template-derived).
         coordinator.model?.showViewerCount = config.showViewerCount
@@ -788,10 +801,16 @@ public struct LivebuyPlayer: UIViewControllerRepresentable {
                 guard let player = player else { return }
                 if let custom = config.onDismiss { custom(player) } else { player.unload() }
             },
-            // Hold-to-pause: default forwards to the existing public core engine controls
-            // (reference-ui → core). Hold start pauses, release resumes.
-            onHoldStart: { [weak player] in player?.pause() },
-            onHoldEnd: { [weak player] in player?.play() },
+            // RETIRED (rb-ios-gesture-clean-mode-rewrite): long-press no longer drives
+            // pause/resume — it toggles the reference-ui-local `cleanMode` instead, which
+            // `PlayerShellView` never reports out (purely presentational). This dead
+            // core `player.pause()` / `player.play()` wiring is removed (design.md §4's
+            // recommended option (b)) rather than left in place pointing at a closure
+            // `PlayerShellView` no longer calls — VOD/replay pause is now driven by the
+            // single-tap `resolveTapAction(isLive:)` path instead (see `onToggleMute` below
+            // for the mirror-image tap-to-mute wiring on LIVE).
+            onHoldStart: nil,
+            onHoldEnd: nil,
             // Minimize (R2): default forwards to core `player.minimize()` seam.
             onMinimize: config.onMinimize ?? { [weak player] in player?.minimize() },
             // Tap the video to unmute (REQ5c): default → bound template `toggleMute()`.
@@ -1044,6 +1063,21 @@ public struct LivebuyPlayer: UIViewControllerRepresentable {
         /// What the player actually shows — cover loads AND default in-place switches.
         var currentVideoId: String?
 
+        // MARK: VTT subtitle pipeline (rb-ios-subtitle-vtt-caption-display)
+
+        /// Removal token for the SECOND independent `DefaultPlayerTemplate.addObserver` this
+        /// change registers (deliberately NOT `LivebuyPlayerViewController.onChannelRefresh` /
+        /// `.onMomentStateChange` — both are single-owner closures already claimed by
+        /// `TemplateAttachment.swift`; see `refreshSubtitleCuesIfChannelChanged`'s doc comment).
+        var subtitleObserverToken: LBTemplateObserverToken?
+        /// The template the token above was registered on — held weakly ONLY to remove the
+        /// observer in `teardownLifecycleObservers()` (mirrors the `pipListenerToken` pattern).
+        weak var subtitleObserverTemplate: DefaultPlayerTemplate?
+        /// The channel id the subtitle pipeline last fetched (or started fetching) for. `nil`
+        /// until the first fetch attempt. Used to de-dupe: the observer above fires on EVERY
+        /// moment/chrome state change, not just a genuine channel switch.
+        var lastFetchedSubtitleChannelId: String?
+
         // MARK: App-lifecycle wiring (background auto-PiP + foreground resume)
 
         /// `didEnterBackground` observer — forwards to core `requestAutoPiP()`.
@@ -1165,6 +1199,10 @@ public struct LivebuyPlayer: UIViewControllerRepresentable {
                 player?.removeEventListener(token)
                 self.pipListenerToken = nil
             }
+            if let token = subtitleObserverToken {
+                subtitleObserverTemplate?.removeObserver(token)
+                self.subtitleObserverToken = nil
+            }
         }
 
         deinit {
@@ -1269,6 +1307,102 @@ func applyAutoAdvanceSwitch(_ nav: LBNavItem,
     coordinator?.currentVideoId = nav.id
     coordinator?.coverVideoId = nav.id
     onSwitchedItem(autoAdvanceSwitchedItem(nav))
+}
+
+// MARK: - VTT subtitle pipeline (rb-ios-subtitle-vtt-caption-display)
+//
+// `CaptionOverlayView` is pure presentation and core exposes no active-caption TEXT (only
+// `SubtitleTrack.{available,enabled}` booleans) — the turnkey `LivebuyPlayer` container is
+// responsible for fetching + parsing `channel.subtitle_url` (a WebVTT file) and feeding the
+// result into `PlayerShellModel.subtitleCues`, which `PlayerShellView` reads via
+// `VTTSubtitleParser.activeCue(_:at:)`. See design.md Decision 2 for the full history of why
+// this is wired via `DefaultPlayerTemplate.addObserver` (registered in `buildModels`) rather
+// than `LivebuyPlayerViewController.onChannelRefresh` / `.onMomentStateChange` — both are
+// single-owner closures already claimed by `TemplateAttachment.swift` for the template's own
+// channel/moment-state ingestion (including `SubtitleTrack` itself); reassigning either here
+// would silently break that pipeline instead of adding to it.
+
+/// Pure: does `channel` carry a fetchable subtitle track? `isSubtitle == 1` gates whether
+/// captions are configured for this video at all (mirrors core's own `SubtitleTrack.configure`
+/// derivation, `LivebuyPlayerViewController.configureFromChannel`); a non-empty (post-trim)
+/// `subtitleUrl` is needed to actually fetch anything.
+func channelHasFetchableSubtitle(isSubtitle: Int, subtitleUrl: String) -> Bool {
+    isSubtitle == 1 && !subtitleUrl.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+}
+
+/// Pure: should a just-completed subtitle fetch for `fetchedForChannelId` be applied to the
+/// model, given the channel CURRENTLY bound to the player is `currentChannelId`? Guards against
+/// a slow, now-stale fetch (the viewer switched video before the earlier VTT download finished)
+/// clobbering the model with cues for the WRONG video.
+func shouldApplySubtitleCues(fetchedForChannelId: String, currentChannelId: String?) -> Bool {
+    fetchedForChannelId == currentChannelId
+}
+
+/// Injected VTT-fetch side effect — the seam a test substitutes a fake for (no real network).
+/// `completion` receives the decoded UTF-8 body, or `nil` on any failure (no data / bad
+/// encoding / transport error) — this pipeline is silently best-effort (see
+/// `fetchAndApplySubtitleCues`'s doc comment).
+typealias SubtitleVTTFetcher = (URL, @escaping (String?) -> Void) -> Void
+
+/// Default `SubtitleVTTFetcher`: a plain `URLSession.shared.dataTask`, mirroring
+/// `RemoteStillImageView`'s existing URLSession usage in `CarouselCardView.swift`. No caching, no
+/// retry — a VTT file is small and fetched at most once per channel (de-duped by
+/// `refreshSubtitleCuesIfChannelChanged`).
+let defaultSubtitleVTTFetcher: SubtitleVTTFetcher = { url, completion in
+    URLSession.shared.dataTask(with: url) { data, _, _ in
+        completion(data.flatMap { String(data: $0, encoding: .utf8) })
+    }.resume()
+}
+
+/// Fetch + parse + apply `channel`'s VTT subtitles into `coordinator.model.subtitleCues`.
+/// - `channel` carries no fetchable subtitle (`channelHasFetchableSubtitle` false) or the URL
+///   fails to resolve (`ReferenceUIImageURL.make`, reused as-is — despite its name it already
+///   does the right thing for a VTT URL: trim, empty->nil, http->https upgrade) -> clears
+///   `subtitleCues` to `[]` (drops any stale previous video's cues) and returns synchronously.
+/// - Otherwise fetches via `fetcher`, parses on completion, and — back on the main queue —
+///   re-checks `shouldApplySubtitleCues` against the player's CURRENT channel id before writing.
+///   A fetch/decode/parse failure (or a stale re-check) leaves `subtitleCues` at whatever it
+///   already is; no crash, no retry, no event (core itself has no opinion on VTT fetch failures
+///   either — this pipeline is reference-ui-only, best-effort).
+func fetchAndApplySubtitleCues(
+    channel: LBChannel,
+    coordinator: LivebuyPlayer.Coordinator?,
+    fetcher: @escaping SubtitleVTTFetcher = defaultSubtitleVTTFetcher
+) {
+    guard channelHasFetchableSubtitle(isSubtitle: channel.isSubtitle, subtitleUrl: channel.subtitleUrl),
+          let url = ReferenceUIImageURL.make(channel.subtitleUrl) else {
+        coordinator?.model?.subtitleCues = []
+        return
+    }
+    fetcher(url) { [weak coordinator] raw in
+        let cues = raw.map(VTTSubtitleParser.parse) ?? []
+        DispatchQueue.main.async {
+            guard let coordinator = coordinator,
+                  shouldApplySubtitleCues(
+                      fetchedForChannelId: channel.id,
+                      currentChannelId: coordinator.player?.channel?.id) else { return }
+            coordinator.model?.subtitleCues = cues
+        }
+    }
+}
+
+/// Observer callback registered on the template's multi-observer registry (`buildModels`):
+/// de-dupes on `channel.id` (the observer fires on EVERY moment/chrome state change, not just a
+/// genuine channel switch) before delegating to `fetchAndApplySubtitleCues`. Marks
+/// `lastFetchedSubtitleChannelId` BEFORE the async fetch starts so repeated observer firings for
+/// the SAME still-in-flight channel don't spawn duplicate concurrent fetches. No bound player /
+/// channel yet (still loading) -> no-op (the observer fires again once the channel lands).
+/// `fetcher` forwards to `fetchAndApplySubtitleCues` (default `defaultSubtitleVTTFetcher`) — the
+/// injection seam a test substitutes a fake for, so the de-dupe guard is verifiable by fetch
+/// CALL COUNT, not just by reading back `lastFetchedSubtitleChannelId`.
+func refreshSubtitleCuesIfChannelChanged(
+    coordinator: LivebuyPlayer.Coordinator?,
+    fetcher: @escaping SubtitleVTTFetcher = defaultSubtitleVTTFetcher
+) {
+    guard let coordinator = coordinator, let channel = coordinator.player?.channel else { return }
+    guard channel.id != coordinator.lastFetchedSubtitleChannelId else { return }
+    coordinator.lastFetchedSubtitleChannelId = channel.id
+    fetchAndApplySubtitleCues(channel: channel, coordinator: coordinator, fetcher: fetcher)
 }
 
 // MARK: - Background→foreground resume (ios-refui-player-foreground-resume)

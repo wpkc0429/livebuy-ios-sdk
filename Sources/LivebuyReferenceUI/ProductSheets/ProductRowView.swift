@@ -108,13 +108,13 @@ public struct ProductRowView: View {
     private let onPlayClick: (() -> Void)?
 
     /// Continuous-animation throttling gate for the `.grid` play button's breathing
-    /// pulse (mirrors `WinEntryView` — ios-power-profile-animation-throttle-reference-ui).
+    /// pulse (ios-power-profile-animation-throttle-reference-ui).
     /// `ImageRenderer` never fires `.onAppear`, so the resting frame is captured
     /// regardless — snapshot goldens stay deterministic.
     @Environment(\.continuousAnimationGate) private var motionGate
 
-    /// Local breathing-pulse animation state for the `.grid` play button (mirrors
-    /// `WinEntryView.pulsing`). Never driven by a core call — purely presentational.
+    /// Local breathing-pulse animation state for the `.grid` play button. Never driven
+    /// by a core call — purely presentational.
     @State private var breathing = false
 
     public init(
@@ -484,7 +484,7 @@ public struct ProductRowView: View {
         .accessibilityIdentifier(LBAccessibilityID.productRecommendationCart(index))
     }
 
-    /// (Re)start the breathing pulse — mirrors `WinEntryView.startPulse()`. Skips the
+    /// (Re)start the breathing pulse. Skips the
     /// `repeatForever` driver under thermal pressure / Reduce Motion (leaves the button at
     /// its resting opacity); `ImageRenderer` never fires `.onAppear`, so snapshot goldens
     /// always capture the resting frame regardless.

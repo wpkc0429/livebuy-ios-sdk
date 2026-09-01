@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 import LivebuySDK
 import LivebuyUI
 
@@ -132,6 +133,29 @@ public struct PlayerShellView: View {
     /// to Android `0f6b56a5`). Local presentation state only.
     @State private var dismissedLivePinnedIds: Set<String> = []
 
+    /// 「乾淨模式」(rb-ios-gesture-clean-mode-rewrite, design R23) — toggled by a long-press
+    /// (>~0.45s) on the video area (see `scheduleCleanModeToggle`), unconditionally for both
+    /// LIVE and VOD/replay (no `isLive` gate, unlike the retired `allowsHoldToPause`). `true`
+    /// hides most floating chrome (§6 hide-lists) while keeping the minimize button, the
+    /// expanded transport bar, and — LIVE only — the currently-narrating pinned product card.
+    /// Pure呈現層 local state (design.md §1): it does NOT belong on `PlayerShellModel` and MUST
+    /// NOT influence any core / view-model state.
+    ///
+    /// NOT reset on a video switch (design.md §1 flagged this as an apply-stage decision: no
+    /// existing per-video local-state reset hook was found to piggyback on — `dismissedVodProductIds`
+    /// / `dismissedLivePinnedIds` above are likewise never explicitly reset on switch, they just
+    /// naturally stop matching once the new video's product ids differ. `cleanMode` has no such
+    /// natural self-clearing mechanism, so carrying it across an in-place video switch is a
+    /// deliberate, currently-untested edge case — not a default SwiftUI behavior this comment is
+    /// merely documenting).
+    ///
+    /// Test-seeded via `cleanModeForTesting` on `init` (SwiftUI gestures cannot be driven from
+    /// XCTest — TCC-blocked — so the chrome-hiding contract, §6, is proven by pre-seeding this
+    /// state's INITIAL value before the view's first, and in the single-shot `ImageRenderer`
+    /// snapshot path only, render), mirroring the existing `isScrubbingForTesting` /
+    /// `scrubBarExpandedForTesting` precedent below.
+    @State private var cleanMode: Bool = false
+
     /// Whether the「聯絡商家」confirm modal (`ContactMerchantModalView`) is presented.
     /// The rail `serviceLink` tap and the info-panel「與商家一對一對話」now present this
     /// confirm FIRST (design `contact_merchant`); only its「確定」proceeds to the existing
@@ -216,13 +240,18 @@ public struct PlayerShellView: View {
     /// never overridden by this). nil → the swipe-to-empty is a no-op (demo / snapshot).
     private let onCloseRequest: (() -> Void)?
 
-    /// Hold-to-pause start → host pauses playback. The container default wires it to core
-    /// `player.pause()`. nil → inert (demo / snapshot). This layer NEVER calls core/template
-    /// play/pause itself; it only forwards the hold start.
+    /// RETIRED (rb-ios-gesture-clean-mode-rewrite): long-press no longer drives pause/resume —
+    /// it toggles `cleanMode` instead — so this closure is NEVER invoked any more (`handleDragEnded`'s
+    /// `.hold` case only resets `longPressFired`). Kept (not removed) for source compatibility: any
+    /// existing host that explicitly passed a non-nil closure here still compiles; it silently stops
+    /// firing. Superseded by `resolveTapAction(isLive:)` + `model.togglePlayPause()` for VOD/replay
+    /// pause, and by `PlaybackPausedOverlayView`'s resume button for resuming.
+    @available(*, deprecated, message: "long-press no longer drives pause/resume; see resolveTapAction(isLive:) + model.togglePlayPause()")
     private let onHoldStart: (() -> Void)?
 
-    /// Hold-to-pause end (finger released) → host resumes playback. The container default
-    /// wires it to core `player.play()`. nil → inert.
+    /// RETIRED (rb-ios-gesture-clean-mode-rewrite) — see `onHoldStart`'s doc comment; never
+    /// invoked any more, kept for source compatibility only.
+    @available(*, deprecated, message: "long-press no longer drives pause/resume; see resolveTapAction(isLive:) + model.togglePlayPause()")
     private let onHoldEnd: (() -> Void)?
 
     /// Whether the on-demand chat composer (`ChatComposerBar`) is currently presented. When
@@ -256,16 +285,69 @@ public struct PlayerShellView: View {
     /// (baseline unchanged).
     private let onHasAnnounceChange: ((Bool) -> Void)?
 
+    /// Reports the NARROW `isScrubbing` (finger actually down) — so the container can hide the
+    /// separately-composed chat feed while ACTIVELY dragging, mirroring the in-shell chrome's
+    /// own `!isScrubbing` gates (rb-ios-restore-vod-playback-progress-bar, corrected post-
+    /// design-review: an earlier draft mirrored the wider `scrubBarExpanded` here instead, which
+    /// kept the chat feed hidden through the whole 2.8s post-release hold window instead of
+    /// letting it reappear lifted — design `screens.jsx` `LBLiveChatOverlay` treats chat
+    /// identically to the announce banner / pinned card: hidden only while `scrubbing`, and
+    /// lifted (not hidden) while merely `scrubVisible`). Only has any effect while
+    /// `usesLiveChrome` is also true (the only state where the progress bar and the chat feed
+    /// can coexist — a finished-live replay, `model.isFinishedLiveReplay`); a no-op in pure VOD
+    /// (chat already off) and pure live (bar never shows there). nil (default / snapshot) → no
+    /// report (baseline unchanged).
+    private let onScrubbingChange: ((Bool) -> Void)?
+
+    /// Reports the WIDE `scrubBarExpanded` (touch-down through the 2.8s post-release hold) — so
+    /// the container can additionally LIFT the chat feed (extra bottom inset, mirroring this
+    /// view's own `scrubChromeLiftIfExpanded`) while it is visible again during the hold window
+    /// (`scrubBarExpanded && !isScrubbing` — design `screens.jsx` `LBLiveChatOverlay`'s
+    /// `safeBottom + (isReplay && scrubVisible ? 36 : 0)`). Same coexistence scope as
+    /// [onScrubbingChange] above. nil (default / snapshot) → no report (baseline unchanged).
+    private let onScrubBarExpandedChange: ((Bool) -> Void)?
+
+    /// Reports `cleanMode` — its initial value and every change (long-press toggle) — to the
+    /// container, so it can hide the family-2 chat feed (`FeedWinOverlayView`'s `ChatFeed`,
+    /// which is a sibling composed by `MinimalDesign.playerOverlay`, not a descendant of this
+    /// view, so `cleanMode` — a private `@State` here — cannot reach it any other way) while
+    /// clean mode is on (rb-ios-clean-mode-hide-chat-feed). Read-only state report, mirrors the
+    /// existing `onInfoPanelPresentedChange` / `onIsLiveChange` precedents above. nil (default /
+    /// snapshot) → no report (baseline unchanged).
+    private let onCleanModeChange: ((Bool) -> Void)?
+
+    /// Test-only observability hook (rb-ios-live-double-tap-like, `docs/unit-test-discipline.md`
+    /// `*ForTesting` naming): called SYNCHRONOUSLY, alongside `model.performLike()`, exactly when
+    /// `registerLikeableTap()` recognizes a double-tap — reachable from BOTH `handleLiveTap()`
+    /// (LIVE) and the already-ended-live-replay branch of `handleDragEnded`'s `.togglePlayPause`
+    /// case (rb-ios-live-double-tap-like-replay-extend). `nil` (default, every production /
+    /// non-test call site) → inert. This exists ONLY because `model.performLike()` itself has no
+    /// other externally observable effect on a demo/no-template `PlayerShellModel` (`template` is a
+    /// `private weak var`, always `nil` there — the same constraint
+    /// `testTapDispatch_nonLiveDoesNotCallOnToggleMute`'s doc comment already notes for
+    /// `togglePlayPause()`), and reading the `@State` `liveHeartTick` back is NOT reliable outside
+    /// a live SwiftUI hierarchy (see `lastLikeableTapAt`'s doc comment) — mirrors the EXISTING,
+    /// PROVEN-reliable `onToggleMute` closure-observability pattern used by
+    /// `testTapDispatch_liveCallsOnToggleMuteNotTogglePlayPause`.
+    private let performLikeForTesting: (() -> Void)?
+
     // MARK: - Transient gesture-feedback state (default hidden → snapshot-neutral)
 
-    /// True while the viewer is holding the video area (hold-to-pause). Drives the centre
-    /// `GesturePauseIconView`. Default false → no overlay at rest (baselines unchanged).
-    @State private var isHolding: Bool = false
+    /// True once the CURRENT press has crossed the long-press threshold (`holdDelay`).
+    /// Renamed from `isHolding` (rb-ios-gesture-clean-mode-rewrite, design.md §2): it no longer
+    /// means "hold-to-pause is in progress" — long-press is now an EDGE-TRIGGERED toggle of
+    /// `cleanMode`, not a press-and-hold state — this flag now only answers "has this gesture
+    /// already fired its long-press?" for `resolveGestureEnd`'s tap/hold/swipe classification.
+    /// Reset to `false` on release (`handleDragEnded`'s `.hold` case) so the NEXT press starts
+    /// clean. Does NOT drive any visible overlay by itself any more (the retired
+    /// `GesturePauseIconView` used to key off this; the new `PlaybackPausedOverlayView` is keyed
+    /// off the REAL `model.isPlaying` instead — see `body`).
+    @State private var longPressFired: Bool = false
 
     /// True for ~0.7s after a tap toggles mute. Drives the centre `GestureMuteToastView`.
     @State private var muteToastVisible: Bool = false
 
-    /// Cancellable timer that promotes a sustained press into a hold (after `holdDelay`).
+    /// Cancellable timer that promotes a sustained press into a long-press (after `holdDelay`).
     /// Cancelled if the finger moves past `moveTolerance` first (it is a swipe/scroll).
     @State private var holdWorkItem: DispatchWorkItem?
 
@@ -276,12 +358,176 @@ public struct PlayerShellView: View {
     /// every `onChanged`; reset on `onEnded`).
     @State private var dragActive: Bool = false
 
-    /// Hold is recognized after this press duration (distinguishes hold from a quick tap).
-    private static let holdDelay: TimeInterval = 0.3
+    /// Wall-clock time of the most recent LIKEABLE tap — a tap landing while `model.isLive == true`
+    /// OR `model.isFinishedLiveReplay == true` (renamed from `lastLiveTapAt`,
+    /// rb-ios-live-double-tap-like-replay-extend: the original name became misleading once this
+    /// tracker started being fed from the `.togglePlayPause` / replay branch of `handleDragEnded`
+    /// too, not just the LIVE `.toggleMute` branch — see `registerLikeableTap()`). Used by
+    /// `registerLikeableTap()` to detect a following double-tap within `doubleTapLikeWindow`.
+    /// `nil` = no likeable tap tracked yet (or the previous one was just consumed by a recognized
+    /// double-tap). NOT reset on a video switch — mirrors the existing `cleanMode` /
+    /// `dismissedVodProductIds` precedent of local presentation state with no natural reset hook to
+    /// piggyback on (see `cleanMode`'s doc comment); the window is only 0.32s, so the risk of a
+    /// stray cross-video double-tap match is negligible.
+    ///
+    /// ⚠️ Like every OTHER `@State` on this SwiftUI `View` value type, a write made by ONE
+    /// `handleDragEnded` call is NOT reliably observable by reading this property back — even via
+    /// a SECOND, separate, purely-synchronous direct method call on the exact same `view` value
+    /// held by a test outside a live SwiftUI hierarchy (empirically verified while building
+    /// `rb-ios-live-double-tap-like`: two immediate, non-escaping, back-to-back
+    /// `handleDragEnded(.zero)` calls did NOT recognize a double-tap — broader than, but consistent
+    /// with, the escaping-closure-specific limitation `PlayerShellGestureCleanModeRewriteTests`
+    /// §9.3's doc comment already documents for `cleanMode`). Tests therefore seed this via
+    /// `lastLikeableTapAtForTesting` on `init` (mirrors the `cleanModeForTesting` /
+    /// `isScrubbingForTesting` precedent) and drive the SINGLE call whose outcome is under test —
+    /// never two separate calls expecting this to have carried a value from the first into the
+    /// second.
+    @State private var lastLikeableTapAt: Date?
+
+    /// Long-press (→ `cleanMode` toggle) is recognized after this press duration (distinguishes
+    /// it from a quick tap). `0.45` (rb-ios-gesture-clean-mode-rewrite, design.md §2) — aligned to
+    /// `screens.jsx`'s `450`ms; was `0.3` under the retired hold-to-pause gesture.
+    private static let holdDelay: TimeInterval = 0.45
     /// The mute toast auto-dismisses after this duration (issue 5: ~0.7s).
     private static let muteToastDuration: TimeInterval = 0.7
     /// Finger movement (pt) past which a pending hold is cancelled (it is a swipe/scroll).
     private static let moveTolerance: CGFloat = 12
+    /// Double-tap-to-like recognition window (renamed from `liveDoubleTapWindow`,
+    /// rb-ios-live-double-tap-like-replay-extend: applies to BOTH the LIVE `.toggleMute` branch and
+    /// the already-ended-live-replay `.togglePlayPause` branch now — see `registerLikeableTap()`): a
+    /// second likeable tap landing within this many seconds of the first counts as a double-tap.
+    /// Aligned to `design/templates/minimal/screens.jsx`'s `onPointerUp` LIVE branch
+    /// (`sinceLast < 320`ms). UNLIKE that web reference (which also DEFERS the single-tap
+    /// mute-toggle by 300ms so a real double-tap never also flickers mute), this iOS implementation
+    /// does NOT defer — see `handleLiveTap()`'s doc comment / design.md Decision 2 (of
+    /// `rb-ios-live-double-tap-like`) for why (existing synchronous regression test
+    /// `testTapDispatch_liveCallsOnToggleMuteNotTogglePlayPause` + a documented
+    /// `@State`-across-escaping-closure testability limitation this codebase already hit for
+    /// `cleanMode`). Accepted trade-off: a genuine LIVE double-tap visibly toggles mute twice in
+    /// quick succession (net no permanent change, toast flickers twice) IN ADDITION to firing
+    /// `performLike()` + the heart burst. The replay branch has no equivalent flicker (its single
+    /// tap toggles play/pause, not mute — see `registerLikeableTap()`'s doc comment).
+    private static let doubleTapLikeWindow: TimeInterval = 0.32
+
+    // MARK: - Playback-progress scrub state (rb-ios-restore-vod-playback-progress-bar)
+
+    /// `true` while the finger is actually down on `PlaybackProgressBarView` (touch-down…
+    /// touch-up). Drives: hiding the VOD/LIVE chrome that would otherwise sit under the
+    /// expanded transport bar, and (inside the bar itself) the drag-time timestamp readout.
+    /// Distinct from `scrubBarExpanded` — see that property's doc comment.
+    @State private var isScrubbing: Bool = false
+
+    /// `true` from touch-down through `scrubHoldDuration` (2.8s) after touch-up. Drives the
+    /// transport-bar-vs-thin-line visual AND the ~36pt bottom lift applied to chrome that has
+    /// reappeared during the post-release hold window. MUST be a SEPARATE `@State` from
+    /// `isScrubbing`: the design wants the transport bar (and the lifted chrome) to keep
+    /// showing after release while the drag-time readout disappears immediately.
+    @State private var scrubBarExpanded: Bool = false
+
+    /// Cancellable timer that collapses `scrubBarExpanded` back to `false` `scrubHoldDuration`
+    /// after the finger lifts. Re-scheduled (cancelling any pending collapse) on every new
+    /// scrub start, mirroring `holdWorkItem` / `muteToastWorkItem` above.
+    @State private var scrubCollapseWorkItem: DispatchWorkItem?
+
+    /// The transport bar stays expanded this long after the finger lifts (design: 2.8s).
+    private static let scrubHoldDuration: TimeInterval = 2.8
+    /// The bottom lift applied to chrome that reappears during the post-release hold window, so
+    /// it clears the still-expanded transport bar (design: ~36pt).
+    private static let scrubChromeLift: CGFloat = 36
+
+    /// PURE: whether `PlaybackProgressBarView` should be composed (design `screens.jsx`
+    /// `LBPPlayerScreen` "Playback progress bar — VOD and replay only": `isMain && !isUpcoming
+    /// && (!isLive || isReplay)`). The `isReplay` disjunct is fed `model.isFinishedLiveReplay`
+    /// (`type == 3 || (type == 2 && liveStatus == 3)` — an ALREADY-ENDED live now watched back,
+    /// `isLive == false` there too) — NOT the narrower core `playbackProgress.isReplay` DVR
+    /// concept (a stream still actively live, `liveStatus == 1`, scrubbed behind the live edge).
+    /// The two are mutually exclusive with `isLive` in incompatible ways: `isFinishedLiveReplay`
+    /// can NEVER be `true` while `isLive` is `true`, so in practice this reduces to `isMain &&
+    /// !isUpcoming && !isLive` — the bar shows for pure VOD and a finished-live replay, and NEVER
+    /// while genuinely live (matches core's `vodScrubAllowed`, which rejects any seek while
+    /// `liveStatus == 1` — a bar that showed there could visually drag but never actually seek).
+    /// Kept as a literal `isReplay` PARAMETER (not simplified to a 3-arg function) for 1:1
+    /// fidelity with the documented design formula; only the CALL SITE decides which flag feeds
+    /// it. Unit-testable without rendering a view (rb-ios-restore-vod-playback-progress-bar).
+    static func showsPlaybackProgressBar(isMain: Bool, isUpcoming: Bool, isLive: Bool, isReplay: Bool) -> Bool {
+        isMain && !isUpcoming && (!isLive || isReplay)
+    }
+
+    /// The MAIN playback phase feeding `showsPlaybackProgressBar`'s `isMain` — not the intro MP4
+    /// and out of the cold-start loading/splash sequence (mirrors design `screens.jsx`'s
+    /// `isMain`). `isUpcoming` is passed separately to `showsPlaybackProgressBar` for 1:1
+    /// fidelity with the documented formula, even though it never overlaps `introPlaying` here.
+    private var isMainPlaybackPhase: Bool {
+        !model.introPlaying && model.startPhase != .loading && model.startPhase != .splash
+    }
+
+    /// Whether `PlaybackProgressBarView` should be composed for the current model snapshot.
+    /// Feeds `model.isFinishedLiveReplay` (已結束直播回放) as the `isReplay` disjunct — NOT
+    /// `model.isReplay` (the narrower behind-live-edge-while-still-live DVR concept, which
+    /// `vodScrubAllowed` would reject any seek for anyway). See the static function's doc
+    /// comment.
+    private var showsPlaybackProgressBar: Bool {
+        Self.showsPlaybackProgressBar(isMain: isMainPlaybackPhase, isUpcoming: model.isUpcoming,
+                                      isLive: model.isLive, isReplay: model.isFinishedLiveReplay)
+    }
+
+    /// The extra bottom padding (`scrubChromeLift`, ~36pt) applied to VOD chrome that has
+    /// reappeared during the post-release hold window (`scrubBarExpanded && !isScrubbing`) so it
+    /// clears the still-expanded transport bar; `0` at every other time (including while hidden
+    /// during an active drag, where the value is moot). Mirrors the `bottomInset` passed to
+    /// `LiveOverlayChromeView` for the LIVE-side equivalents.
+    private var scrubChromeLiftIfExpanded: CGFloat {
+        (scrubBarExpanded && !isScrubbing) ? Self.scrubChromeLift : 0
+    }
+
+    /// Touch-down on the progress bar → begin a scrub: cancel any pending collapse, mark both
+    /// `isScrubbing` and `scrubBarExpanded` true, report both transitions.
+    private func handleScrubStarted() {
+        scrubCollapseWorkItem?.cancel()
+        isScrubbing = true
+        onScrubbingChange?(true)
+        let wasExpanded = scrubBarExpanded
+        scrubBarExpanded = true
+        if !wasExpanded { onScrubBarExpandedChange?(true) }
+    }
+
+    /// Drag moved → forward the new absolute position to the EXISTING `model.seek(to:)`
+    /// forwarder (no new core / view-model API; no debounce, per design).
+    private func handleScrub(_ ratio: Double) {
+        model.seek(to: ratio * model.duration)
+    }
+
+    /// Finger lifted → `isScrubbing` ends immediately (the readout disappears, and
+    /// [onScrubbingChange] reports `false` right away so the chat feed can reappear lifted);
+    /// schedule the transport bar's collapse back to the thin line after `scrubHoldDuration`
+    /// ([onScrubBarExpandedChange] reports `false` only once that hold window actually ends).
+    private func handleScrubEnded() {
+        isScrubbing = false
+        onScrubbingChange?(false)
+        let work = DispatchWorkItem {
+            self.scrubBarExpanded = false
+            self.onScrubBarExpandedChange?(false)
+        }
+        scrubCollapseWorkItem = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.scrubHoldDuration, execute: work)
+    }
+
+    /// App 進背景（`didEnterBackgroundNotification`，含觸發系統自動 PiP 的那次轉場）視同放開手指——
+    /// `DragGesture` 沒有「被系統中斷」的回呼，唯一能偵測「拖曳被打斷」的訊號就是這個生命週期通知。
+    /// 只在真的正在拖曳中才動作，重用既有 [handleScrubEnded] 路徑（不直接改 `scrubBarExpanded`），
+    /// 讓 `onScrubbingChange` / `onScrubBarExpandedChange` 照既有時序正常回報；非拖曳中（含放開手指後
+    /// 2.8 秒維持展開期間）MUST NOT 有任何可觀察副作用 (ios-scrub-reset-on-background-reference-ui)。
+    ///
+    /// 存取層級比照同檔案 `handleDragChanged` / `handleDragEnded`（非 `private`）——讓測試能在一個
+    /// 真實建構的 struct instance 上直接同步呼叫並斷言 `onScrubbingChange` 是否觸發，而不必透過
+    /// `.onReceive` 的 Combine 訂閱本身（後者是非同步、跨 escaping closure 邊界的路徑，本檔案
+    /// `PlayerShellGestureCleanModeRewriteTests.swift` §9.3 已記載其在此 struct + `@State` 情境下
+    /// 對測試不可觀察）；`.onReceive` 對它的接線本身以原始碼檢閱 + 全套 snapshot suite 零回歸驗證。
+    func handleDidEnterBackground() {
+        if isScrubbing {
+            handleScrubEnded()
+        }
+    }
 
     public init(model: PlayerShellModel,
                 theme: ReferenceUITheme,
@@ -304,7 +550,15 @@ public struct PlayerShellView: View {
                 composerPresented: Bool = false,
                 onInfoPanelPresentedChange: ((Bool) -> Void)? = nil,
                 onIsLiveChange: ((Bool) -> Void)? = nil,
-                onHasAnnounceChange: ((Bool) -> Void)? = nil) {
+                onHasAnnounceChange: ((Bool) -> Void)? = nil,
+                onScrubbingChange: ((Bool) -> Void)? = nil,
+                onScrubBarExpandedChange: ((Bool) -> Void)? = nil,
+                onCleanModeChange: ((Bool) -> Void)? = nil,
+                isScrubbingForTesting: Bool = false,
+                scrubBarExpandedForTesting: Bool = false,
+                cleanModeForTesting: Bool = false,
+                lastLikeableTapAtForTesting: Date? = nil,
+                performLikeForTesting: (() -> Void)? = nil) {
         self.model = model
         self.theme = theme
         self.paintsBackgroundPlaceholder = paintsBackgroundPlaceholder
@@ -327,6 +581,26 @@ public struct PlayerShellView: View {
         self.onInfoPanelPresentedChange = onInfoPanelPresentedChange
         self.onIsLiveChange = onIsLiveChange
         self.onHasAnnounceChange = onHasAnnounceChange
+        self.onScrubbingChange = onScrubbingChange
+        self.onScrubBarExpandedChange = onScrubBarExpandedChange
+        self.onCleanModeChange = onCleanModeChange
+        self.performLikeForTesting = performLikeForTesting
+        // Test-only seed for the two scrub-driven `@State` properties (see their doc comments
+        // below) — there is no production gesture-simulation path to reach these states in a
+        // synchronous snapshot render, so `PlayerShellPlaybackProgressBarSnapshotTests` seeds them
+        // directly via this initializer (docs/unit-test-discipline.md `*ForTesting` naming).
+        _isScrubbing = State(initialValue: isScrubbingForTesting)
+        _scrubBarExpanded = State(initialValue: scrubBarExpandedForTesting)
+        // Test-only seed for `cleanMode` (rb-ios-gesture-clean-mode-rewrite §6 chrome-hiding
+        // contract) — same rationale as the two scrub seeds directly above.
+        _cleanMode = State(initialValue: cleanModeForTesting)
+        // Test-only seed for `lastLikeableTapAt` (rb-ios-live-double-tap-like; parameter renamed in
+        // rb-ios-live-double-tap-like-replay-extend) — same rationale: lets a test simulate "a
+        // first likeable tap already happened Δt ago" and drive the SINGLE `handleDragEnded` call
+        // under test, without depending on `@State` carrying a value from one call into a separate
+        // one (see `lastLikeableTapAt`'s doc comment for why that is NOT reliable outside a live
+        // SwiftUI hierarchy).
+        _lastLikeableTapAt = State(initialValue: lastLikeableTapAtForTesting)
     }
 
     /// Resolves a committed vertical drag into the correct video-switch action,
@@ -388,8 +662,13 @@ public struct PlayerShellView: View {
     /// rendering a SwiftUI gesture (unit-test discipline).
     enum GestureOutcome: Equatable { case hold, swipeUp, swipeDown, tap }
 
-    /// Classify a finished gesture: a recognized hold wins; else a committed vertical drag
-    /// is a swipe (up = next, down = prev); else (quick, small translation) a tap.
+    /// Classify a finished gesture: a recognized long-press wins; else a committed vertical
+    /// drag is a swipe (up = next, down = prev); else (quick, small translation) a tap. The
+    /// `isHolding` parameter label is UNCHANGED (design.md §2: renaming it is cosmetic, not
+    /// mandatory — kept verbatim to avoid churning every existing call site) but its SEMANTICS
+    /// changed (rb-ios-gesture-clean-mode-rewrite): it now answers "has this gesture already
+    /// crossed the long-press threshold" (fed `longPressFired` at the call site), not "is a
+    /// hold-to-pause currently in progress".
     static func resolveGestureEnd(isHolding: Bool, translationHeight dy: CGFloat) -> GestureOutcome {
         if isHolding { return .hold }
         if dy <= -swipeThreshold { return .swipeUp }
@@ -397,54 +676,116 @@ public struct PlayerShellView: View {
         return .tap
     }
 
-    /// PURE: whether hold-to-pause is available in the current mode. 進行中直播（`isLive`,
-    /// = `liveStatus == 1`, 涵蓋**串流直播**與**預錄直播**兩者）MUST NOT 用手勢暫停 / 播放
-    /// （rb-ios-live-hold-pause-suppress）；已結束直播的回放（`isFinishedLiveReplay`）與純 VOD
-    /// （兩者 `isLive == false`）維持可暫停。抽成純函式使此 gate 可單元測試（不需渲染手勢）。
-    static func allowsHoldToPause(isLive: Bool) -> Bool { !isLive }
+    /// The video-area single-tap action (rb-ios-gesture-clean-mode-rewrite, design R23,
+    /// supersedes the prior unconditional tap-to-mute). Single decision point for the `.tap`
+    /// branch of `handleDragEnded`.
+    enum TapAction: Equatable { case toggleMute, togglePlayPause }
 
-    /// Drag in progress: on the first change schedule the hold timer; if the finger moves
-    /// past `moveTolerance` before it fires, cancel the pending hold (it is a swipe/scroll,
-    /// not a hold) so playback never pauses on a swipe.
-    private func handleDragChanged(_ translation: CGSize) {
+    /// PURE: resolve the single-tap action for the current mode. 進行中直播（`isLive`,
+    /// `liveStatus == 1`, 涵蓋串流直播與預錄直播）單擊維持切換靜音；VOD／已結束直播的回放／直播
+    /// 預告倒數（皆 `isLive == false`）單擊改為切換播放/暫停 —— 這使得進行中直播事實上無法被單擊
+    /// 手勢暫停（分流後自然沒有可觸達暫停/播放的入口，效果等同已退役的 `allowsHoldToPause` 抑制，
+    /// 但不再是對某個獨立手勢的顯式抑制）。抽成純函式使此決策可單元測試（不需渲染手勢）。
+    static func resolveTapAction(isLive: Bool) -> TapAction {
+        isLive ? .toggleMute : .togglePlayPause
+    }
+
+    /// PURE: whether a likeable tap ending `elapsed` seconds after the previous tracked likeable
+    /// tap counts as a double-tap (renamed from `isLiveDoubleTap`,
+    /// rb-ios-live-double-tap-like-replay-extend: the original name became misleading once this
+    /// same decision started being consulted from the already-ended-live-replay branch of
+    /// `handleDragEnded` too, not just the LIVE branch — see `registerLikeableTap()`) — i.e. it
+    /// should ALSO fire `performLike()` + the heart burst, on top of whatever the tap's own action
+    /// already does (LIVE: unconditional mute-toggle via `handleLiveTap()`; already-ended-live
+    /// replay: `model.togglePlayPause()`). `elapsed == nil` (no likeable tap tracked yet, or the
+    /// tracker was just consumed by a previously-recognized double-tap) is never a double-tap.
+    /// Extracted (unit-test discipline, mirrors `resolveTapAction` / `cleanModeAfterLongPress`
+    /// above) so the timing boundary is directly testable with synthetic elapsed values — no real
+    /// clock / timer / rendered gesture required.
+    static func isDoubleTapLikeHit(elapsedSinceLastLikeableTap elapsed: TimeInterval?, window: TimeInterval) -> Bool {
+        guard let elapsed = elapsed else { return false }
+        return elapsed <= window
+    }
+
+    /// PURE: the new `cleanMode` value after a recognized long-press, given the CURRENT value.
+    /// Encodes the "edge-triggered TOGGLE, not press-and-hold / not always-set-to-true" design
+    /// decision (design.md §2) as a directly unit-testable unit, mirroring `resolveTapAction`
+    /// above. `scheduleCleanModeToggle`'s timer closure calls this rather than inlining
+    /// `.toggle()` so the semantic is independently testable — `@State` mutated from inside an
+    /// escaping `DispatchWorkItem` closure cannot itself be observed by a test driving the view
+    /// outside a live SwiftUI hierarchy (the closure captures a value-type snapshot of `self`),
+    /// so this pure half of the decision is the unit-testable surface for that behavior.
+    static func cleanModeAfterLongPress(current: Bool) -> Bool { !current }
+
+    /// Drag in progress: on the first change schedule the long-press timer; if the finger moves
+    /// past `moveTolerance` before it fires, cancel the pending long-press (it is a swipe/scroll,
+    /// not a long-press) so `cleanMode` never toggles on a swipe.
+    ///
+    /// Extracted (`internal`, not `private`) so the schedule/cancel dispatch is directly
+    /// unit-testable without rendering a SwiftUI gesture — mirrors the EXISTING
+    /// `handleSwipeEnded` precedent (its own doc comment: "extracted so the ... dispatch is
+    /// unit-testable without rendering a SwiftUI gesture").
+    func handleDragChanged(_ translation: CGSize) {
         if !dragActive {
             dragActive = true
-            scheduleHold()
+            scheduleCleanModeToggle()
         }
-        if !isHolding,
+        if !longPressFired,
            abs(translation.width) > Self.moveTolerance || abs(translation.height) > Self.moveTolerance {
             cancelPendingHold()
         }
     }
 
-    /// Drag ended: classify and dispatch. Hold → resume (`onHoldEnd`); swipe → existing
-    /// `handleSwipeEnded`; tap → `onToggleMute` + the 0.7s centre mute toast.
-    private func handleDragEnded(_ translation: CGSize) {
+    /// Drag ended: classify and dispatch. Long-press → already toggled `cleanMode` when the
+    /// timer fired (design.md §2: edge-triggered, NOT press-and-hold) — release only resets the
+    /// classification flag for the next gesture, it does NOT call `onHoldStart`/`onHoldEnd`
+    /// (retired, rb-ios-gesture-clean-mode-rewrite). Swipe → existing `handleSwipeEnded`. Tap →
+    /// `resolveTapAction(isLive:)` picks mute-toggle (+ toast) vs `model.togglePlayPause()` — this
+    /// single-tap ACTION dispatch is unchanged by rb-ios-live-double-tap-like-replay-extend.
+    /// `.togglePlayPause` additionally registers a likeable tap when the video is an already-ended
+    /// live replay (`model.isFinishedLiveReplay == true`) — see `registerLikeableTap()`'s doc
+    /// comment. Pure VOD (`isFinishedLiveReplay == false`) never calls it, unchanged from before
+    /// this extension.
+    ///
+    /// Extracted (`internal`, not `private`) — same rationale as `handleDragChanged` above.
+    func handleDragEnded(_ translation: CGSize) {
         cancelPendingHold()
-        switch Self.resolveGestureEnd(isHolding: isHolding, translationHeight: translation.height) {
+        switch Self.resolveGestureEnd(isHolding: longPressFired, translationHeight: translation.height) {
         case .hold:
-            isHolding = false
-            onHoldEnd?()
+            longPressFired = false
         case .swipeUp, .swipeDown:
             handleSwipeEnded(translationHeight: translation.height)
         case .tap:
-            onToggleMute?()
-            showMuteToast()
+            switch Self.resolveTapAction(isLive: model.isLive) {
+            case .toggleMute:
+                handleLiveTap()
+            case .togglePlayPause:
+                model.togglePlayPause()
+                // rb-ios-live-double-tap-like-replay-extend: already-ended-live replay ALSO gets
+                // double-tap-to-like, layered on top of the unchanged single-tap
+                // togglePlayPause() above. Pure VOD (isFinishedLiveReplay == false) is excluded,
+                // unchanged from rb-ios-live-double-tap-like. Reaching this branch already implies
+                // model.isLive == false (resolveTapAction's own contract), so this reduces to
+                // exactly the `usesLiveChrome` formula (`isLive || isFinishedLiveReplay`) without
+                // needing to reference that private var here.
+                if model.isFinishedLiveReplay {
+                    registerLikeableTap()
+                }
+            }
         }
         dragActive = false
     }
 
-    /// Schedule the hold promotion: after `holdDelay` of a sustained press, mark `isHolding`
-    /// and fire `onHoldStart` (host → core pause). Cancelled by movement or release first.
-    private func scheduleHold() {
-        // 進行中直播（`model.isLive` == `liveStatus == 1`, 涵蓋串流 + 預錄）禁止手勢暫停：直接不排程
-        // hold，使 `isHolding` 永不為 true → 不 fire `onHoldStart` / `onHoldEnd`、`GesturePauseIconView`
-        // 不顯示、`resolveGestureEnd` 自然回 tap / swipe（單擊仍切靜音、上下滑仍換片）。已結束直播的回放
-        // 與純 VOD（皆 `isLive == false`）不受影響、維持可暫停（rb-ios-live-hold-pause-suppress）。
-        guard Self.allowsHoldToPause(isLive: model.isLive) else { return }
+    /// Schedule the long-press promotion: after `holdDelay` (~0.45s) of a sustained press,
+    /// toggle `cleanMode` ONCE (rb-ios-gesture-clean-mode-rewrite, design.md §2 — renamed from
+    /// `scheduleHold`). Unlike the retired `scheduleHold`, this has NO `isLive` guard: clean
+    /// mode applies unconditionally to both LIVE and VOD/replay (the retired
+    /// `allowsHoldToPause(isLive:)` gate is fully removed, not merely bypassed). Cancelled by
+    /// movement or release first (`cancelPendingHold`).
+    private func scheduleCleanModeToggle() {
         let work = DispatchWorkItem {
-            self.isHolding = true
-            self.onHoldStart?()
+            self.longPressFired = true
+            self.cleanMode = Self.cleanModeAfterLongPress(current: self.cleanMode)
         }
         holdWorkItem = work
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.holdDelay, execute: work)
@@ -463,6 +804,65 @@ public struct PlayerShellView: View {
         let work = DispatchWorkItem { self.muteToastVisible = false }
         muteToastWorkItem = work
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.muteToastDuration, execute: work)
+    }
+
+    /// LIVE video-area tap dispatch (rb-ios-live-double-tap-like). The existing unconditional
+    /// mute-toggle + toast fires on EVERY LIVE tap — SYNCHRONOUSLY, unchanged from before this
+    /// change — so `testTapDispatch_liveCallsOnToggleMuteNotTogglePlayPause` keeps passing
+    /// untouched. Additionally (not instead), `registerLikeableTap()` layers the double-tap-to-like
+    /// judgment on top (rb-ios-live-double-tap-like-replay-extend extracted that judgment into a
+    /// method shared with the already-ended-live-replay branch of `handleDragEnded` — see its doc
+    /// comment; this method's own LIVE-specific behavior, the unconditional mute-toggle + toast, is
+    /// unchanged).
+    ///
+    /// Deliberately does NOT defer the mute-toggle the way
+    /// `design/templates/minimal/screens.jsx`'s `onPointerUp` LIVE branch does (300ms `setTimeout`
+    /// before committing to a single tap) — see `rb-ios-live-double-tap-like`'s design.md
+    /// Decision 2. Two independent reasons: (1) the existing synchronous regression test above
+    /// would break; (2) deferring would need an escaping `DispatchWorkItem` mutating `@State`,
+    /// which this exact test file's own §9.3 comment already documents as UNOBSERVABLE by a test
+    /// holding a `PlayerShellView` value outside a live SwiftUI hierarchy (proven empirically for
+    /// `cleanMode` / `scheduleCleanModeToggle`). Accepted trade-off: a genuine rapid double-tap
+    /// visibly toggles mute twice (net no permanent change, toast flickers twice) IN ADDITION to
+    /// firing the like.
+    private func handleLiveTap() {
+        onToggleMute?()
+        showMuteToast()
+        registerLikeableTap()
+    }
+
+    /// Shared double-tap-to-like bookkeeping (extracted from `handleLiveTap()`,
+    /// rb-ios-live-double-tap-like-replay-extend): compares this tap's time against
+    /// `lastLikeableTapAt`, and on a hit within `doubleTapLikeWindow`, fires
+    /// `model.performLike()` + bumps `liveHeartTick` (the SAME heart-burst path the LIVE bottom
+    /// bar's like button already uses, `rb-ios-live-bottom-heart-burst`) — this is layered ON TOP
+    /// OF, never instead of, whatever the tap's own single-tap action already did. Called from TWO
+    /// sites in `handleDragEnded`: `handleLiveTap()` (LIVE, after the unconditional
+    /// `onToggleMute?()` + `showMuteToast()`) and the `.tap` → `.togglePlayPause` branch, gated at
+    /// that call site on `model.isFinishedLiveReplay` (already-ended live replay only — pure VOD
+    /// never reaches this method). Extracting this once avoids duplicating the time-window compare
+    /// + side-effect triplet across both call sites.
+    ///
+    /// Every mutation here is SYNCHRONOUS (no escaping closure captures `self`) — but unlike a
+    /// plain stored closure (e.g. `onToggleMute`), `@State` such as `lastLikeableTapAt` /
+    /// `liveHeartTick` is NOT reliably carried from one top-level `handleDragEnded` call into a
+    /// SEPARATE, later one when this view is not installed in a live SwiftUI hierarchy (see
+    /// `lastLikeableTapAt`'s doc comment) — hence `performLikeForTesting` for observability, and
+    /// `lastLikeableTapAtForTesting` on `init` for seeding, so tests only ever need to drive ONE
+    /// call.
+    private func registerLikeableTap() {
+        let now = Date()
+        let elapsed = lastLikeableTapAt.map { now.timeIntervalSince($0) }
+        if Self.isDoubleTapLikeHit(elapsedSinceLastLikeableTap: elapsed, window: Self.doubleTapLikeWindow) {
+            // Consumed: a THIRD rapid tap starts a fresh pairing rather than chaining into a
+            // string of likes.
+            lastLikeableTapAt = nil
+            model.performLike()
+            liveHeartTick &+= 1
+            performLikeForTesting?()
+        } else {
+            lastLikeableTapAt = now
+        }
     }
 
     // MARK: - Chrome gating (rb-ios-intro-chrome-minimal)
@@ -569,12 +969,15 @@ public struct PlayerShellView: View {
             //   UPCOMING → nothing drawn here (the UpcomingCountdownView background IS the
             //          surface; no live overlay / no VOD mini-cart / no announce-pinned-chat).
             //   LIVE → the live overlay chrome (announce / pinned card / host caption
-            //          / floating gesture hints).
-            //   VOD  → NO scrub/progress bar (design VOD chrome has none); the
-            //          currently-introduced product card (MiniCartView bound to
+            //          / floating gesture hints). `PlaybackProgressBarView` (composed further
+            //          below, as an independent top-level sibling) additionally overlays this
+            //          branch ONLY when the stream is a finished-live replay
+            //          (`model.isFinishedLiveReplay`, `isLive == false` there too) — NEVER while
+            //          genuinely live (rb-ios-restore-vod-playback-progress-bar).
+            //   VOD  → the currently-introduced product card (MiniCartView bound to
             //          model.vodActiveProduct, bottom-leading) + the CC caption line
-            //          when subtitles are on. The live chat / pinned / announce /
-            //          host-caption are NOT drawn for VOD.
+            //          when subtitles are on + `PlaybackProgressBarView`. The live chat /
+            //          pinned / announce / host-caption are NOT drawn for VOD.
             if model.isUpcoming || model.introPlaying {
                 // upcoming awaitingLive OR the upcoming intro is playing → no live-overlay
                 // chrome (announce / pinned / chat / host-caption don't exist pre-live).
@@ -582,7 +985,12 @@ public struct PlayerShellView: View {
             } else if usesLiveChrome {
                 LiveOverlayChromeView(
                     theme: theme,
-                    announceText: model.announceText,
+                    // 拖曳播放進度條期間（isScrubbing）隱藏公告 banner，讓出畫面給 transport bar
+                    // （rb-ios-restore-vod-playback-progress-bar；只在 usesLiveChrome 與進度條同時
+                    // 出現的「已結束直播回放」狀態下才有實際效果——純直播進行中進度條本不顯示，
+                    // 即使已被拖到 live edge 之後〔model.isReplay〕也不顯示，見 showsPlaybackProgressBar
+                    // 的文件註解）。
+                    announceText: isScrubbing ? "" : model.announceText,
                     // 釘選卡來源依真直播 vs 回放分流（rb-ios-replay-live-chrome）：
                     //   真直播 → livePinnedProducts（多件 narrate_status==2 輪播 + 分頁點；空時
                     //            fallback 單一 activeProduct ?? first isHot，問題 7）。
@@ -590,9 +998,14 @@ public struct PlayerShellView: View {
                     //            播放進度更新；回放無即時 narrate_status==2，改用後端介紹時間窗）。
                     // 先算來源分支、再以本地 dismiss set 過濾（涵蓋真直播 / 回放兩分支），使 close X
                     // 逐商品本地隱藏（rb-ios-live-pinned-card-dismiss，鏡像 VOD dismissedVodProductIds）。
-                    pinnedProducts: LiveOverlayChromeView.visiblePinnedProducts(
+                    // 拖曳播放進度條期間同樣清空（見上 announceText 的理由）。
+                    pinnedProducts: isScrubbing ? [] : LiveOverlayChromeView.visiblePinnedProducts(
                         model.isLive ? model.livePinnedProducts : model.vodActiveProducts,
                         dismissedIds: dismissedLivePinnedIds),
+                    // 放開手指到 2.8 秒收回這段期間（scrubBarExpanded && !isScrubbing），釘選卡 /
+                    // 公告 banner 重新出現時上移，讓出底部 transport bar 空間
+                    // （rb-ios-restore-vod-playback-progress-bar）。預設 0 對既有呼叫點無影響。
+                    bottomInset: (scrubBarExpanded && !isScrubbing) ? Self.scrubChromeLift : 0,
                     // Real product image on the pinned card only over a live video surface
                     // (placeholder suppressed) — same gate as the shop logo / VOD card
                     // (live-pinned-card-image-radius). Snapshot/demo keeps the placeholder.
@@ -600,13 +1013,20 @@ public struct PlayerShellView: View {
                     // Host-suppressible: a host that has already shown the hint once
                     // passes showGestureHints: false (it owns the persisted flag).
                     showGestureHints: showGestureHints,
-                    // 進行中直播（`model.isLive`）禁止手勢暫停 → 一併隱藏「長按畫面 = 暫停 / 繼續」
-                    // 提示（gate 在 isLive，非 usesLiveChrome）；已結束直播的回放仍可暫停 → 保留提示
-                    // （rb-ios-live-hold-pause-suppress）。tap / swipe 兩行提示不受影響。
-                    showsHoldPauseHint: !model.isLive,
+                    // 長按提示的 per-line `!model.isLive` gate 已退役（rb-ios-gesture-clean-mode-
+                    // rewrite，取代 rb-ios-live-hold-pause-suppress）：`showsHoldPauseHint` 恆傳
+                    // true（省略吃預設值即可）——乾淨模式提示不分直播/VOD 皆該顯示，只受整體
+                    // `showGestureHints` 控制。
+                    // 點擊提示文案改依 `model.isLive` 分流（單擊分流的同一組語意，見
+                    // `resolveTapAction(isLive:)`）。
+                    isLive: model.isLive,
                     // Real video overlay (placeholder bg suppressed) → fade the gesture
                     // hints; standalone / snapshot keeps them static (deterministic).
                     autoFadeGestureHints: !paintsBackgroundPlaceholder,
+                    // 乾淨模式（rb-ios-gesture-clean-mode-rewrite ADDED Requirement）：隱藏 announce
+                    // banner / host caption / 手勢提示，MUST NOT 影響釘選商品卡（見
+                    // `LiveOverlayChromeView.cleanMode` 的內部 gate 範圍）。
+                    cleanMode: cleanMode,
                     // Pinned-product card tap → turnkey product-detail default flow.
                     onTapPinnedProduct: { product in model.performProductTap(product) },
                     // 釘選卡 close X → 逐商品本地隱藏（把 id 加入本地 dismissedLivePinnedIds，
@@ -620,20 +1040,35 @@ public struct PlayerShellView: View {
                         withAnimation { infoPanelPresented = true }
                     })
             } else {
+                // 拖曳播放進度條期間（isScrubbing）隱藏字幕疊層 / 介紹中商品卡輪播，讓出畫面給
+                // transport bar；放開手指到 2.8 秒收回這段期間（scrubBarExpanded &&
+                // !isScrubbing）兩者重新出現並上移，讓出底部 transport bar 空間
+                // （rb-ios-restore-vod-playback-progress-bar）。
                 VStack(alignment: .leading, spacing: 0) {
                     Spacer(minLength: 0)
-                    if model.subtitleEnabled && !captionText.isEmpty {
-                        CaptionOverlayView(theme: theme, text: captionText)
-                            .padding(.bottom, 8)
+                    // CC 字幕 overlay 在乾淨模式隱藏（rb-ios-gesture-clean-mode-rewrite ADDED
+                    // Requirement「…長按切換「乾淨模式」隱藏懸浮 chrome」VOD 隱藏清單）。
+                    //
+                    // 字幕來源兩層 fallback（rb-ios-subtitle-vtt-caption-display）：host 明確傳入的
+                    // `captionText`（既有參數）優先，維持既有 host-override 行為 100% 不變；
+                    // `captionText` 為空才 fallback 到 `model.subtitleCues`（turnkey 容器抓取 +
+                    // 解析 `channel.subtitle_url` 灌入）在目前 `model.position` 命中的 cue 文字。
+                    let effectiveCaption = captionText.isEmpty
+                        ? (VTTSubtitleParser.activeCue(model.subtitleCues, at: model.position)?.text ?? "")
+                        : captionText
+                    if model.subtitleEnabled && !effectiveCaption.isEmpty && !isScrubbing && !cleanMode {
+                        CaptionOverlayView(theme: theme, text: effectiveCaption)
+                            .padding(.bottom, 8 + scrubChromeLiftIfExpanded)
                     }
                     // VOD now-introducing products: a full-width card carousel (real image + page
                     // dots + swipe) over ALL products whose [beginTime,endTime) window contains
                     // the playhead (`model.vodActiveProducts`), minus the ones dismissed locally.
-                    // No scrub bar (design VOD has none). rb-ios-now-introducing-real-image-carousel
-                    // (問題 9 滿寬+真實圖, 問題 10 多商品輪播).
+                    // rb-ios-now-introducing-real-image-carousel (問題 9 滿寬+真實圖, 問題 10 多商品輪播).
+                    // 「mini-cart」（design `LBPMiniCart`）在乾淨模式隱藏 — iOS 對應此 now-introducing
+                    // carousel（rb-ios-gesture-clean-mode-rewrite ADDED Requirement）。
                     let introducing = model.vodActiveProducts
                         .filter { !dismissedVodProductIds.contains($0.id) }
-                    if !introducing.isEmpty {
+                    if !introducing.isEmpty && !isScrubbing && !cleanMode {
                         NowIntroducingCarouselView(
                             theme: theme,
                             peeks: introducing.map { product in
@@ -659,7 +1094,7 @@ public struct PlayerShellView: View {
                             // 開場序列（.loading / .splash）無袋 → 維持 8（避讓跟隨浮動袋顯示時機）。
                             .padding(.leading, 8)
                             .padding(.trailing, showsVodMainChrome ? Self.floatingBagClearance : 8)
-                            .padding(.bottom, 12)
+                            .padding(.bottom, 12 + scrubChromeLiftIfExpanded)
                     }
                 }
             }
@@ -707,6 +1142,10 @@ public struct PlayerShellView: View {
                     // not-yet-real `viewerCount` (type default `0`) is never drawn as if it
                     // were a real count.
                     startPhase: model.startPhase,
+                    // 乾淨模式隱藏「top bar logo」+「host badge」（design 兩個獨立元件，iOS 合併
+                    // 成同一顆 hostPill）——保留頂欄唯一的 minimize(PIP) 鈕不受影響（rb-ios-gesture-
+                    // clean-mode-rewrite ADDED Requirement，見 `PlayerHeaderBarView.cleanMode`）。
+                    cleanMode: cleanMode,
                     onMinimize: { onMinimize?() },
                     // 訂閱徽章 → 容器注入的 gate（未登入 → AuthGate(.subscribe)）；未注入 fallback
                     // `model.toggleSubscribe()`（rb-ios-subscribe-login-gate）。與 info pill 共用。
@@ -725,8 +1164,12 @@ public struct PlayerShellView: View {
                 // next to the mini-cart strip (design `LBPSideRail` bottom:80 vs
                 // `LBPBagButton` bottom:16). Suppressed only during the VOD OPENING sequence
                 // (full-screen loader `.loading` / intro MP4 `.splash`) — from `.buffering`
-                // onward the rail shows (rb-ios-vod-rail-show-on-buffering).
-                if showsVodMainChrome {
+                // onward the rail shows (rb-ios-vod-rail-show-on-buffering). Additionally hidden
+                // while actively dragging the playback-progress bar
+                // (rb-ios-restore-vod-playback-progress-bar) — reappears (lifted, see padding
+                // below) once the finger lifts. Side rail 在乾淨模式隱藏（rb-ios-gesture-clean-
+                // mode-rewrite ADDED Requirement）。
+                if showsVodMainChrome && !isScrubbing && !cleanMode {
                     HStack(spacing: 0) {
                         Spacer(minLength: 0)
                         OperationRailView(
@@ -743,7 +1186,7 @@ public struct PlayerShellView: View {
                                 handleRailTap(kind)
                             })
                             .padding(.trailing, 12)
-                            .padding(.bottom, 80)
+                            .padding(.bottom, 80 + scrubChromeLiftIfExpanded)
                     }
                 }
             }
@@ -755,8 +1198,10 @@ public struct PlayerShellView: View {
             // host `onOpenProductList`), behavior unchanged — only the trigger surface.
             // Suppressed only during the VOD OPENING sequence (full-screen loader
             // `.loading` / intro MP4 `.splash`); shows from `.buffering` onward, in lockstep
-            // with the side rail (rb-ios-vod-rail-show-on-buffering).
-            if showsVodMainChrome {
+            // with the side rail (rb-ios-vod-rail-show-on-buffering). Additionally hidden while
+            // actively dragging the playback-progress bar (rb-ios-restore-vod-playback-progress-bar).
+            // Hidden in clean mode (rb-ios-gesture-clean-mode-rewrite ADDED Requirement).
+            if showsVodMainChrome && !isScrubbing && !cleanMode {
                 VStack(spacing: 0) {
                     Spacer(minLength: 0)
                     HStack(spacing: 0) {
@@ -769,7 +1214,7 @@ public struct PlayerShellView: View {
                                 onOpenProductList?()        // host opens the product list
                             })
                             .padding(.trailing, 12)
-                            .padding(.bottom, 16)
+                            .padding(.bottom, 16 + scrubChromeLiftIfExpanded)
                     }
                 }
             }
@@ -787,7 +1232,18 @@ public struct PlayerShellView: View {
             // the composer replaces the 留言 entry and sits in the same bottom region, so the
             // bottom bar (+ its heart-burst sibling) is suppressed to avoid overlap
             // (rb-ios-chat-composer-opaque-hide-bottom-bar).
-            if (usesLiveChrome || model.isUpcoming || model.introPlaying) && !composerPresented {
+            // 拖曳播放進度條期間（isScrubbing）隱藏 LIVE 底部 bar（+ 愛心 burst），讓出畫面給
+            // transport bar（design `screens.jsx` `LBLiveBottomBar` 的 `!(isReplay && scrubbing)`
+            // gate）；放開手指到 2.8 秒收回這段期間（scrubBarExpanded && !isScrubbing）重新出現並
+            // 上移，讓出底部 transport bar 空間。`isScrubbing` 只會在 `showsPlaybackProgressBar`
+            // 為真時被觸發，故對 upcoming / introPlaying（永不與進度條共存）不受影響。
+            //
+            // 乾淨模式（rb-ios-gesture-clean-mode-rewrite ADDED Requirement）隱藏 LIVE 底部
+            // bar —— 但範圍只限「因 usesLiveChrome 而顯示」的情況（真直播 / 已結束直播回放）；
+            // upcoming / introPlaying 那段 slim bar 不在本次乾淨模式規範範圍內，`&& !cleanMode`
+            // 只 AND 進 `usesLiveChrome` 那一支，不影響 `model.isUpcoming` / `model.introPlaying`
+            // 那兩支。
+            if ((usesLiveChrome && !cleanMode) || model.isUpcoming || model.introPlaying) && !composerPresented && !isScrubbing {
                 VStack(spacing: 0) {
                     Spacer(minLength: 0)
                     LiveBottomBarView(
@@ -820,14 +1276,20 @@ public struct PlayerShellView: View {
                         onLike: { model.performLike(); liveHeartTick &+= 1 })
                         // onToggleCC intentionally not wired: the LIVE bottom bar no longer has a CC
                         // toggle (the replay variant is removed — prerecorded-live-bottom-bar-comment).
-                        .padding(.bottom, 8)
+                        // rb-ios-live-bottom-bar-16pt-align: no static offset here — LiveBottomBarView
+                        // itself now owns the full 16pt bottom inset internally (barBottomPadding), so
+                        // its background sits flush against the true bottom edge (design `bottom: 0`).
+                        // Only the dynamic post-scrub-release lift remains.
+                        .padding(.bottom, scrubChromeLiftIfExpanded)
                 }
 
                 // LIVE bottom-bar heart burst — the shared `HeartBurstView` anchored ABOVE the
                 // like button (bottom-trailing), driven by the local `liveHeartTick`. Bag-only
                 // (introPlaying) draws no like → no burst. Transient + non-interactive →
                 // snapshot-neutral at rest. (rb-ios-live-bottom-heart-burst)
-                if (usesLiveChrome || model.isUpcoming) && !model.introPlaying {
+                // 心動特效在乾淨模式隱藏（rb-ios-gesture-clean-mode-rewrite ADDED Requirement）——
+                // 同上，範圍只限 usesLiveChrome 那一支，不影響 upcoming。
+                if ((usesLiveChrome && !cleanMode) || model.isUpcoming) && !model.introPlaying {
                     VStack(spacing: 0) {
                         Spacer(minLength: 0)
                         HStack(spacing: 0) {
@@ -836,22 +1298,63 @@ public struct PlayerShellView: View {
                         }
                     }
                     .padding(.trailing, 18)
-                    .padding(.bottom, 64)
+                    .padding(.bottom, 64 + scrubChromeLiftIfExpanded)
                     .allowsHitTesting(false)
                 }
             }
 
-            // Center gesture-feedback overlays (transient, default hidden → snapshot-neutral).
-            // Non-interactive (allowsHitTesting false) so they never block the gesture layer
-            // / chrome below. ZStack centers them. pause icon = hold-to-pause; toast = 0.7s
-            // mute feedback (reads model.muted = the post-toggle state).
-            if isHolding {
-                GesturePauseIconView(theme: theme)
-                    .allowsHitTesting(false)
+            // Center gesture-feedback overlays. ZStack centers them.
+            //
+            // Paused overlay (rb-ios-gesture-clean-mode-rewrite, supersedes the retired
+            // `GesturePauseIconView`/`isHolding` pairing): driven by the REAL `model.isPlaying`
+            // (not a gesture transient) — shows for as long as the engine is actually paused,
+            // however that pause was triggered (a VOD/replay tap via `resolveTapAction`, or an
+            // SDK-internal lifecycle `pause()`). Gated on `isMainPlaybackPhase` (mirrors
+            // `showsPlaybackProgressBar`'s `isMain`) so the cold-start loader / intro MP4 window
+            // — where `model.isPlaying` defaults `false` before any real playback state exists —
+            // never shows it. UNLIKE the retired static icon, this overlay IS interactive (two
+            // buttons), so it does NOT carry `.allowsHitTesting(false)`.
+            if isMainPlaybackPhase && !model.isPlaying {
+                PlaybackPausedOverlayView(
+                    theme: theme,
+                    muted: model.muted,
+                    onToggleMute: onToggleMute,
+                    onResume: { model.togglePlayPause() })
             }
+            // Mute toast: 0.7s tap-to-mute feedback (reads model.muted = the post-toggle state).
+            // Non-interactive (allowsHitTesting false) so it never blocks the gesture layer /
+            // chrome below.
             if muteToastVisible {
                 GestureMuteToastView(theme: theme, muted: model.muted)
                     .allowsHitTesting(false)
+            }
+
+            // VOD / replay playback-progress transport bar (rb-ios-restore-vod-playback-
+            // progress-bar, SUPERSEDES rb-ios-retire-vod-progress-bar 2026-06-10). Composed as
+            // an independent top-level ZStack sibling — NOT nested in either the VOD or
+            // `usesLiveChrome` branch above — because it must render over BOTH (pure VOD via
+            // the VOD branch; a finished-live replay or a live stream scrubbed behind the live
+            // edge via the `usesLiveChrome` branch). Pinned to the very bottom edge. All
+            // interactions forward to `PlayerShellModel`'s EXISTING `togglePlayPause()` /
+            // `seek(to:)` forwarders — no new core / view-model API.
+            if showsPlaybackProgressBar {
+                VStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    PlaybackProgressBarView(
+                        theme: theme,
+                        position: model.position,
+                        duration: model.duration,
+                        isPlaying: model.isPlaying,
+                        isScrubbing: isScrubbing,
+                        // 乾淨模式：進度條從細線態直接展開為完整可互動 transport 列（design
+                        // `screens.jsx` 既有的 `(scrubVisible || cleanMode)` 開關模式，rb-ios-
+                        // gesture-clean-mode-rewrite ADDED Requirement）。
+                        isExpanded: scrubBarExpanded || cleanMode,
+                        onTogglePlayPause: { model.togglePlayPause() },
+                        onScrubStarted: { handleScrubStarted() },
+                        onScrub: { ratio in handleScrub(ratio) },
+                        onScrubEnded: { handleScrubEnded() })
+                }
             }
 
             // 會員等級限定升級遮罩（restriction-mask ②）。`is_restriction` 為**軟性顯示閘門**：
@@ -911,9 +1414,18 @@ public struct PlayerShellView: View {
             onIsLiveChange?(usesLiveChrome)
             // 初值報告 announce 顯示與否（`.onChange` 不會為初值觸發），讓容器一進場就給對的避讓。
             onHasAnnounceChange?(!model.announceText.isEmpty)
+            // 初值報告 cleanMode（`.onChange` 不會為初值觸發），讓容器一進場（含測試以
+            // `cleanModeForTesting` 預先 seed 的情境）就拿到正確初值（rb-ios-clean-mode-hide-
+            // chat-feed）。
+            onCleanModeChange?(cleanMode)
         }
         .onChange(of: model.isLive) { _ in
             onIsLiveChange?(usesLiveChrome)
+        }
+        // 回報 cleanMode 每次翻轉（長按觸發）給容器，讓 family-2 聊天 feed 跟著隱藏/恢復
+        // （rb-ios-clean-mode-hide-chat-feed）。
+        .onChange(of: cleanMode) { newValue in
+            onCleanModeChange?(newValue)
         }
         // 回放旗標切換亦回報 live-chrome 家族（換片 live→回放 / 回放→VOD 時聊天 feed 跟著開關）。
         .onChange(of: model.isFinishedLiveReplay) { _ in
@@ -924,6 +1436,13 @@ public struct PlayerShellView: View {
         // (rb-ios-live-announce-chat-clearance, 問題 4). announceText 只在後台公告變更時才變，不頻繁。
         .onChange(of: model.announceText) { text in
             onHasAnnounceChange?(!text.isEmpty)
+        }
+        // App 進背景（含觸發系統自動 PiP）時，若正在拖曳進度條，`DragGesture` 沒有「被系統中斷」
+        // 的回呼可掛（`.onEnded` 永遠不會收到 `touchesCancelled`），視同放開手指走既有
+        // `handleScrubEnded()` 路徑，避免從背景/PiP 返回後拖曳讀數卡在展開態
+        // (ios-scrub-reset-on-background-reference-ui)。
+        .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+            handleDidEnterBackground()
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(LBAccessibilityID.playerShell)

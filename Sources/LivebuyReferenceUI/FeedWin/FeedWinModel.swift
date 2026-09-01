@@ -30,6 +30,13 @@ import LivebuyUI
 //     舊入口已 deprecated —— 缺 email 時 core fail-fast、連 API 都不送). The
 //     event-join 「加入活動」submit goes through an upstream exit (host wired); this
 //     model does NOT own it.
+//   - rb-ios-live-activity-sheet (2026-08-29): `currentActivity` is republished the
+//     SAME way — read fresh from `template.activeEvent.currentActivity`
+//     (`DefaultActiveEvent`, `live-activity-entry-template`) on every `onChange`,
+//     never cached / mutated here. `joinCurrentActivity()` is a thin forwarder to
+//     `DefaultPlayerTemplate.joinCurrentActivity()` (the ONE join entry point that
+//     template exposes — `DefaultActiveEvent` itself does not), mirroring how
+//     `submitClaim(for:email:)` forwards to `DefaultWinClaim`.
 //
 // iOS-14-safe: `ObservableObject` + `@Published` are available from iOS 13, so
 // no `@available` guard is needed here.
@@ -95,6 +102,15 @@ public final class FeedWinModel: ObservableObject {
     /// （否則 view-model 的 guard 擋下提交時畫面會卡住）。
     @Published public private(set) var submitInFlight: Bool
 
+    // -- Surface 4: LiveActivitySheetView ← 目前進行中活動（rb-ios-live-activity-sheet）--
+
+    /// 目前進行中活動（`DefaultActiveEvent.currentActivity`），republished 到這裡供
+    /// `.activity` variant 的 `WinEntryView` 判斷可見性 + `LiveActivitySheetView`
+    /// 渲染。這是**只讀鏡像**——`DefaultActiveEvent.currentActivity` 本身是即時讀穿、
+    /// 不快取的 computed 值（見該型別的 doc comment），這裡只是把 `onChange` 那一刻的
+    /// 快照 republish 出來，MUST NOT 加工、MUST NOT 自行判斷活動是否結束。
+    @Published public private(set) var currentActivity: LBActiveEvent?
+
     // MARK: - Live binding
 
     /// The bound template, when constructed from a live player. nil for demo /
@@ -147,7 +163,8 @@ public final class FeedWinModel: ObservableObject {
             resultState: t.winClaim.resultState,
             pinned: t.pinnedMessage,
             hostName: t.header.hostName,
-            submitInFlight: t.winClaim.submitInFlight
+            submitInFlight: t.winClaim.submitInFlight,
+            currentActivity: t.activeEvent.currentActivity
         )
     }
 
@@ -165,7 +182,8 @@ public final class FeedWinModel: ObservableObject {
         resultState: LBAwardClaimResultState? = nil,
         pinned: LBPinnedMessage? = nil,
         hostName: String = "",
-        submitInFlight: Bool = false
+        submitInFlight: Bool = false,
+        currentActivity: LBActiveEvent? = nil
     ) {
         self.feedItems = feedItems
         self.feedHistory = feedHistory
@@ -175,6 +193,7 @@ public final class FeedWinModel: ObservableObject {
         self.pinned = pinned
         self.hostName = hostName
         self.submitInFlight = submitInFlight
+        self.currentActivity = currentActivity
     }
 
     deinit {
@@ -200,6 +219,7 @@ public final class FeedWinModel: ObservableObject {
         pinned = t.pinnedMessage
         hostName = t.header.hostName
         submitInFlight = t.winClaim.submitInFlight
+        currentActivity = t.activeEvent.currentActivity
     }
 
     // MARK: - Read-only host intents (pass-through to the bound template)
@@ -213,9 +233,10 @@ public final class FeedWinModel: ObservableObject {
     //     `DefaultWinClaim.submit(winner:email:)`. The result then arrives via the
     //     template's `awardClaimResult` → `onChange` → `refresh`. (The EMAIL-LESS
     //     `submitClaim(for:)` is DEPRECATED — see below.)
-    //   • `dismissClaim()` — 關閉領獎畫面。**僅 dismiss**：只清 view-model 的
-    //     `resultState` / `submitInFlight`，MUST NOT 移除未領中獎 / 呼叫 API /
-    //     遞減徽章（見 `WinClaimModalView.dismissConfirmed` 的 R13 說明）。
+    //   • `dismissClaim()` — 關閉領獎畫面（唯一入口＝外層 scrim，任一 stage 皆無條件
+    //     直接觸發，R27）。**僅 dismiss**：只清 view-model 的 `resultState` /
+    //     `submitInFlight`，MUST NOT 移除未領中獎 / 呼叫 API / 遞減徽章（見
+    //     `WinClaimModalView.handleScrimTap` 的 R13 說明）。
     //   • `joinEvent(eid:keyword:)` — the「加入活動」intent for an event-join feed
     //     row. It forwards to the template's `joinEvent` (core
     //     `requestEventJoin` + optimistic `markJoined`). The design notes this is
@@ -280,6 +301,17 @@ public final class FeedWinModel: ObservableObject {
     /// ONCE. No-op for demo instances (no bound template). Container-internal continuation seam.
     func forwardJoinEventBypassingGate(eid: Int, keyword: String) {
         template?.joinEvent(eid: eid, keyword: keyword)
+    }
+
+    /// Forward「加入目前活動」to the bound template
+    /// (`DefaultPlayerTemplate.joinCurrentActivity()` — reads `activeEvent
+    /// .currentActivity` fresh and forwards to the existing `joinEvent(eid:
+    /// keyword:)`; no-op if there is no current activity). This is the ONE join
+    /// entry point `live-activity-entry-template` exposes — `DefaultActiveEvent`
+    /// itself does NOT have a join method (see that type's doc comment for why).
+    /// No-op for demo instances (no bound template).
+    public func joinCurrentActivity() {
+        template?.joinCurrentActivity()
     }
 
     // MARK: - Presentation classification (read-only)

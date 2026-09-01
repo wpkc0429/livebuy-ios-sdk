@@ -83,6 +83,14 @@ final class TemplateAuxListener: NSObject, LivebuyEventListener {
                 awardType: params["award_type"] as? String ?? "",
                 awardCode: params["award_code"] as? String)
             return false
+        case LBEvent.activeEventStarted:
+            // ACTIVE_EVENT_STARTED (fire-once notification, live-activity-entry-
+            // template) → tell the host a new/updated current-activity snapshot is
+            // readable via `activeEvent.currentActivity` (live pull, DOES NOT store
+            // the payload here — see DefaultActiveEvent design.md D1). Non-primary:
+            // returns false so the host's primary listener still sees the event.
+            template?.activeEvent.notifyActivityStarted()
+            return false
         case LBEvent.authRequired:
             // SYNC_INTERCEPTOR: the core's EventDispatcher calls the host's PRIMARY
             // listener FIRST and only iterates aux listeners when it was NOT
@@ -397,6 +405,12 @@ enum TemplateWiring {
             player: vc
         )
         TemplateAttachment.bind(attachment, to: vc)
+
+        // live-activity-entry-template D2: seed the initial "state changed"
+        // notification once attach fully completes, so a user who joined
+        // mid-activity (already missed the fire-once ACTIVE_EVENT_STARTED) still
+        // gets a poke to read `activeEvent.currentActivity` on their first render.
+        template.activeEvent.notifyAttachCompleted()
     }
 
     /// Attach a Default Widget template to `widget` (路 A only — Widget's

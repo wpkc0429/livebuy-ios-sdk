@@ -25,6 +25,13 @@ public enum LBAccessibilityID {
     public static let subscribeBadge = "lb_subscribe_badge"
     public static let playerMinimize = "lb_player_minimize"
 
+    /// Central paused-overlay mute-toggle button (44px, `PlaybackPausedOverlayView`,
+    /// rb-ios-gesture-clean-mode-rewrite — takes over from the retired
+    /// `GesturePauseIconView`).
+    public static let pausedOverlayMuteButton = "lb_paused_overlay_mute_button"
+    /// Central paused-overlay resume button (64px, `PlaybackPausedOverlayView`).
+    public static let pausedOverlayResumeButton = "lb_paused_overlay_resume_button"
+
     public static let operationRail = "lb_operation_rail"
     public static let railLike = "lb_rail_like"
     public static let railComment = "lb_rail_comment"
@@ -51,6 +58,15 @@ public enum LBAccessibilityID {
     public static let nowIntroCarousel = "lb_now_intro_carousel"
     public static let nowIntroducingCard = "lb_now_introducing_card"
     public static func nowIntroducingDot(_ index: Int) -> String { "lb_now_introducing_dot_\(index)" }
+
+    /// VOD / replay playback-progress transport bar (rb-ios-restore-vod-playback-progress-bar).
+    public static let playbackProgressBar = "lb_playback_progress_bar"
+    /// The expanded transport bar's play/pause button.
+    public static let playbackProgressPlayPause = "lb_playback_progress_play_pause"
+    /// The draggable seek track (idle thin line + expanded handle track share this id).
+    public static let playbackProgressTrack = "lb_playback_progress_track"
+    /// The drag-time centered `HH:MM:SS / HH:MM:SS` timestamp readout.
+    public static let playbackProgressReadout = "lb_playback_progress_readout"
 
     public static let infoPanel = "lb_info_panel"
     public static let infoTabDetail = "lb_info_tab_detail"
@@ -83,18 +99,24 @@ public enum LBAccessibilityID {
     public static let activityToast = "lb_activity_toast"
 
     public static let winEntry = "lb_win_entry"
+
+    /// 活動參加入口（`WinEntryView(variant: .activity)`，rb-ios-live-activity-sheet）。
+    /// 獨立於 `winEntry`——兩顆浮動入口可能同時出現在畫面上，E2E 需能分辨。
+    public static let activityEntry = "lb_activity_entry"
+
     public static let winClaimSheet = "lb_win_claim_sheet"
     public static let winClaimPrimary = "lb_win_claim_primary"
-    public static let winClaimSecondary = "lb_win_claim_secondary"
-    public static let winClaimClose = "lb_win_claim_close"
     public static let winClaimResultBanner = "lb_win_claim_result_banner"
     public static let winClaimScrim = "lb_win_claim_scrim"
 
     // 四階段領獎流程（rb-ios-win-claim-email-flow）。
     /// claim 階段的 email 輸入欄（runtime `TextField` / snapshot 靜態佔位共用同一 id）。
     public static let winClaimEmailField = "lb_win_claim_email_field"
-    /// `confirmSubmit` / `confirmClose` 的 alert 卡。
+    /// `confirmSubmit` 的 alert 卡（`confirmClose` 已隨 R27 退役）。
     public static let winClaimAlert = "lb_win_claim_alert"
+    /// 分頁圓點列（`rb-ios-win-claim-pagination`，R27）——只在 `claim` 卡、`pageCount > 1`
+    /// 時出現。
+    public static let winClaimPaginationDots = "lb_win_claim_pagination_dots"
     /// alert 的「確定」。
     public static let winClaimAlertConfirm = "lb_win_claim_alert_confirm"
     /// alert 的「取消」。
@@ -111,6 +133,15 @@ public enum LBAccessibilityID {
     public static let winClaimFooterTerms = "lb_win_claim_footer_terms"
     /// footer「隱私政策」文字（rb-ios-win-claim-footer-links，可點擊）。
     public static let winClaimFooterPrivacy = "lb_win_claim_footer_privacy"
+
+    // 抽獎活動參加彈窗（`LiveActivitySheetView`，rb-ios-live-activity-sheet）。單階段呈現
+    // （design.md D3），不覆用上面的 `winClaim*` 系列 id（D5）。
+    /// modal-root（置中卡）。
+    public static let activitySheet = "lb_activity_sheet"
+    /// 外層 scrim（點擊即關閉——`LBActivitySheet` 無 stage 門檻，恆可點擊關閉）。
+    public static let activitySheetScrim = "lb_activity_sheet_scrim"
+    /// 「立即參加」/「已參加」CTA。
+    public static let activitySheetCta = "lb_activity_sheet_cta"
 
     // MARK: - Family 3 — product + sheets
 

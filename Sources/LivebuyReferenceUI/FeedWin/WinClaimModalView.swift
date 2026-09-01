@@ -8,8 +8,10 @@ import LivebuyUI
 // Spec: `reference-ui-rendering/spec.md`
 //   § "LivebuyReferenceUI 渲染四階段領獎 modal（含 email 輸入），綁 DefaultWinClaim
 //      提交、送出中與結果狀態"
-// Design: `design/templates/minimal/moments.jsx` `LBWinSheet`（2026-07-24 v2 四階段重寫）
-//         + `design/contract/claude-design-sync.md` **R13**（含兩條刻意分歧裁示）。
+// Design: `design/templates/minimal/moments.jsx` `LBWinSheet`（2026-07-24 v2 四階段重寫；
+//         2026-08-29 **R27** 追加分頁能力、移除 confirmClose 關閉機制）
+//         + `design/contract/claude-design-sync.md` **R13**（刻意分歧 2/2 仍在，1/2 已由
+//         R27 解決，見下方段落）+ change `rb-ios-win-claim-pagination`。
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // EMAIL-LESS 已退役（rb-ios-win-claim-email-flow）
@@ -21,13 +23,16 @@ import LivebuyUI
 // 送出**。訪客（僅 `guest_id`）全程可參加抽獎並中獎，卻沒有任何地方能填 email，於是
 // turnkey host 必然回報「中獎領取失敗」。本檔即是把 email 欄位真正畫出來的那一層。
 //
-// 四階段流程（對齊設計稿 `LBWinSheet` 的 `stage` 機）：
+// 四階段流程（對齊設計稿 `LBWinSheet` 的 `stage` 機；R27 移除 `confirmClose`）：
 //
-//   claim         恭喜中獎 + award.name + ✉ email 欄 +「確認領獎」+「關閉視窗」+ footer
-//     ├「確認領獎」→ confirmSubmit alert →（確定）→ submitting → done / fail
-//     └「關閉視窗」/ ✕ → confirmClose alert →（確定）→ 純 dismiss
+//   claim         恭喜中獎 + award.name + ✉ email 欄 +「確認領獎」+（pageCount>1 時）分頁圓點 + footer
+//     └「確認領獎」→ confirmSubmit alert →（確定）→ submitting → done / fail
 //   done          discount → 折扣碼 + 複製 + 寄送信箱；product → 待結帳商品卡
-//   fail          領獎失敗 + 通用錯誤提示列 +「重新領獎」（回 confirmSubmit）+「關閉視窗」
+//   fail          領獎失敗 + 通用錯誤提示列 +「重新領獎」（回 confirmSubmit）
+//
+// R27：無 ✕、無「關閉視窗」文字鈕，任一 stage 皆同。唯一的關閉入口是外層 scrim 點擊，
+// 且在 claim / submitting / done / fail 任一 stage 皆無條件直接 dismiss（`confirmSubmit`
+// 自己的內層 scrim 例外，只收起 alert，見 `alertLayer`）。
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // 單一真相（stage 怎麼來的）
@@ -49,17 +54,20 @@ import LivebuyUI
 // ─────────────────────────────────────────────────────────────────────────────
 //   1. `theme: ReferenceUITheme`  — FIRST positional argument。
 //   2. 綁定的 SNAPSHOT 值          — `winner` / `presentation` / `resultState` /
-//      `submitInFlight`，由 `FeedWinModel` **by value** 傳入（不傳 model、不傳 template）。
+//      `submitInFlight` / `pageCount` / `pageIndex`（R27，分頁能力），由 `FeedWinModel`
+//      / 容器 **by value** 傳入（不傳 model、不傳 template）。
 //   3. action closures（尾段、各 `= nil`）— `onSubmit: ((String) -> Void)?`（帶使用者
 //      輸入的 email，funnel 到 `DefaultWinClaim.submit(winner:email:)`）、
-//      `onDismiss: (() -> Void)?`（關閉，funnel 到 `dismissClaim()` + 清容器綁定）。
+//      `onDismiss: (() -> Void)?`（關閉，funnel 到 `dismissClaim()` + 清容器綁定）、
+//      `onPage: ((Int) -> Void)?`（R27，拖曳 / 點分頁圓點時帶目標頁碼，容器依既有
+//      `unclaimedWinners` 依索引切換 `claimingWinner`）。
 //
 // 本 sub-view 只讀傳入值，從不回抓 `FeedWinModel` / `DefaultPlayerTemplate`（單向資料流），
 // 且所有 action 為 nil 時仍能正確渲染（demo / snapshot 可 action-free 建構）。
 //
 // iOS-14-safe SwiftUI only（`ZStack` / `VStack` / `HStack` / `Text` / `Button` /
 // `TextField` / `RoundedRectangle` / `Circle` / `LinearGradient` / `GeometryReader` /
-// `PreferenceKey` / `onReceive` 皆 iOS 13+）。
+// `PreferenceKey` / `onReceive` / `DragGesture` 皆 iOS 13+）。
 // 無 `ScrollView` / `LazyVStack`（置中 modal 禁用 scrolling 容器，且 reference-ui 的
 // snapshot 路徑 `ImageRenderer` 會把它們畫成空白）。無 `.task` / `AsyncImage` /
 // `NavigationStack` / `.foregroundStyle` / `.tint`。
@@ -77,8 +85,6 @@ public struct WinClaimModalView: View {
         case claim
         /// 「確認領獎」alert（確認 email 正確）。
         case confirmSubmit
-        /// 「關閉視窗」alert（強勸阻文案，行為僅 dismiss —— 見 `dismissConfirmed`）。
-        case confirmClose
         /// 送出中（scrim + spinner），由 view-model `submitInFlight` 驅動。
         case submitting
         /// 領獎完成，由 view-model `resultState` 的成功態驅動。
@@ -100,8 +106,6 @@ public struct WinClaimModalView: View {
         case editing
         /// 正顯示「確認領獎」alert。
         case confirmSubmit
-        /// 正顯示「關閉視窗」alert。
-        case confirmClose
     }
 
     // MARK: - 綁定的 snapshot 值（by value）
@@ -124,13 +128,26 @@ public struct WinClaimModalView: View {
     /// **本層 MUST NOT 自造第二份 in-flight 真相** —— 只讀這一個。
     public let submitInFlight: Bool
 
+    /// 分頁能力（R27，`rb-ios-win-claim-pagination`）——容器目前有幾筆待領獎者
+    /// （`FeedWinModel.unclaimedWinners.count`）。`1`（預設）→ `claim` 卡不畫分頁圓點、
+    /// 拖曳手勢安全 inert。本層 **MUST NOT** 自行複製 / 快取一份待領獎者清單，只讀這個數。
+    public let pageCount: Int
+    /// 分頁能力（R27）——目前正在瀏覽的頁碼（`0`-based，容器 `claimPageIndex` 的鏡像）。
+    /// 只影響 `claim` 卡分頁圓點的目前頁高亮；本層 **MUST NOT** 自行推導或快取。
+    public let pageIndex: Int
+
     /// 領獎提交（帶使用者輸入的 email）。容器轉發
     /// `model.submitClaim(for: winner, email:)` → `DefaultWinClaim.submit(winner:email:)`。
     /// demo / snapshot 為 nil —— 本 view 在所有 action 為 nil 時仍正確渲染。
     private let onSubmit: ((String) -> Void)?
-    /// 關閉（✕ /「關閉視窗」確認後 / `done` 階段點 scrim）。容器轉發
+    /// 關閉（唯一入口＝外層 scrim 點擊，任一 stage 皆可直接觸發，R27）。容器轉發
     /// `model.dismissClaim()` 後清掉自己的呈現綁定。demo / snapshot 為 nil。
     private let onDismiss: (() -> Void)?
+    /// 分頁能力（R27）——使用者水平拖曳超過閾值，或點擊分頁圓點時呼叫，帶目標頁碼。
+    /// 容器負責把 `i` 夾在 `[0, pageCount)`、依既有 `unclaimedWinners` 依索引切換
+    /// `claimingWinner`（見 `FeedWinOverlayView.onPage(_:)`）。demo / snapshot 為 nil ——
+    /// 為 nil 時拖曳 / 點擊分頁圓點 MUST 安全 inert（不觸發、不崩潰、不改變視覺）。
+    private let onPage: ((Int) -> Void)?
 
     /// footer「使用條款」文字被點擊（rb-ios-win-claim-footer-links）。容器轉發
     /// `openLegalLink(LBLegalLinks.termsOfUse)`（core `LBURLOpenPolicy` 裁決開啟）。
@@ -153,8 +170,11 @@ public struct WinClaimModalView: View {
         presentation: LBAwardPresentation,
         resultState: LBAwardClaimResultState?,
         submitInFlight: Bool = false,
+        pageCount: Int = 1,
+        pageIndex: Int = 0,
         onSubmit: ((String) -> Void)? = nil,
         onDismiss: (() -> Void)? = nil,
+        onPage: ((Int) -> Void)? = nil,
         onOpenTermsOfUse: (() -> Void)? = nil,
         onOpenPrivacyPolicy: (() -> Void)? = nil,
         editable: Bool = true
@@ -164,8 +184,11 @@ public struct WinClaimModalView: View {
         self.presentation = presentation
         self.resultState = resultState
         self.submitInFlight = submitInFlight
+        self.pageCount = pageCount
+        self.pageIndex = pageIndex
         self.onSubmit = onSubmit
         self.onDismiss = onDismiss
+        self.onPage = onPage
         self.onOpenTermsOfUse = onOpenTermsOfUse
         self.onOpenPrivacyPolicy = onOpenPrivacyPolicy
         self.isEditable = editable
@@ -235,7 +258,6 @@ public struct WinClaimModalView: View {
         if submitInFlight { return .submitting }
         switch phase {
         case .confirmSubmit: return .confirmSubmit
-        case .confirmClose:  return .confirmClose
         case .editing:       return .claim
         case .idle:          return resultStage(result)
         }
@@ -268,12 +290,45 @@ public struct WinClaimModalView: View {
         winner.award.name.isEmpty ? Self.awardNameFallback : winner.award.name
     }
 
-    /// alert（confirmSubmit / confirmClose）是否正疊在底卡上。
-    private var isAlert: Bool {
-        currentStage == .confirmSubmit || currentStage == .confirmClose
-    }
+    /// alert（confirmSubmit）是否正疊在底卡上。
+    private var isAlert: Bool { currentStage == .confirmSubmit }
     /// 底卡是否應被壓暗且不可互動（alert 或送出中）。
     private var isBusy: Bool { isAlert || currentStage == .submitting }
+
+    // MARK: - 分頁能力（純函式，R27）
+
+    /// 拖曳 / 分頁圓點觸發的目標頁碼，永遠夾在 `[0, count)`（`count <= 0` 時回 `0`）。
+    /// 純函式、決定式 —— 供 task 2.4 的釘樁測試直接呼叫。
+    static func clampedPage(current: Int, delta: Int, count: Int) -> Int {
+        guard count > 0 else { return 0 }
+        return min(max(current + delta, 0), count - 1)
+    }
+
+    /// 水平拖曳判定的位移閾值（對齊 `LBWinSheet` 的 `Math.abs(dx) < 40`）。
+    static let pageSwipeThreshold: CGFloat = 40
+
+    /// 嘗試翻頁 `delta` 格（`+1` = 右向左滑、`-1` = 左向右滑）。`onPage` 為 nil、
+    /// `pageCount <= 1`，或夾出來的目標頁碼與目前頁相同（已在邊界）時安全 inert
+    /// （不觸發 `onPage`）。
+    private func attemptPage(delta: Int) {
+        guard pageCount > 1, let onPage = onPage else { return }
+        let target = Self.clampedPage(current: pageIndex, delta: delta, count: pageCount)
+        guard target != pageIndex else { return }
+        onPage(target)
+    }
+
+    /// 整張 modal（scrim + 卡）共用的水平拖曳手勢（對齊 `LBWinSheet` 的
+    /// `onSwipeStart`/`onSwipeEnd`）。設計稿不在 `submitting` 期間 gate 這個手勢，本層
+    /// 沿用（見 design.md「Open Questions」）——`attemptPage` 本身在 `pageCount <= 1`
+    /// 或 `onPage` 為 nil 時已安全 inert，故不需要額外的 stage gate。
+    private var pageSwipeGesture: some Gesture {
+        DragGesture(minimumDistance: 16)
+            .onEnded { value in
+                let dx = value.translation.width
+                guard abs(dx) >= Self.pageSwipeThreshold else { return }
+                attemptPage(delta: dx < 0 ? 1 : -1)
+            }
+    }
 
     // MARK: - Body
 
@@ -294,6 +349,9 @@ public struct WinClaimModalView: View {
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)
+            // 分頁手勢（R27）——掛在整張 modal（scrim + 卡）上，對齊設計稿把 swipe handler
+            // 綁在最外層 wrapper 的作法，見 `pageSwipeGesture`。
+            .gesture(pageSwipeGesture)
             // 鍵盤觀測（iOS 13+ `onReceive`）。沒有任何 SwiftUI 自動 avoidance 可用：
             // 本 modal 由 `PlayerOverlayRootView` 以 `ignoresSafeAreaCompat()` 全幅疊放，
             // 自動 avoidance 會被抵銷；而置中 modal 的 spec 明文禁用 scrolling 容器
@@ -313,20 +371,27 @@ public struct WinClaimModalView: View {
         }
     }
 
-    // MARK: - 外層 scrim（依 stage 決定可否點擊關閉）
+    // MARK: - 外層 scrim（唯一的關閉入口，任一 stage 皆無條件直接 dismiss，R27）
     //
-    // 設計稿：`onClick={stage === 'done' ? onClose : undefined}` —— 只有「領獎完成」時
-    // 點外層 scrim 才關閉。`claim` / `fail` 時 MUST NOT 直接關閉，否則就繞過了刻意的
-    // 關閉摩擦（見 `dismissConfirmed`）。
+    // 舊規定：`onClick={stage === 'done' ? onClose : undefined}` —— 只有「領獎完成」時
+    // 點外層 scrim 才關閉，`claim` / `fail` 靠 `confirmClose` 二次確認。R27 移除
+    // `confirmClose` 後，外層 scrim 成為**唯一**且**無條件**的關閉入口——任一 stage
+    // 點擊皆直接呼叫 `onDismiss`（`confirmSubmit` 自己的內層 scrim 例外，見 `alertLayer`，
+    // 那顆只收起 alert、不關整個 modal）。
 
     private var scrim: some View {
         Self.scrimColor
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .contentShape(Rectangle())
-            .onTapGesture { if currentStage == .done { onDismiss?() } }
+            .onTapGesture { handleScrimTap() }
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(LBAccessibilityID.winClaimScrim)
     }
+
+    /// 外層 scrim 被點擊 —— 無條件轉發 `onDismiss`（純 dismiss，見 spec「🔴 關閉領獎畫面
+    /// MUST 僅 dismiss」）。抽成非 `private` 的 dispatch method（同 `handleFooterTermsTap`
+    /// 既有慣例）讓測試可以直接呼叫、不必渲染 SwiftUI 手勢。callback 為 nil 時安全 inert。
+    func handleScrimTap() { onDismiss?() }
 
     // MARK: - 底卡（claim / done / fail），寬 84% 上限 320
 
@@ -366,14 +431,36 @@ public struct WinClaimModalView: View {
                 congratsBlock
                 emailField
                 claimActions
+                // 分頁圓點（R27）——只在 claim 卡、且 pageCount > 1 時畫（對齊設計稿只在
+                // ClaimCard 渲染分頁圓點的行為；`done` / `fail` 卡 MUST NOT 畫，見 task 2.5）。
+                if pageCount > 1 {
+                    paginationDots
+                }
                 footer
             }
         } badge: {
             AnyView(giftBadge)
         } close: {
-            // ✕ 只在 claim 卡出現（設計稿 done / fail 卡皆無 ✕）。
-            AnyView(closeButton)
+            // R27：無 ✕、無「關閉視窗」文字鈕，任一 stage 皆同——唯一關閉入口是外層 scrim。
+            AnyView(EmptyView())
         }
+    }
+
+    /// 分頁圓點列（R27）——每頁一顆、約 6pt，目前頁 `theme.accent` 填色、其餘中性色
+    /// （對齊 `LBWinSheet` 的 `S.border || '#D8DBE0'`）。點擊任一顆直接呼叫 `onPage(該索引)`
+    /// （不經 `attemptPage` 的邊界夾制——索引本身由 `ForEach(0..<pageCount)` 保證合法）。
+    private var paginationDots: some View {
+        HStack(spacing: 5) {
+            ForEach(0..<pageCount, id: \.self) { i in
+                Circle()
+                    .fill(i == pageIndex ? theme.accent : Self.dotInactive)
+                    .frame(width: 6, height: 6)
+                    .contentShape(Rectangle().inset(by: -4))
+                    .onTapGesture { onPage?(i) }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(LBAccessibilityID.winClaimPaginationDots)
     }
 
     /// 恭喜中獎標題 + **副標＝`award.name`**（v2 起不再是固定文案）。
@@ -435,7 +522,8 @@ public struct WinClaimModalView: View {
             .accessibilityIdentifier(LBAccessibilityID.winClaimEmailField)
     }
 
-    /// 主 CTA「確認領獎」（email 不合格 → disabled 灰底）+「關閉視窗」。
+    /// 主 CTA「確認領獎」（email 不合格 → disabled 灰底）。R27：「關閉視窗」次要文字鈕已隨
+    /// `confirmClose` 一併退役——關閉一律走外層 scrim。
     private var claimActions: some View {
         VStack(spacing: 4) {
             Button(action: { if isEmailValid { phase = .confirmSubmit } }) {
@@ -452,20 +540,10 @@ public struct WinClaimModalView: View {
             .buttonStyle(PlainButtonStyle())
             .disabled(!isEmailValid)
             .accessibilityIdentifier(LBAccessibilityID.winClaimPrimary)
-
-            Button(action: { phase = .confirmClose }) {
-                Text(Self.closeLabel)
-                    .font(.system(size: 14 * theme.fontScale, weight: .bold))
-                    .foregroundColor(Self.textDim)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 11)
-            }
-            .buttonStyle(PlainButtonStyle())
-            .accessibilityIdentifier(LBAccessibilityID.winClaimSecondary)
         }
     }
 
-    // MARK: - ② confirmSubmit / confirmClose alert 疊層
+    // MARK: - ② confirmSubmit alert 疊層（`confirmClose` 已隨 R27 退役）
 
     private func alertLayer(containerWidth: CGFloat) -> some View {
         ZStack {
@@ -535,52 +613,34 @@ public struct WinClaimModalView: View {
         }
     }
 
-    private var alertTitle: String {
-        currentStage == .confirmClose ? Self.closeAlertTitle : Self.submitAlertTitle
-    }
+    /// R27：`confirmClose` 退役後，這裡只剩 `confirmSubmit` 一種 alert，故不再需要依
+    /// stage 分流。
+    private var alertTitle: String { Self.submitAlertTitle }
     private var alertBody: String {
-        currentStage == .confirmClose
-            ? String(format: Self.closeAlertBodyFormat, awardName)
-            : String(format: Self.submitAlertBodyFormat, email.trimmingCharacters(in: .whitespacesAndNewlines))
+        String(format: Self.submitAlertBodyFormat, email.trimmingCharacters(in: .whitespacesAndNewlines))
     }
     private var alertNote: String {
-        if currentStage == .confirmClose { return Self.closeAlertNote }
-        return isDiscount ? Self.submitAlertNoteDiscount : Self.submitAlertNoteProduct
+        isDiscount ? Self.submitAlertNoteDiscount : Self.submitAlertNoteProduct
     }
 
-    /// alert 的「確定」。
+    /// alert 的「確定」——回到 `.idle` 後才提交：這樣新一輪的 `submitInFlight` /
+    /// `resultState` 能直接驅動 submitting → done / fail，不被殘留的互動意圖擋住。
     private func alertConfirmed() {
-        if currentStage == .confirmClose {
-            dismissConfirmed()
-        } else {
-            // 回到 `.idle` 後才提交：這樣新一輪的 `submitInFlight` / `resultState`
-            // 能直接驅動 submitting → done / fail，不被殘留的互動意圖擋住。
-            phase = .idle
-            onSubmit?(email)
-        }
-    }
-
-    /// 🔴 **關閉領獎畫面 ＝ 純 dismiss。反直覺，改動前務必先讀完這段。**
-    ///
-    /// `confirmClose` 的文案照抄設計稿的強勸阻措辭（「您將放棄【獎品】的中獎資格，此動作
-    /// 無法復原」／「※確認送出後，將視同為放棄領獎。」），但**行為 MUST 僅為呈現層
-    /// dismiss**：
-    ///   • MUST NOT 從 `unclaimedWinners` 移除該 winner
-    ///   • MUST NOT 呼叫任何 API
-    ///   • MUST NOT 遞減未領數量徽章（中獎入口紅點保留、可再次開啟領取）
-    ///
-    /// 強文案是**刻意的 UX 摩擦**（降低隨手關閉機率，但不真的剝奪資格），權威為
-    /// `design/contract/claude-design-sync.md` **R13「刻意分歧（1/2）」**（使用者
-    /// 2026-07-24 明示）。同一元件 `fail` 卡的「你的中獎資格仍保留」是正確描述；兩者
-    /// 措辭衝突為**已知且刻意**，請勿「順手改一致」，也勿讓行為跟隨文案。
-    ///
-    /// 實作上只呼叫 `onDismiss` —— 容器接的是 `DefaultWinClaim.dismissClaim()`（只清
-    /// `resultState` + `submitInFlight`）+ 清掉自己的呈現綁定。
-    private func dismissConfirmed() {
-        onDismiss?()
+        phase = .idle
+        onSubmit?(email)
     }
 
     // MARK: - ③ submitting 疊層（scrim + 44pt spinner +「送出中…」）
+    //
+    // 🔴 FIX（verifier 第 2/3 輪抓到的真實缺陷）：這層本身沒有任何 gesture，純粹是視覺壓暗 +
+    // spinner。但它疊在 `scrim`（有 `.onTapGesture { handleScrimTap() }`）**之上**，若不
+    // 明示 `.allowsHitTesting(false)`，SwiftUI 的 hit-testing 會把整個全螢幕矩形視為
+    // 「擋在最上層、可能想要這次觸控」而吃掉點擊，導致底下 `scrim` 永遠收不到
+    // tap——即使 `handleScrimTap()` 本身的 dispatch 邏輯完全正確（`testScrimTap
+    // DismissesRegardlessOfStage` 繞過手勢渲染直接呼叫該函式，故測不出這個真實螢幕
+    // 不可達的問題）。`.allowsHitTesting(false)` 讓這層對觸控「隱形」，觸控直接穿透到
+    // `scrim`，同時視覺（半透明黑 + spinner + 文案）完全不受影響。見
+    // `WinClaimSubmittingLayerHitTestTests`。
 
     private var submittingLayer: some View {
         ZStack {
@@ -615,7 +675,24 @@ public struct WinClaimModalView: View {
             .accessibilityElement(children: .contain)
             .accessibilityIdentifier(LBAccessibilityID.winClaimSubmitting)
         }
+        // 🔴 見本區塊開頭註解——這層自己沒有 gesture，讓觸控穿透到底下的 `scrim`，才能讓
+        // R27「任一 stage 點外層 scrim 皆無條件 dismiss」在 `submitting` 階段真的成立。
+        .allowsHitTesting(false)
     }
+
+    /// Test-only 存取真正被畫出來的 `submittingLayer`，讓測試能對它的 SwiftUI 值圖做
+    /// STRUCTURAL 斷言（`Mirror` 走訪，同 `PlayerHeaderBarView.avatarForTesting` 既有
+    /// 慣例，見 `docs/unit-test-discipline.md` §3 的 `*ForTesting` 命名規範）。
+    ///
+    /// 存在理由：`handleScrimTap()` 本身的 dispatch 邏輯（見 `testScrimTapDismissesRegardlessOfStage`）
+    /// 繞過了 SwiftUI 手勢渲染管線，無法證明「`submitting` 階段真實螢幕點擊能不能傳到這個
+    /// function」——這正是本檔曾經漏測的缺口（見 `submittingLayer` 開頭註解）。這個 hook
+    /// 讓測試能斷言 `.allowsHitTesting(false)` 確實出現在這層的 SwiftUI 值圖裡，而不是只讀
+    /// 原始碼文字。
+    ///
+    /// MUST NOT 被 production code 呼叫（不在任何 `body` 路徑上，零額外像素成本），且 MUST
+    /// 永遠回傳同一個 `submittingLayer`，不得是平行複製（否則會與實際畫出來的東西脫鉤）。
+    var submittingLayerForTesting: some View { submittingLayer }
 
     // MARK: - ④ done 卡（領獎完成）
 
@@ -781,7 +858,8 @@ public struct WinClaimModalView: View {
         .accessibilityIdentifier(LBAccessibilityID.winClaimFailNotice)
     }
 
-    /// 「重新領獎」（回 confirmSubmit，**沿用原本輸入的 email**）+「關閉視窗」（直接關）。
+    /// 「重新領獎」（回 confirmSubmit，**沿用原本輸入的 email**）。R27：「關閉視窗」次要
+    /// 文字鈕已隨 `confirmClose` 一併退役——關閉一律走外層 scrim（無條件直接 dismiss）。
     private var failActions: some View {
         VStack(spacing: 4) {
             Button(action: { phase = .confirmSubmit }) {
@@ -796,21 +874,10 @@ public struct WinClaimModalView: View {
             }
             .buttonStyle(PlainButtonStyle())
             .accessibilityIdentifier(LBAccessibilityID.winClaimPrimary)
-
-            // fail 卡的「關閉視窗」直接關（設計稿不再追問 confirmClose）——仍是純 dismiss。
-            Button(action: { dismissConfirmed() }) {
-                Text(Self.closeLabel)
-                    .font(.system(size: 14 * theme.fontScale, weight: .bold))
-                    .foregroundColor(Self.textDim)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 11)
-            }
-            .buttonStyle(PlainButtonStyle())
-            .accessibilityIdentifier(LBAccessibilityID.winClaimSecondary)
         }
     }
 
-    // MARK: - 共用卡殼（圓角卡 + 浮在卡頂外的徽章 + 可選 ✕）
+    // MARK: - 共用卡殼（圓角卡 + 浮在卡頂外的徽章 + 可選關閉 chrome）
     //
     // 設計稿的徽章是 `position:absolute; top:-30`，浮在卡**外**且有 4px 卡背景色描邊，
     // 而卡本身 `clipShape`。若把徽章放進被 clip 的卡內會被切掉，故拆成兩層 ZStack：
@@ -843,18 +910,9 @@ public struct WinClaimModalView: View {
         }
     }
 
-    /// 右上角 ✕（設計稿為透明底 30×30 tap target）。
-    private var closeButton: some View {
-        Button(action: { phase = .confirmClose }) {
-            Image(systemName: "xmark")
-                .font(.system(size: 15, weight: .semibold))
-                .foregroundColor(Self.textDim)
-                .frame(width: 30, height: 30)
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(PlainButtonStyle())
-        .accessibilityIdentifier(LBAccessibilityID.winClaimClose)
-    }
+    // R27：右上角 ✕（`closeButton`）已隨 `confirmClose` 一併退役——`cardShell` 的
+    // `close:` slot 現在三個 stage（claim / done / fail）皆傳 `AnyView(EmptyView())`，
+    // 唯一的關閉入口是外層 scrim（見 `handleScrimTap`）。
 
     // MARK: - 徽章（60pt，浮出卡頂外，4pt 卡背景色描邊）
 
@@ -1000,6 +1058,9 @@ public struct WinClaimModalView: View {
     static let scrimColor = Color.black.opacity(0.6)
     /// alert / submitting 疊層自己的 scrim（`rgba(0,0,0,0.28)`）。
     static let alertScrimColor = Color.black.opacity(0.28)
+    /// 分頁圓點非目前頁的中性色（R27，設計稿 `S.border || '#D8DBE0'` —— tokens.jsx 未定義
+    /// `border`，故設計稿實際恆用字面值 `#D8DBE0`）。
+    static let dotInactive = Color(hex: "#D8DBE0") ?? Color.gray.opacity(0.3)
 
     /// confetti 顆數（v2：22 → 20）。
     static let confettiCount = 20
@@ -1047,7 +1108,6 @@ public struct WinClaimModalView: View {
     static let awardNameFallback = "直播間限定獎品"
     static let emailPlaceholder = "電子郵件"
     static let ctaSubmit = "確認領獎"
-    static let closeLabel = "關閉視窗"
     static let footerTerms = "使用條款"
     static let footerPrivacy = "隱私政策"
 
@@ -1056,12 +1116,9 @@ public struct WinClaimModalView: View {
     static let submitAlertNoteDiscount = "※結帳折扣碼將會寄送到您的信箱內。"
     static let submitAlertNoteProduct = "※獎品將自動加入為待結帳商品。"
 
-    /// 🔴 強勸阻文案 —— **刻意**與實際「純 dismiss」行為不符，見 `dismissConfirmed`。
-    static let closeAlertTitle = "關閉視窗"
-    /// 🔴 同上：文案說「放棄資格、無法復原」，行為 MUST 僅 dismiss。R13 刻意分歧 1/2。
-    static let closeAlertBodyFormat = "請注意：您將放棄【%@】的中獎資格，此動作無法復原，確定要關閉視窗嗎？"
-    /// 🔴 同上。
-    static let closeAlertNote = "※確認送出後，將視同為放棄領獎。"
+    // R27：`closeAlertTitle` / `closeAlertBodyFormat` / `closeAlertNote`（強勸阻的
+    // 「關閉視窗」二次確認文案，R13 刻意分歧 1/2 的載體）已隨 `confirmClose` stage 一併
+    // 移除——文案不存在後，不再有任何措辭與行為的落差需要維持（design.md D5）。
 
     static let alertCancelLabel = "取消"
     static let alertConfirmLabel = "確定"
@@ -1160,7 +1217,10 @@ extension WinClaimModalView {
         resultState: LBAwardClaimResultState? = nil,
         submitInFlight: Bool = false,
         phase: LocalPhase = .idle,
-        email: String = ""
+        email: String = "",
+        pageCount: Int = 1,
+        pageIndex: Int = 0,
+        onDismiss: (() -> Void)? = nil
     ) -> WinClaimModalView {
         var view = WinClaimModalView(
             theme: theme,
@@ -1168,6 +1228,9 @@ extension WinClaimModalView {
             presentation: presentation,
             resultState: resultState,
             submitInFlight: submitInFlight,
+            pageCount: pageCount,
+            pageIndex: pageIndex,
+            onDismiss: onDismiss,
             editable: false)
         view._phase = State(initialValue: phase)
         view._email = State(initialValue: email)
@@ -1198,8 +1261,8 @@ struct WinClaimModalView_Previews: PreviewProvider {
 
             WinClaimModalView.makeSeededForTesting(
                 theme: theme, winner: product, presentation: .product,
-                phase: .confirmClose, email: "jasper@livebuy.tv")
-                .previewDisplayName("confirmClose")
+                email: "jasper@livebuy.tv", pageCount: 3, pageIndex: 1)
+                .previewDisplayName("claim · pagination (3 pages)")
 
             WinClaimModalView.makeSeededForTesting(
                 theme: theme, winner: discount, presentation: .discount,

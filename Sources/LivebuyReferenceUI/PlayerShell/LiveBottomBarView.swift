@@ -199,14 +199,11 @@ public struct LiveBottomBarView: View {
             }
         }
         .padding(.horizontal, Self.barHPadding)
-        .padding(.vertical, Self.barVPadding)
+        .padding(.top, Self.barTopPadding)
+        .padding(.bottom, Self.barBottomPadding)
         .frame(maxWidth: .infinity)
-        .background(
-            // `linear-gradient(to top, rgba(0,0,0,0.55), transparent)`.
-            LinearGradient(
-                gradient: Gradient(colors: [Color.black.opacity(0.55), Color.clear]),
-                startPoint: .bottom, endPoint: .top)
-        )
+        // rb-ios-live-chrome-gradient-removal: no background scrim (design dropped
+        // `LBLiveBottomBar`'s `linear-gradient(to top, rgba(0,0,0,0.55), transparent)` 2026-08-31).
     }
 
     // MARK: - Bag button (`LBLiveBottomBar` bag)
@@ -348,8 +345,14 @@ public struct LiveBottomBarView: View {
 private extension LiveBottomBarView {
     // bar container
     static let barGap: CGFloat = 8            // flex gap
-    static let barHPadding: CGFloat = 10      // padding 8px 10px
-    static let barVPadding: CGFloat = 8
+    static let barHPadding: CGFloat = 10      // padding: 8px 10px 16px (CSS 3-value shorthand)
+    static let barTopPadding: CGFloat = 8
+    // rb-ios-live-bottom-bar-16pt-align: bottom inset unified to 16pt so content sits the same
+    // distance from the screen edge as the VOD floating bag button (`FloatingBagButtonView`'s
+    // `bottom: 16pt`). Paired with the outer wrapper in PlayerShellView losing its static "8" —
+    // net effect on content position is zero (see design.md algebra), only the background now
+    // extends flush to the true bottom edge.
+    static let barBottomPadding: CGFloat = 16
 
     // iconBtn (36×36 round, rgba(20,20,24,0.6))
     static let iconSize: CGFloat = 36

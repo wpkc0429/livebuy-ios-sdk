@@ -62,8 +62,22 @@ public final class ProductSheetsModel: ObservableObject {
     @Published public private(set) var products: [LBProduct]
 
     /// The currently-introducing product's id (`DefaultProductOverlayState.introducingProductId`).
-    /// The product-list row whose id matches draws the「介紹中」banner (LIVE-only). nil → none.
+    /// This is core's "first narrating product" convenience — it can only ever name ONE product.
+    /// Kept published for source compat; the product-list drawer's badge no longer reads this
+    /// directly (see `liveActiveProducts` below, rb-ios-product-bag-multi-narrating).
     @Published public private(set) var introducingProductId: String?
+
+    /// ALL LIVE now-introducing products — mirrors `DefaultPlayerTemplate.liveActiveProducts`
+    /// (every `narrate_status == 2` product in the current `products` snapshot; the backend MAY
+    /// narrate MULTIPLE simultaneously). Feeds the product-list drawer's multi-badge fix
+    /// (rb-ios-product-bag-multi-narrating): `introducingProductId` above only ever carried the
+    /// FIRST narrating product, so a second simultaneously-narrating product's row silently drew
+    /// no「介紹中」badge. `PlayerShellModel.liveActiveProducts` already consumes the SAME
+    /// `DefaultPlayerTemplate` aggregate for the LIVE pinned-card carousel — this is the family-3
+    /// (product list) analogue, a second independent reference-ui consumer of an existing
+    /// view-model capability (no view-model / core change). Empty for a demo / snapshot instance
+    /// with no bound template.
+    @Published public private(set) var liveActiveProducts: [LBProduct]
 
     /// Playback-mode signals for the product-row thumbnail overlay
     /// (rb-ios-product-row-status-overlay). Mirrored from the template
@@ -196,6 +210,7 @@ public final class ProductSheetsModel: ObservableObject {
         self.init(
             products: t.productOverlay.productsIntroducingFirst,
             introducingProductId: t.productOverlay.introducingProductId,
+            liveActiveProducts: t.liveActiveProducts,
             isLive: t.header.isLive,
             isReplay: t.playbackProgress.isReplay,
             position: t.playbackProgress.position,
@@ -226,6 +241,7 @@ public final class ProductSheetsModel: ObservableObject {
     public init(
         products: [LBProduct] = [],
         introducingProductId: String? = nil,
+        liveActiveProducts: [LBProduct] = [],
         isLive: Bool = false,
         isReplay: Bool = false,
         position: Double = 0,
@@ -244,6 +260,7 @@ public final class ProductSheetsModel: ObservableObject {
     ) {
         self.products = products
         self.introducingProductId = introducingProductId
+        self.liveActiveProducts = liveActiveProducts
         self.isLive = isLive
         self.isReplay = isReplay
         self.position = position
@@ -276,6 +293,7 @@ public final class ProductSheetsModel: ObservableObject {
     private func refresh(from t: DefaultPlayerTemplate) {
         products = t.productOverlay.productsIntroducingFirst
         introducingProductId = t.productOverlay.introducingProductId
+        liveActiveProducts = t.liveActiveProducts
         isLive = t.header.isLive
         isReplay = t.playbackProgress.isReplay
         position = t.playbackProgress.position

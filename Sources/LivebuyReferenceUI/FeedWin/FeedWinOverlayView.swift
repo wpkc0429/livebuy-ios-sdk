@@ -11,13 +11,19 @@ import LivebuyUI
 //
 // The top-level family-2 container (this is the design's `FeedWinView` role; the
 // file/type name is `FeedWinOverlayView` to read as an overlay composited over
-// the player). It composes the THREE family-2 surface sub-views over the live
-// video area:
+// the player). It composes the family-2 surface sub-views over the live video
+// area (originally THREE — rb-ios-live-activity-sheet, 2026-08-29, added a
+// fourth):
 //
-//   1. ChatFeedView       — merged chat-feed stream (D-2 #1, `LBLiveChatStream`)
-//   2. WinEntryView       — floating win-claim entry badge (D-3 #2, `LBWinEntry`)
-//   3. WinClaimModalView  — 四階段領獎 modal（含 email 輸入），presented on demand
-//                           (D-4 #3, `LBWinSheet`)
+//   1. ChatFeedView          — merged chat-feed stream (D-2 #1, `LBLiveChatStream`)
+//   2. WinEntryView          — floating win-claim entry badge (D-3 #2, `LBWinEntry`)
+//   2b. WinEntryView         — floating activity-join entry badge, STACKED below #2
+//                              (`variant: .activity`, rb-ios-live-activity-sheet,
+//                              SAME type as #2 — see design.md D1)
+//   3. WinClaimModalView     — 四階段領獎 modal（含 email 輸入），presented on demand
+//                              (D-4 #3, `LBWinSheet`)
+//   4. LiveActivitySheetView — 抽獎活動參加彈窗（單階段），presented on demand
+//                              (rb-ios-live-activity-sheet, `LBActivitySheet`)
 //
 // This is the SKELETON: it owns the layout + a `FeedWinModel` + the resolved
 // `ReferenceUITheme` + the sheet presentation state, and composes the three
@@ -64,15 +70,29 @@ import LivebuyUI
 //       unclaimedCount: Int,
 //       onTap: (() -> Void)? = nil)
 //
+//     rb-ios-live-activity-sheet (2026-08-29) added `variant: WinEntryVariant = .win`
+//     and `isActive: Bool = false` (source-compatible defaults) so the SAME type
+//     also renders the activity-join entry (`variant: .activity`) — see
+//     `WinEntryView.swift` for the full current signature.
+//
 //   WinClaimModalView(
 //       theme: ReferenceUITheme,
 //       winner: LBWinner,
 //       presentation: LBAwardPresentation,
 //       resultState: LBAwardClaimResultState?,
 //       submitInFlight: Bool = false,
+//       pageCount: Int = 1,                    // rb-ios-win-claim-pagination, R27
+//       pageIndex: Int = 0,                    // rb-ios-win-claim-pagination, R27
 //       onSubmit: ((String) -> Void)? = nil,   // 帶使用者輸入的 email
 //       onDismiss: (() -> Void)? = nil,
+//       onPage: ((Int) -> Void)? = nil,        // rb-ios-win-claim-pagination, R27
 //       editable: Bool = true)
+//
+//   LiveActivitySheetView(                     // rb-ios-live-activity-sheet, NEW
+//       theme: ReferenceUITheme,
+//       activity: LBActiveEvent,
+//       onClose: (() -> Void)? = nil,
+//       onJoin: (() -> Void)? = nil)
 //
 // Rules every surface agent honours:
 //   • FIRST positional arg is `theme:`. Snapshot values are passed BY VALUE.
@@ -86,11 +106,15 @@ import LivebuyUI
 //     (`.chat` → ChatLineRow, `.eventJoin` → EventJoinLineRow, `.activity(tier:)`
 //     → ActivityLineRow). `text` is the backend-prebuilt full string — sub-views
 //     MUST NOT split it into fields (D-2).
-//   • `WinClaimModalView` 跑四階段領獎流程（claim / confirmSubmit / confirmClose /
-//     submitting / done / fail），**含 email 輸入欄**（EMAIL-LESS 已退役）。`onSubmit`
-//     帶使用者輸入的 email，funnel 到 `DefaultWinClaim.submit(winner:email:)`；
-//     `submitting` 綁 view-model `submitInFlight`、`done`/`fail` 綁 `resultState`；
-//     「關閉視窗」→ `onDismiss`（**純 dismiss**，不放棄中獎資格）。
+//   • `WinClaimModalView` 跑四階段領獎流程（claim / confirmSubmit / submitting /
+//     done / fail —— `confirmClose` 已隨 R27 退役），**含 email 輸入欄**
+//     （EMAIL-LESS 已退役）。`onSubmit` 帶使用者輸入的 email，funnel 到
+//     `DefaultWinClaim.submit(winner:email:)`；`submitting` 綁 view-model
+//     `submitInFlight`、`done`/`fail` 綁 `resultState`；外層 scrim（唯一關閉入口，
+//     任一 stage 皆無條件觸發，R27）→ `onDismiss`（**純 dismiss**，不放棄中獎資格）。
+//     `pageCount`/`pageIndex`/`onPage`（R27，`rb-ios-win-claim-pagination`）讓使用者
+//     滑動 / 點分頁圓點在多筆待領獎者間切換，容器依既有 `unclaimedWinners` 依索引讀取
+//     （不新增第二份清單真相）。
 //   • iOS-14-safe SwiftUI only; any >14 API guarded with `@available` /
 //     `if #available` inside the sub-view.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -133,6 +157,21 @@ public struct FeedWinOverlayView: View {
     /// affected — the centered claim modal / win-entry badge are not.
     public let infoPanelOpen: Bool
 
+    /// Whether the player shell's「乾淨模式」(long-press toggle, `PlayerShellView`'s private
+    /// `@State cleanMode`) is on. `PlayerShellView` cannot reach this sibling view directly (it
+    /// is composed alongside it, not inside its render tree — `MinimalDesign.playerOverlay`
+    /// mirrors the state via `onCleanModeChange` and forwards it here), so it is threaded through
+    /// as a plain parameter (rb-ios-clean-mode-hide-chat-feed). `true` → the chat feed sub-view
+    /// is hidden + non-interactive, same opacity/hit-testing treatment as `infoPanelOpen` above
+    /// (merged into the same judgment, not a second independent hide). `false` (default / demo /
+    /// snapshot) → unchanged (baseline byte-identical).
+    ///
+    /// ⚠️ `WinEntryView` (win-claim entry badge) and its claim sheet below are NOT gated by
+    /// `cleanMode` (nor by `infoPanelOpen`) — the design (`screens.jsx`'s `LBWinEntry`) never
+    /// gave them a `!cleanMode` gate, so the winner must always be able to see and tap into their
+    /// claim regardless of clean mode. Do not extend `cleanMode` to that branch.
+    public let cleanMode: Bool
+
     /// Whether to render the merged chat-feed stream at all. It is a LIVE-only surface, and its
     /// full-bleed scrollable variant eats hit-testing; in VOD (`false`) it would occlude / swallow
     /// taps on the VOD side rail, so the container passes `false` to drop it entirely (the
@@ -160,6 +199,23 @@ public struct FeedWinOverlayView: View {
     /// is driven by the model; this just governs which winner is on screen.
     @State private var claimingWinner: LBWinner?
 
+    /// The page (index into `model.unclaimedWinners`) the claim modal is currently
+    /// showing (`rb-ios-win-claim-pagination`, R27). Local presentation state only —
+    /// this container does NOT hold a second copy of `unclaimedWinners`; `onPage(_:)`
+    /// always re-reads the LIVE list by this index (design.md D2). Reset to `0` by
+    /// `presentNextClaim()` on every fresh open.
+    @State private var claimPageIndex: Int = 0
+
+    /// Whether `LiveActivitySheetView` is currently presented
+    /// (rb-ios-live-activity-sheet). A plain Bool — NOT a captured `LBActiveEvent`
+    /// value — because `DefaultActiveEvent.currentActivity` is deliberately a
+    /// live-pull, never-cached read (see that type's doc comment); capturing it
+    /// into `@State` here would create a second, potentially-stale copy. The
+    /// sheet's CONTENT is read fresh from `model.currentActivity` at render time
+    /// (see the `if showingActivitySheet, let activity = model.currentActivity`
+    /// guard below) — this flag only governs whether it is on screen.
+    @State private var showingActivitySheet: Bool = false
+
     /// The resolved URL of a footer legal link (`LBLegalLinks.termsOfUse` /
     /// `.privacyPolicy`) currently presented in-app, if any (rb-ios-win-claim-footer-links).
     /// Set only by `openLegalLink(_:)` when `LBURLOpenPolicy.decide(_:)` judges `.inApp`;
@@ -171,7 +227,8 @@ public struct FeedWinOverlayView: View {
                 chatBottomInset: CGFloat = 0, chatScrollable: Bool = false,
                 infoPanelOpen: Bool = false, chatTrailingInset: CGFloat = 0,
                 chatLeadingInset: CGFloat = 0,
-                showsChatFeed: Bool = true) {
+                showsChatFeed: Bool = true,
+                cleanMode: Bool = false) {
         self.model = model
         self.theme = theme
         self.chatBottomInset = chatBottomInset
@@ -180,6 +237,7 @@ public struct FeedWinOverlayView: View {
         self.chatTrailingInset = chatTrailingInset
         self.chatLeadingInset = chatLeadingInset
         self.showsChatFeed = showsChatFeed
+        self.cleanMode = cleanMode
     }
 
     public var body: some View {
@@ -221,17 +279,29 @@ public struct FeedWinOverlayView: View {
                 // disable the chat feed so it neither occludes the sheet nor swallows its
                 // taps (the panel's scrim then cleanly covers the background). opacity (not
                 // removal) preserves the chat's scroll/auto-stick state for when it returns.
-                // ONLY the chat feed — the win-entry badge / claim modal below are untouched.
-                .opacity(infoPanelOpen ? 0 : 1)
-                .allowsHitTesting(!infoPanelOpen)
+                // Also hidden while clean mode is on (rb-ios-clean-mode-hide-chat-feed,
+                // parity with Android/Flutter) — merged into the SAME judgment, not a second
+                // independent hide. ONLY the chat feed — the win-entry badge / claim modal
+                // below are untouched by either condition.
+                .opacity((infoPanelOpen || cleanMode) ? 0 : 1)
+                .allowsHitTesting(!infoPanelOpen && !cleanMode)
             }
 
-            // Floating win-claim entry badge — right side, vertically above center
-            // (top 42%, design `LBWinEntry` `top:'42%'`). Moved up from the prior
-            // bottom-trailing pin so it clears the LIVE bottom bar / pinned card and
-            // is easier for the winner to notice. Drawn ONLY when `unclaimedCount > 0`
-            // (the sub-view itself no-draws at 0; the container also early-returns the
-            // tap when nothing to claim). Surface 2.
+            // Floating win-claim entry badge — right side. R27 (`rb-ios-win-claim-pagination`)
+            // FLIPPED the iOS stacking order: this entry is now SECONDARY — it sits at the
+            // primary slot `top: 25%` only when the activity entry below is NOT showing
+            // (`model.currentActivity == nil`); when the activity entry IS showing, this one
+            // is pushed down to `top: 25% + 58pt` (58pt = the entry's own 48pt height + 10pt
+            // gap). Mirrors the exact conditional-offset pattern the activity entry used to
+            // use (previously: win unconditional primary, activity conditional secondary —
+            // now reversed). Drawn ONLY when `unclaimedCount > 0` (the sub-view itself
+            // no-draws at 0; the container also early-returns the tap when nothing to claim).
+            // Surface 2.
+            //
+            // ⚠️ NOT gated by `cleanMode` (nor `infoPanelOpen`) — `WinEntryView` and its claim
+            // sheet below are intentionally excluded from the clean-mode hide rule (design
+            // `screens.jsx`'s `LBWinEntry` carries no `!cleanMode` gate); do not extend
+            // `cleanMode` to this branch (rb-ios-clean-mode-hide-chat-feed).
             GeometryReader { geo in
                 WinEntryView(
                     theme: theme,
@@ -239,7 +309,45 @@ public struct FeedWinOverlayView: View {
                     onTap: { presentNextClaim() })
                     .padding(.trailing, 12)
                     .frame(maxWidth: .infinity, alignment: .trailing)
-                    .offset(y: geo.size.height * 0.42)
+                    .offset(y: geo.size.height * 0.25
+                        + (model.currentActivity != nil ? 58 : 0))
+            }
+
+            // Floating activity-join entry badge — right side. R27 FLIPPED this to be the
+            // PRIMARY slot: unconditional `top: 25%` (previously conditional/secondary,
+            // stacked below the win entry — see the win entry's comment above for the mirror
+            // image of this same flip). Bound to `model.currentActivity` (republished from
+            // `DefaultActiveEvent.currentActivity`, `live-activity-entry-template`). The view
+            // is ALWAYS instantiated here (same as the win-entry above) — visibility is
+            // decided INSIDE `WinEntryView`'s own body via `isActive`, not by conditionally
+            // mounting it here (design.md D2: symmetric with how the win-entry's
+            // `unclaimedCount > 0` gate is placed). Surface 2b.
+            //
+            // ⚠️ NOT gated by `cleanMode` (nor `infoPanelOpen`) — same exemption as
+            // the win-entry above (the design never gave either entry a `!cleanMode`
+            // gate); do not extend `cleanMode` to this branch either.
+            GeometryReader { geo in
+                WinEntryView(
+                    theme: theme,
+                    variant: .activity,
+                    isActive: model.currentActivity != nil,
+                    onTap: { showingActivitySheet = true })
+                    .padding(.trailing, 12)
+                    .frame(maxWidth: .infinity, alignment: .trailing)
+                    .offset(y: geo.size.height * 0.25)
+            }
+
+            // 抽獎活動參加彈窗 (LBActivitySheet) — a CENTERED MODAL, same full-bleed
+            // overlay convention as the 領獎 modal below. Single-stage (design.md
+            // D3): reads `model.currentActivity` FRESH at render time rather than a
+            // captured value (see `showingActivitySheet`'s doc comment) so it never
+            // shows a stale activity. Surface 4.
+            if showingActivitySheet, let activity = model.currentActivity {
+                LiveActivitySheetView(
+                    theme: theme,
+                    activity: activity,
+                    onClose: { showingActivitySheet = false },
+                    onJoin: { model.joinCurrentActivity() })
             }
 
             // 四階段領獎 modal (LBWinSheet) — a CENTERED MODAL presented as a
@@ -250,7 +358,16 @@ public struct FeedWinOverlayView: View {
             // 🔴 關閉＝**純 dismiss**：`model.dismissClaim()` 只清 view-model 的
             // `resultState` / `submitInFlight`，本容器只清自己的呈現綁定 —— MUST NOT
             // 移除未領中獎 / 呼叫 API / 遞減徽章（設計稿的「放棄資格」文案是刻意的 UX
-            // 摩擦，行為不跟隨；R13 刻意分歧 1/2）。
+            // 摩擦，行為不跟隨；R13 刻意分歧 1/2）。R27：`confirmClose` 二次確認退役，
+            // 唯一關閉入口是外層 scrim，任一 stage 皆無條件直接觸發此 `onDismiss`。
+            //
+            // 分頁能力（R27，`rb-ios-win-claim-pagination`，design.md D1/D2）：
+            //   • `pageCount`/`pageIndex` 由本容器目前的 `model.unclaimedWinners` /
+            //     `claimPageIndex` 鏡像傳入——本容器 MUST NOT 複製第二份待領獎者清單。
+            //   • `.id(winner.id)` 讓每次翻頁到不同 winner 都是一次乾淨 remount，
+            //     `WinClaimModalView` 的 `@State`（`phase` / `email` / …）不會沿用上一位
+            //     winner 殘留的互動相位（design.md D1；SwiftUI 只在 identity 改變時才重置
+            //     `@State`，`winner:` 參數值改變本身不會）。
             if let winner = claimingWinner {
                 WinClaimModalView(
                     theme: theme,
@@ -258,17 +375,21 @@ public struct FeedWinOverlayView: View {
                     presentation: presentation(for: winner),
                     resultState: model.resultState,
                     submitInFlight: model.submitInFlight,
+                    pageCount: model.unclaimedWinners.count,
+                    pageIndex: claimPageIndex,
                     onSubmit: { email in model.submitClaim(for: winner, email: email) },
                     onDismiss: {
                         model.dismissClaim()
                         claimingWinner = nil
                     },
+                    onPage: { index in onPage(index) },
                     // footer「使用條款 | 隱私政策」（rb-ios-win-claim-footer-links）— the
                     // container is the ONLY layer that judges HOW a legal link opens
                     // (`LBURLOpenPolicy.decide(_:)`); `WinClaimModalView` only reports WHICH
                     // segment was tapped.
                     onOpenTermsOfUse: { openLegalLink(LBLegalLinks.termsOfUse) },
                     onOpenPrivacyPolicy: { openLegalLink(LBLegalLinks.privacyPolicy) })
+                    .id(winner.id)
             }
         }
         // Footer legal-link in-app presentation (rb-ios-win-claim-footer-links). A plain
@@ -286,10 +407,32 @@ public struct FeedWinOverlayView: View {
     }
 
     /// Open the claim sheet on the EARLIEST unclaimed winner (D-3). No-op when
-    /// nothing is claimable (`unclaimedCount == 0`).
+    /// nothing is claimable (`unclaimedCount == 0`). Resets `claimPageIndex` to `0` first
+    /// (`rb-ios-win-claim-pagination`, design.md D2) so a fresh open never starts mid-page.
     private func presentNextClaim() {
         guard let next = model.nextUnclaimedWinner else { return }
+        claimPageIndex = 0
         claimingWinner = next
+    }
+
+    /// `WinClaimModalView.onPage(_:)` handler (`rb-ios-win-claim-pagination`, design.md D2).
+    /// ALWAYS re-derives `claimingWinner` from the LIVE `model.unclaimedWinners` at this
+    /// index — never from a captured array — matching the container's existing
+    /// "MUST NOT hold a second copy of view-model state" convention. If the list shrank
+    /// since the modal opened (e.g. claimed on another device) and `index` is now out of
+    /// range, clamp it to the last valid index; if the list is now empty, there is nothing
+    /// left to page to or claim, so dismiss the modal outright (mirrors the `onDismiss`
+    /// cleanup below).
+    private func onPage(_ index: Int) {
+        let winners = model.unclaimedWinners
+        guard !winners.isEmpty else {
+            model.dismissClaim()
+            claimingWinner = nil
+            return
+        }
+        let clamped = min(max(index, 0), winners.count - 1)
+        claimPageIndex = clamped
+        claimingWinner = winners[clamped]
     }
 
     /// CTA classification for `winner` (`.product`「查看獎品」/ `.discount`「立即使用」).

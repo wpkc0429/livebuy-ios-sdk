@@ -116,6 +116,15 @@ public final class PlayerShellModel: ObservableObject {
     /// Subtitle (CC) currently enabled — gates the VOD caption overlay.
     @Published public private(set) var subtitleEnabled: Bool
 
+    /// VTT 字幕 cue 清單（rb-ios-subtitle-vtt-caption-display）。**非** template 衍生值——
+    /// turnkey 容器 `LivebuyPlayer` 在 `buildModels` 之後抓取 + 解析 `channel.subtitle_url`
+    /// （WebVTT）灌入，比照 `showViewerCount` / `titleScroll` / `showStock` 的既有「per-shell
+    /// 容器外部設定」模式：一般 stored property（非 `@Published`），不進 `init` 參數列表、不進
+    /// `refresh(from:)`。`PlayerShellView` 用它 + `position`（已是 `@Published`，天然驅動重繪）
+    /// 透過 `VTTSubtitleParser.activeCue(_:at:)` 現算目前命中的字幕文字。預設 `[]`（無字幕 /
+    /// 尚未抓取完成）。
+    public var subtitleCues: [VTTCue] = []
+
     // -- Upcoming (直播預告 awaitingLive) chrome state (DefaultUpcomingState) -------
 
     /// Whether the player is in the awaiting-live sub-state (`DefaultUpcomingState.active`).

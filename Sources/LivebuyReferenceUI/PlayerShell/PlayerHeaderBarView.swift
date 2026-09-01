@@ -221,6 +221,15 @@ public struct PlayerHeaderBarView: View {
     /// snapshot / unit test that does not pass this parameter — byte-identical.
     public let startPhase: LBStartScreenPhase
 
+    /// 「乾淨模式」(rb-ios-gesture-clean-mode-rewrite, design R23, ADDED Requirement
+    /// "LivebuyReferenceUI PlayerShellView 長按切換「乾淨模式」隱藏懸浮 chrome"). `true` hides
+    /// `hostPill` (which on iOS bundles BOTH the design's separately-toggled `LBPTopBar`
+    /// "logo" and `LBPHostBadge` "host badge" into one leading-edge block — see this file's
+    /// header comment) while KEEPING `iconCluster` (the trailing-edge minimize button)
+    /// unconditionally visible, matching the spec's "MUST 保留頂欄唯一的 minimize(PIP) 按鈕"
+    /// requirement. Default `false` keeps every existing call site byte-identical.
+    public let cleanMode: Bool
+
     // -- Optional action closures (LAST, each defaulting to nil) ----------------
     //
     // The header's top-right is a SINGLE minimize affordance (design `LBPTopBar`
@@ -259,6 +268,7 @@ public struct PlayerHeaderBarView: View {
         viewerCountVisible: Bool = true,
         titleScroll: Bool = true,
         startPhase: LBStartScreenPhase = .done,
+        cleanMode: Bool = false,
         onMinimize: (() -> Void)? = nil,
         onSubscribe: (() -> Void)? = nil,
         onTapHostBadge: (() -> Void)? = nil
@@ -276,6 +286,7 @@ public struct PlayerHeaderBarView: View {
         self.viewerCountVisible = viewerCountVisible
         self.titleScroll = titleScroll
         self.startPhase = startPhase
+        self.cleanMode = cleanMode
         self.onMinimize = onMinimize
         self.onSubscribe = onSubscribe
         self.onTapHostBadge = onTapHostBadge
@@ -305,9 +316,15 @@ public struct PlayerHeaderBarView: View {
                 // own taps first (SwiftUI inner-button priority), so tapping subscribe
                 // does NOT fire onTapHostBadge. PlainButtonStyle keeps the pixels
                 // identical (pixel-neutral wrapper).
-                Button(action: { onTapHostBadge?() }) { hostPill }
-                    .buttonStyle(PlainButtonStyle())
-                    .accessibilityIdentifier(LBAccessibilityID.playerHeaderHostPill)
+                //
+                // Hidden in `cleanMode` (rb-ios-gesture-clean-mode-rewrite ADDED
+                // Requirement) — `iconCluster` (the minimize button) stays UNCONDITIONALLY
+                // below, per the spec's "MUST 保留頂欄唯一的 minimize(PIP) 按鈕".
+                if !cleanMode {
+                    Button(action: { onTapHostBadge?() }) { hostPill }
+                        .buttonStyle(PlainButtonStyle())
+                        .accessibilityIdentifier(LBAccessibilityID.playerHeaderHostPill)
+                }
                 Spacer(minLength: 8)
                 iconCluster
             }
@@ -317,24 +334,27 @@ public struct PlayerHeaderBarView: View {
 
             Spacer(minLength: 0)
         }
-        // Top-down dark scrim gradient (linear-gradient rgba(0,0,0,0.45) → transparent).
-        // The header body carries an internal `Spacer(minLength: 0)` so it expands to roughly
-        // half the shell height in the shell's top VStack slot; its gradient `.background`
-        // therefore covers the whole upper half. A SwiftUI `.background` participates in
-        // hit-testing by DEFAULT, so without the guard below this purely-decorative scrim
-        // SWALLOWS every tap / long-press / swipe in the upper half — they never reach the
-        // full-bleed gesture layer (`Color.clear`) below it in `PlayerShellView`'s ZStack.
-        // `.allowsHitTesting(false)` makes the scrim non-interactive (pixel-identical — it is
-        // still drawn) so the upper-half gestures fall through to that gesture layer. The real
-        // interactive controls (host pill / minimize) are foreground VStack content, NOT the
-        // background, so they keep taking their own taps.
+        // rb-ios-live-chrome-gradient-removal: design dropped `LBPTopBar`'s visible
+        // `linear-gradient(to bottom, rgba(0,0,0,0.55), transparent)` scrim (2026-08-31) — this
+        // is NOT swapped for that gradient, but for a solid, VISUALLY-IMPERCEPTIBLE backing
+        // (`0.01` alpha, ~2.5/255 — far below the human eye's just-noticeable-difference
+        // threshold for overlay alpha, i.e. indistinguishable from "no background" to any
+        // viewer). A fully `Color.clear` / genuinely-absent background was tried FIRST and
+        // empirically found (bisection, `rb-ios-live-chrome-gradient-removal` design.md) to
+        // break `VideoTitleScrollTests.testPlayerShellView_handsTitleScrollToTheHeader`: when
+        // this background's alpha rounds to EXACTLY 0/255 in the 8-bit channel (true for
+        // `Color.clear` and for any `opacity()` below ~1/255 ≈ 0.0039), `ImageRenderer`'s
+        // synchronous capture of the nested `titleView`'s `.overlay(GeometryReader { ... })`
+        // marquee-overflow measurement (see that property's doc comment) silently misbehaves
+        // when composited inside the FULL `PlayerShellView` tree specifically (the isolated
+        // `PlayerHeaderBarView`-only render is unaffected) — both `titleScroll` states end up
+        // byte-identical. Any alpha ≥ 1/255 (confirmed by binary search: `0.004` passes,
+        // `0.001` fails) avoids it entirely, with zero visible difference from `Color.clear`.
+        // This is a workaround for that specific `ImageRenderer` behavior, not a real
+        // background — MUST NOT be restyled into anything visible.
         .background(
-            LinearGradient(
-                gradient: Gradient(colors: [Color.black.opacity(0.45), Color.clear]),
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .allowsHitTesting(false)
+            Color.black.opacity(0.01)
+                .allowsHitTesting(false)
         )
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(LBAccessibilityID.playerHeader)

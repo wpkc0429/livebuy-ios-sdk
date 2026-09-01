@@ -87,6 +87,15 @@ public final class DefaultPlayerTemplate {
     /// `requester` is the player itself (it conforms to `AwardClaimRequesting`).
     public let winClaim: DefaultWinClaim
 
+    /// 目前進行中活動狀態（live-activity-entry-template）— `currentActivity`
+    /// (live-pull, see `DefaultActiveEvent`'s doc comment for why) supplies the
+    /// `LBActivitySheet` host binding; `provider` is the player itself (it
+    /// conforms to `ActiveEventProviding`), mirroring the `winClaim` wiring
+    /// above. The「加入目前活動」entry point is `joinCurrentActivity()` below
+    /// — NOT a method on `DefaultActiveEvent` itself (see that type's doc
+    /// comment for why).
+    public let activeEvent: DefaultActiveEvent
+
     /// Player error-state (livebuy-ui-event-join-and-error-state-template) —
     /// `error(LBError)` + `stateChange(error)` → host-bindable `{kind, phase}`
     /// for `LBPErrorScreen`. Cleared when the player leaves `error`.
@@ -375,6 +384,7 @@ public final class DefaultPlayerTemplate {
         }
         self.activityFeed = DefaultActivityFeed()
         self.winClaim = DefaultWinClaim(requester: player)
+        self.activeEvent = DefaultActiveEvent(provider: player)
         self.errorState = DefaultErrorState()
         self.startScreen = DefaultStartScreenState()
         self.endScreen = DefaultEndScreenState()
@@ -470,6 +480,7 @@ public final class DefaultPlayerTemplate {
     private func wireChangeNotification() {
         activityFeed.onMutation = { [weak self] in self?.notifyChange() }
         winClaim.onMutation = { [weak self] in self?.notifyChange() }
+        activeEvent.onMutation = { [weak self] in self?.notifyChange() }
         errorState.onMutation = { [weak self] in self?.notifyChange() }
         // Fan each moment view-model's mutation into the SAME single onChange.
         startScreen.onMutation = { [weak self] in self?.notifyChange() }
@@ -1486,6 +1497,26 @@ public final class DefaultPlayerTemplate {
     public func joinEvent(eid: Int, keyword: String) {
         player?.requestEventJoin(eid: eid, keyword: keyword)
         activityFeed.markJoined(eid: eid)
+    }
+
+    /// 「加入目前活動」入口 (live-activity-entry-template) for the host's
+    /// `LBActivitySheet`「立即參加」CTA. **Pure forwarder** to the EXISTING
+    /// `joinEvent(eid:keyword:)` above — reads `eid`/`keyword` from
+    /// `activeEvent.currentActivity` (design.md D3: no second「加入活動」
+    /// mechanism, reuse the one `LBEventJoinLine` already uses). `keyword` is
+    /// `nil` on a pure-announcement activity → forwarded as `""` (same
+    /// existing behaviour `joinEvent` already has for that case).
+    ///
+    /// Lives here — NOT on `DefaultActiveEvent` — because `joinEvent` is only
+    /// reachable through `self`; see `DefaultActiveEvent`'s doc comment /
+    /// `tasks.md` §1.9 for why that type does not hold a back-reference to
+    /// this one.
+    ///
+    /// No-op (does NOT call `joinEvent`, does NOT trigger any host
+    /// notification) when there is no current activity.
+    public func joinCurrentActivity() {
+        guard let activity = activeEvent.currentActivity else { return }
+        joinEvent(eid: activity.id, keyword: activity.keyword ?? "")
     }
 
     /// AWARD_CLAIM_RESULT (notify) → win-claim result-state model (§4).

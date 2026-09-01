@@ -37,8 +37,8 @@ let package = Package(
         .binaryTarget(
             name: "LivebuySDK",
             // Updated automatically by CI on each release.
-            url: "https://github.com/ariesweng/livebuy-ios-sdk/releases/download/v4.10.0/LivebuySDK.xcframework.zip",
-            checksum: "dcaeb2aebb92b231285c972b327cf2318c46523728051fc5a19f18c5d085add8"
+            url: "https://github.com/ariesweng/livebuy-ios-sdk/releases/download/v4.11.0/LivebuySDK.xcframework.zip",
+            checksum: "f32dcde294ef53aeee845cae9049a94663368bfa8129a802262d9bdcb9356194"
         ),
         // AWS IVS Player live engine (D2 option A — declared here pointing at AWS,
         // checksum-pinned at v1.52.0). The binary core links it; see the IVS link

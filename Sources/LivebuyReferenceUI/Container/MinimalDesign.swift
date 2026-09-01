@@ -140,11 +140,24 @@ struct PlayerOverlayRootView: View {
     /// 差 40). Only applied while a 公告 is present; no announce → no extra inset (baseline unchanged).
     static let liveAnnounceClearance: CGFloat = 44
 
+    /// EXTRA bottom lift added to the chat feed while it has reappeared during the playback-
+    /// progress transport bar's post-release hold window (`scrubBarExpanded && !isScrubbing`),
+    /// so it clears the still-expanded transport bar — mirrors `PlayerShellView`'s own (private)
+    /// `scrubChromeLift` and the identical lift already applied to the announce banner / pinned
+    /// card / LIVE bottom bar (design `screens.jsx`'s `scrubVisible ? 36 : 0`,
+    /// rb-ios-restore-vod-playback-progress-bar).
+    static let scrubChromeLift: CGFloat = 36
+
     /// The chat feed's bottom inset: the LIVE-bottom-bar clearance, PLUS the announce banner's
-    /// height WHEN a 公告 is showing (so the chat avoids overlapping LBLiveAnnounce). Pure function
-    /// (unit-testable). `hasAnnounce == false` → `liveBottomBarClearance` (既有 baseline byte-identical).
-    static func liveChatBottomInset(hasAnnounce: Bool) -> CGFloat {
-        hasAnnounce ? liveBottomBarClearance + liveAnnounceClearance : liveBottomBarClearance
+    /// height WHEN a 公告 is showing (so the chat avoids overlapping LBLiveAnnounce), PLUS the
+    /// scrub-hold lift WHEN the transport bar has reappeared during its post-release hold window.
+    /// Pure function (unit-testable). `hasAnnounce == false, scrubExpanded == false` →
+    /// `liveBottomBarClearance` (既有 baseline byte-identical).
+    static func liveChatBottomInset(hasAnnounce: Bool, scrubHoldLifted: Bool) -> CGFloat {
+        var inset = liveBottomBarClearance
+        if hasAnnounce { inset += liveAnnounceClearance }
+        if scrubHoldLifted { inset += scrubChromeLift }
+        return inset
     }
 
     let shellModel: PlayerShellModel
@@ -230,6 +243,37 @@ struct PlayerOverlayRootView: View {
     /// no extra inset → baseline unchanged) until the first report.
     @State private var hasAnnounce: Bool = false
 
+    /// Mirrors the NARROW `isScrubbing` (finger actually down on the VOD/replay
+    /// `PlaybackProgressBarView` transport bar — `PlayerShellView`'s `onScrubbingChange`), so the
+    /// merged chat feed is hidden for that same active-drag window, matching how the in-shell
+    /// chrome (announce banner / pinned card) hides during `scrubbing` (rb-ios-restore-vod-
+    /// playback-progress-bar, corrected post-design-review — see [isScrubBarExpanded] below for
+    /// the wider post-release hold window, which LIFTS rather than hides). Only has any effect
+    /// while the chat feed would otherwise show (`isLiveMode == true` AND a finished-live replay,
+    /// `model.isFinishedLiveReplay` — the only state where the progress bar and the chat feed
+    /// can coexist; the progress bar never shows while genuinely live, so a live stream merely
+    /// scrubbed behind the live edge does not reach this either); defaults `false` (no chat-feed
+    /// impact) until the first report.
+    @State private var isScrubbingProgressBar: Bool = false
+
+    /// Mirrors the WIDE `scrubBarExpanded` (touch-down through the 2.8s post-release hold —
+    /// `PlayerShellView`'s `onScrubBarExpandedChange`), so the chat feed can be LIFTED (extra
+    /// bottom inset, [Self].`scrubChromeLift`) once it reappears during the hold window
+    /// (`isScrubBarExpanded && !isScrubbingProgressBar` — design `screens.jsx`
+    /// `LBLiveChatOverlay`'s `safeBottom + (isReplay && scrubVisible ? 36 : 0)`, the SAME
+    /// treatment as the announce banner / pinned card). Same coexistence scope as
+    /// [isScrubbingProgressBar] above. Defaults `false` until the first report.
+    @State private var isScrubBarExpanded: Bool = false
+
+    /// Mirrors `PlayerShellView`'s private `cleanMode` `@State` (long-press toggle), so the
+    /// family-2 chat feed (`FeedWinOverlayView`'s `ChatFeed`, a sibling composed here — NOT a
+    /// descendant of `PlayerShellView` — so `cleanMode` cannot reach it any other way) can be
+    /// hidden while clean mode is on, parity with Android/Flutter (rb-ios-clean-mode-hide-chat-
+    /// feed). `PlayerShellView` reports the initial value + every toggle via `onCleanModeChange`
+    /// (the root does NOT observe `shellModel` directly, same rationale as the mirrors above).
+    /// Defaults `false` (baseline unchanged) until the first report.
+    @State private var cleanMode: Bool = false
+
     var body: some View {
         ZStack {
             PlayerShellView(
@@ -260,7 +304,15 @@ struct PlayerOverlayRootView: View {
                 onIsLiveChange: { isLiveMode = $0 },
                 // Mirror 公告 presence so the chat feed avoids overlapping the LBLiveAnnounce
                 // banner (extra bottom clearance only while a 公告 is showing) — 問題 4.
-                onHasAnnounceChange: { hasAnnounce = $0 })
+                onHasAnnounceChange: { hasAnnounce = $0 },
+                // Mirror the playback-progress transport bar's active-drag / expanded-hold
+                // windows so the chat feed hides during the drag and reappears LIFTED during the
+                // hold (rb-ios-restore-vod-playback-progress-bar).
+                onScrubbingChange: { isScrubbingProgressBar = $0 },
+                onScrubBarExpandedChange: { isScrubBarExpanded = $0 },
+                // Mirror clean mode so the family-2 chat feed can be hidden while it's on
+                // (rb-ios-clean-mode-hide-chat-feed).
+                onCleanModeChange: { cleanMode = $0 })
 
             // Keep the merged chat feed above the LIVE bottom bar (they share this ZStack /
             // safe-area space). Clearance = LiveBottomBarView height (8+36+8 ≈ 52) + its own
@@ -270,8 +322,12 @@ struct PlayerOverlayRootView: View {
             // paths keep the non-scrollable baseline.
             FeedWinOverlayView(model: feedModel, theme: theme,
                                // 有公告（LBLiveAnnounce 橫幅）時加大底部避讓，讓聊天最底行不與公告
-                               // 重疊；無公告時維持原 clearance（baseline 不變）— 問題 4。
-                               chatBottomInset: Self.liveChatBottomInset(hasAnnounce: hasAnnounce),
+                               // 重疊；無公告時維持原 clearance（baseline 不變）— 問題 4。放開播放進度
+                               // 條到 2.8 秒收回這段期間（scrubBarExpanded && !isScrubbing）額外加上
+                               // scrubChromeLift，讓重新出現的聊天避開仍展開的 transport bar。
+                               chatBottomInset: Self.liveChatBottomInset(
+                                   hasAnnounce: hasAnnounce,
+                                   scrubHoldLifted: isScrubBarExpanded && !isScrubbingProgressBar),
                                chatScrollable: true,
                                // Hide the chat feed while the info panel is up so it doesn't
                                // occlude the sheet / swallow its taps (the panel's own scrim
@@ -287,8 +343,18 @@ struct PlayerOverlayRootView: View {
                                chatLeadingInset: Self.liveChatLeadingClearance,
                                // LIVE-only: drop the chat feed entirely in VOD so it doesn't
                                // occlude / eat the VOD side rail's taps (rb-ios-hide-chat-feed-
-                               // in-vod).
-                               showsChatFeed: isLiveMode)
+                               // in-vod). Also dropped while ACTIVELY dragging the playback-
+                               // progress transport bar (rb-ios-restore-vod-playback-progress-bar)
+                               // — only has an effect in the finished-live-replay state, where
+                               // both can coexist. Reappears (lifted, via chatBottomInset above)
+                               // once the finger lifts, even during the post-release hold window
+                               // — it does NOT stay hidden through the hold (corrected post-
+                               // design-review: matches announce banner / pinned card treatment).
+                               showsChatFeed: isLiveMode && !isScrubbingProgressBar,
+                               // Hide the chat feed while clean mode is on, parity Android/
+                               // Flutter — WinEntryView / claim sheet below are NOT gated by
+                               // cleanMode (rb-ios-clean-mode-hide-chat-feed).
+                               cleanMode: cleanMode)
             ProductSheetsOverlayView(
                 model: productModel,
                 theme: theme,
