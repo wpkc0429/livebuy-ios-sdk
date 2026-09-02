@@ -694,13 +694,23 @@ public struct PlayerHeaderBarView: View {
     // bottom-right floating preview (host-owned, reusing `FloatingWidgetView`). info /
     // share live in the side rail; mute is the tap-to-unmute gesture on the video area.
 
+    /// Minimize (PIP) glyph base size in points, before `theme.fontScale` (design
+    /// `Icons.pip size={18}`, `design/templates/minimal/sdk-components.jsx:273`).
+    /// Extracted as a `static let` (mirroring this file's `marqueeSpeedPointsPerSecond` /
+    /// `marqueeGap` pattern) so it is directly unit-testable without rendering
+    /// (`rb-ios-player-chrome-icon-and-overlay-visibility-fixes`). `rb-ios-icon-parity`
+    /// aligned this glyph's SHAPE only (hand-drawn `PipGlyph` replacing SF Symbol
+    /// `pip.enter`) and left the SIZE at a stale `16pt` — the same class of gap
+    /// `rb-ios-bag-icon-enlarge` already fixed once for the bag glyph.
+    static let minimizeGlyphSize: CGFloat = 18
+
     /// A 36×36 round glass icon button (live-chrome.jsx iconBtn) drawing the
     /// hand-drawn `PipGlyph` (design `Icons.pip` — frame + inset rect + directional
     /// arrow, rb-ios-icon-parity; replaces SF Symbol `pip.enter`). Inert when
     /// `onMinimize` is nil — still rendered so the chrome is visually complete.
     private var iconCluster: some View {
         Button(action: { onMinimize?() }) {
-            PipGlyph(size: 16 * theme.fontScale, color: onGlass)
+            PipGlyph(size: Self.minimizeGlyphSize * theme.fontScale, color: onGlass)
                 .frame(width: 36, height: 36)
                 .background(Circle().fill(iconGlass))
         }

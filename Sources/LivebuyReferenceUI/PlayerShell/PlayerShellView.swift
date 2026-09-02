@@ -218,6 +218,22 @@ public struct PlayerShellView: View {
     /// snapshot 路徑不變).
     private let onShare: (() -> Void)?
 
+    /// 容器目前是否偵測到「另一場現正直播」(rb-ios-live-now-pill)——drives
+    /// `LiveNowPillView`'s composition via the PURE `showsLiveNowPill` gate below. NOT a
+    /// template-derived value: the container (`LivebuyPlayer` + `LiveNowPollController`) owns the
+    /// polling / gate lifecycle and feeds only this boolean in, mirroring how `composerPresented`
+    /// / `onIsLiveChange` mirrors are plain read-only reports rather than owned state. Default
+    /// `false` → the pill never composes for direct `PlayerShellView` construction (demo /
+    /// snapshot / non-container call sites), baseline unchanged.
+    private let hasLiveNow: Bool
+
+    /// LIVE-now pill tap → host-wired switch-to-that-live intent. The drop-in container wires
+    /// this to `LivebuyPlayerConfig.onGoLive ?? default in-place switch` (mirrors `onPickHot` /
+    /// `onWatchNext`'s "container resolves the target, this view only reports the tap" shape —
+    /// this view has no bound `LBVideoItem` to hand back, the container already holds the ONE
+    /// currently-detected item). nil → inert (demo / snapshot).
+    private let onGoLive: (() -> Void)?
+
     /// Host-supplied VOD caption text (core exposes no active-caption text). Shown in
     /// the VOD branch only while `model.subtitleEnabled` and non-empty. Default "".
     private let captionText: String
@@ -331,6 +347,29 @@ public struct PlayerShellView: View {
     /// `testTapDispatch_liveCallsOnToggleMuteNotTogglePlayPause`.
     private let performLikeForTesting: (() -> Void)?
 
+    /// Ctor-injected scheduling function for the LIVE tap's deferred mute-commit
+    /// (`rb-ios-live-tap-delay-mute-commit`): `(delay, action) -> cancel`. Production default
+    /// (set in `init`) wraps `DispatchWorkItem` + `DispatchQueue.main.asyncAfter` — the SAME
+    /// primitive `scheduleCleanModeToggle` / `showMuteToast` already use elsewhere in this file,
+    /// just made swappable. A plain function type (not a named `protocol`) so it can sit in this
+    /// `public init` without any cross-module accessibility mismatch — mirrors how
+    /// `performLikeForTesting` above already does this for a closure-typed test hook (a named
+    /// `protocol` declared `internal` in a DIFFERENT module, e.g. `LivebuySDK`'s own
+    /// `Scheduler`/`Cancellable`, cannot be referenced from THIS module's `public init` unless
+    /// also made `public`; a structural closure type carries no such restriction).
+    ///
+    /// Tests inject a capturing fake instead of the production default (`Fake*` naming,
+    /// `docs/unit-test-discipline.md`, defined in the test target) that records every
+    /// `(delay, action)` pair and the cancel-call count of the closure it returns — this resolves
+    /// BOTH reasons `rb-ios-live-double-tap-like`'s design.md Decision 2 previously cited for NOT
+    /// deferring the mute-commit: (1) the existing synchronous regression test is updated to drive
+    /// the fake instead of asserting synchronously (no longer breaks); (2) "scheduled" /
+    /// "cancelled" / "fired" (by invoking the captured `action` directly) are each observed via a
+    /// plain reference type the TEST itself holds — never by reading `@State` back across two
+    /// separate top-level calls, which `PlayerShellGestureCleanModeRewriteTests.swift` §9.3
+    /// already empirically proved unreliable outside a live SwiftUI hierarchy.
+    private let liveTapSchedule: (TimeInterval, @escaping () -> Void) -> (() -> Void)
+
     // MARK: - Transient gesture-feedback state (default hidden → snapshot-neutral)
 
     /// True once the CURRENT press has crossed the long-press threshold (`holdDelay`).
@@ -353,6 +392,21 @@ public struct PlayerShellView: View {
 
     /// Cancellable timer that auto-dismisses the mute toast after `muteToastDuration`.
     @State private var muteToastWorkItem: DispatchWorkItem?
+
+    /// Cancel closure for the currently-pending LIVE tap deferred mute-commit
+    /// (`rb-ios-live-tap-delay-mute-commit`) — `nil` once fired / cancelled / never scheduled.
+    /// Set by `handleLiveTap()`'s single-tap branch (holds the cancel closure `liveTapSchedule`
+    /// returned); cleared (and invoked first) by the SAME method's double-tap branch, so a
+    /// following double-tap cancels the FIRST tap's pending commit instead of letting it fire.
+    /// Same `@State`-across-escaping-closure PRODUCTION-persistence shape as `holdWorkItem` /
+    /// `muteToastWorkItem` above (works correctly once installed in a live SwiftUI hierarchy).
+    /// This value's mutations are never read back ACROSS two separate top-level test calls (the
+    /// §9.3 limitation) — `liveTapSchedule`'s injected fake is the observable surface for that
+    /// (see `liveTapSchedule`'s doc comment). It CAN be pre-seeded via
+    /// `pendingLiveTapMuteCommitCancelForTesting` on `init` (mirrors the `lastLikeableTapAtForTesting`
+    /// precedent below) so a test can simulate "a first tap already scheduled a pending commit"
+    /// and drive a SINGLE call under test to observe that seeded closure being invoked.
+    @State private var pendingLiveTapMuteCommitCancel: (() -> Void)?
 
     /// Whether a single touch's drag is in progress (prevents re-scheduling the hold on
     /// every `onChanged`; reset on `onEnded`).
@@ -397,17 +451,23 @@ public struct PlayerShellView: View {
     /// the already-ended-live-replay `.togglePlayPause` branch now — see `registerLikeableTap()`): a
     /// second likeable tap landing within this many seconds of the first counts as a double-tap.
     /// Aligned to `design/templates/minimal/screens.jsx`'s `onPointerUp` LIVE branch
-    /// (`sinceLast < 320`ms). UNLIKE that web reference (which also DEFERS the single-tap
-    /// mute-toggle by 300ms so a real double-tap never also flickers mute), this iOS implementation
-    /// does NOT defer — see `handleLiveTap()`'s doc comment / design.md Decision 2 (of
-    /// `rb-ios-live-double-tap-like`) for why (existing synchronous regression test
-    /// `testTapDispatch_liveCallsOnToggleMuteNotTogglePlayPause` + a documented
-    /// `@State`-across-escaping-closure testability limitation this codebase already hit for
-    /// `cleanMode`). Accepted trade-off: a genuine LIVE double-tap visibly toggles mute twice in
-    /// quick succession (net no permanent change, toast flickers twice) IN ADDITION to firing
-    /// `performLike()` + the heart burst. The replay branch has no equivalent flicker (its single
+    /// (`sinceLast < 320`ms) — including that web reference's DEFER of the single-tap
+    /// mute-toggle by 300ms so a real double-tap does not also flicker mute
+    /// (`rb-ios-live-tap-delay-mute-commit`, REVISING the earlier "does NOT defer" trade-off — see
+    /// `handleLiveTap()`'s doc comment for the full reversal rationale and `liveTapMuteCommitDelay`
+    /// below for the defer delay itself). The replay branch has no equivalent flicker (its single
     /// tap toggles play/pause, not mute — see `registerLikeableTap()`'s doc comment).
     private static let doubleTapLikeWindow: TimeInterval = 0.32
+
+    /// LIVE single-tap mute-commit DEFER delay (`rb-ios-live-tap-delay-mute-commit`, REVISES the
+    /// "does NOT defer" trade-off `rb-ios-live-double-tap-like`'s design.md Decision 2 previously
+    /// accepted — see `handleLiveTap()`'s doc comment for the full reversal rationale). `0.3`
+    /// (300ms), taken verbatim from `design/templates/minimal/screens.jsx`'s `onPointerUp` LIVE
+    /// branch `setTimeout(..., 300)`. Deliberately left LESS than `doubleTapLikeWindow` (0.32s,
+    /// unchanged) — the same 20ms buffer the design reference itself relies on so a genuine
+    /// double-tap's second touch lands, and cancels this pending commit, before it would have
+    /// fired on its own.
+    private static let liveTapMuteCommitDelay: TimeInterval = 0.3
 
     // MARK: - Playback-progress scrub state (rb-ios-restore-vod-playback-progress-bar)
 
@@ -469,6 +529,106 @@ public struct PlayerShellView: View {
     private var showsPlaybackProgressBar: Bool {
         Self.showsPlaybackProgressBar(isMain: isMainPlaybackPhase, isUpcoming: model.isUpcoming,
                                       isLive: model.isLive, isReplay: model.isFinishedLiveReplay)
+    }
+
+    // MARK: - LIVE-now pill display gate (rb-ios-live-now-pill, fix-ios-live-now-pill-active-live-leak)
+
+    /// PURE: whether `LiveNowPillView` should be composed (design `screens.jsx` `LBPPlayerScreen`
+    /// mount condition: `tweaks.showLiveNowPill !== false && (state === 'main' || isReplay) &&
+    /// !isUpcoming && !isMinimized && showMainChrome && !cleanMode && !scrubbing`).
+    ///
+    /// Two design terms have NO parameter here, by design:
+    /// - `tweaks.showLiveNowPill` is a Claude Design canvas DEMO-ONLY toggle — a stand-in for "is
+    ///   there actually another live in progress" in a canvas with no real data layer. Its real
+    ///   iOS equivalent is `hasLiveNow` (the live signal from `LiveNowPollController`), which
+    ///   THIS function takes as a genuine parameter instead.
+    /// - `isMinimized` has no analog to thread through HERE — NOT because `PlayerShellView` is
+    ///   removed from the view hierarchy (it is NOT: `LivebuyPlayerPresenter` is a KEEP-ALIVE
+    ///   design, `playerLayer` stays mounted for the lifetime of a session — see
+    ///   `LivebuyPlayerPresenter.swift:308-323`), but because the ANCESTOR overlays it with
+    ///   `.opacity(0)` + `.allowsHitTesting(false)` while a separate `floatingPreviewLayer`
+    ///   (`FloatingWidgetView`) visually takes over on top. So even a `true` result here stays
+    ///   invisible/untappable once minimized, automatically, without this function needing to
+    ///   know about `isMinimized` at all.
+    ///
+    /// `isMain` mirrors `showsPlaybackProgressBar`'s identical parameter (`isMainPlaybackPhase` —
+    /// not the intro MP4, not the cold-start loading/splash sequence), which already subsumes the
+    /// design's separate `showMainChrome` term (that term ONLY additionally hides the opening
+    /// loader / intro — see `isMainPlaybackPhase`'s doc comment — so `isMain` alone captures both).
+    /// **`isMain` alone stays `true` throughout genuinely-live playback** — it says nothing about
+    /// `isLive`, only about being out of intro/loading/splash — so `(isMain || isReplay)` CANNOT
+    /// by itself exclude "actively live" (this was `fix-ios-live-now-pill-active-live-leak`'s bug:
+    /// the pill leaked onto real live playback whenever another live was detected). `isReplay`
+    /// mirrors `showsPlaybackProgressBar`'s identical disjunct: feed `model.isFinishedLiveReplay`
+    /// (已結束直播回放), NOT `model.isReplay` (the narrower behind-live-edge-while-still-live DVR
+    /// concept). `isLive` mirrors `showsPlaybackProgressBar`'s identical parameter (`model.isLive`)
+    /// and is combined the same way, `(!isLive || isReplay)` — but appended as an INDEPENDENT
+    /// trailing conjunct rather than replacing the `isMain` term, because this function's second
+    /// clause is the disjunction `(isMain || isReplay)`, not `showsPlaybackProgressBar`'s bare
+    /// `isMain`. `isReplay` and `isLive` are mutually exclusive (`isFinishedLiveReplay == true`
+    /// implies `isLive == false`), so the trailing conjunct is a no-op on the replay branch and
+    /// only ever suppresses the genuinely-live branch. Unit-testable without rendering a view.
+    static func showsLiveNowPill(hasLiveNow: Bool, isMain: Bool, isUpcoming: Bool, isReplay: Bool,
+                                 isLive: Bool, cleanMode: Bool, isScrubbing: Bool) -> Bool {
+        hasLiveNow && (isMain || isReplay) && !isUpcoming && !cleanMode && !isScrubbing
+            && (!isLive || isReplay)
+    }
+
+    /// Whether `LiveNowPillView` should be composed for the current model snapshot + local
+    /// gesture state. See the static function's doc comment for the full parameter mapping.
+    private var showsLiveNowPill: Bool {
+        Self.showsLiveNowPill(hasLiveNow: hasLiveNow, isMain: isMainPlaybackPhase,
+                              isUpcoming: model.isUpcoming, isReplay: model.isFinishedLiveReplay,
+                              isLive: model.isLive, cleanMode: cleanMode, isScrubbing: isScrubbing)
+    }
+
+    /// Test seam exposing the private `showsLiveNowPill` computed property (`*ForTesting` naming
+    /// per `docs/unit-test-discipline.md` §3; mirrors existing precedents such as
+    /// `LivebuyWidget.isAutoRefreshActiveForTesting` / `LivebuyLiveEntry.appearedForTesting`) so a
+    /// test can construct a REAL `PlayerShellView` and assert the CALL-SITE wiring — i.e. that
+    /// `model.isLive` is actually threaded through to `showsLiveNowPill`'s `isLive` parameter —
+    /// rather than only exercising the pure static function with hand-picked arguments. This is
+    /// the specific class of gap `fix-ios-live-now-pill-active-live-leak` closes: the pure
+    /// function was correct, but nothing proved the call site actually fed it the right values.
+    var showsLiveNowPillForTesting: Bool { showsLiveNowPill }
+
+    /// PURE: whether the central `PlaybackPausedOverlayView` should be composed
+    /// (rb-ios-player-chrome-icon-and-overlay-visibility-fixes). Extracted as a pure function
+    /// (mirroring `showsPlaybackProgressBar`'s established pattern) specifically because a
+    /// full-render integration test CANNOT cleanly isolate `isScrubbing`'s effect on this one
+    /// element in isolation — `isScrubbing` also gates the VOD side rail / floating bag
+    /// (`showsVodMainChrome && !isScrubbing`), the LIVE bottom bar (`... && !isScrubbing`), and the
+    /// progress bar's own timestamp readout, so ANY full `PlayerShellView` fixture that flips
+    /// `isScrubbing` also visibly changes for reasons unrelated to this overlay — confirmed
+    /// empirically during this change's implementation (an injected-regression probe: reverting
+    /// just the `!isScrubbing` term left a full-frame byte-comparison test passing regardless,
+    /// because the VOD side rail / floating bag disappearing was enough to make the assertion
+    /// true on its own). A direct pure-function truth table sidesteps that confound entirely.
+    ///
+    /// `isMain && !isPlaying && !isScrubbing && !isLive`:
+    ///   - `isMain` — mirrors `showsPlaybackProgressBar`'s identical `isMain` (out of the cold-start
+    ///     loader / intro MP4 window).
+    ///   - `!isPlaying` — the engine is actually paused (`model.isPlaying`, unrelated to any gesture
+    ///     transient).
+    ///   - `!isScrubbing` — closes a gap this overlay was alone in NOT having: every OTHER sibling
+    ///     chrome element in this file already hides while `isScrubbing == true`.
+    ///   - `!isLive` — a true live stream's `model.isPlaying` is driven by core's VOD progress pump,
+    ///     which is a permanent no-op for `duration() == 0` (live), so it never leaves its
+    ///     constructor default `false` (an OBS drop/reconnect never touches it either way); without
+    ///     this term that stuck-`false` default would make this overlay appear during live playback
+    ///     and never clear. `isLive` (not `usesLiveChrome`) is deliberately the predicate: it is
+    ///     mutually exclusive with `model.isFinishedLiveReplay`, so a finished-live replay (real
+    ///     `duration() > 0`, pump works normally) is NEVER affected by this term.
+    static func showsPlaybackPausedOverlay(isMain: Bool, isPlaying: Bool, isScrubbing: Bool,
+                                           isLive: Bool) -> Bool {
+        isMain && !isPlaying && !isScrubbing && !isLive
+    }
+
+    /// Whether `PlaybackPausedOverlayView` should be composed for the current model snapshot. See
+    /// the static function's doc comment for why this is extracted as a pure function.
+    private var showsPlaybackPausedOverlay: Bool {
+        Self.showsPlaybackPausedOverlay(isMain: isMainPlaybackPhase, isPlaying: model.isPlaying,
+                                        isScrubbing: isScrubbing, isLive: model.isLive)
     }
 
     /// The extra bottom padding (`scrubChromeLift`, ~36pt) applied to VOD chrome that has
@@ -541,6 +701,8 @@ public struct PlayerShellView: View {
                 onSubscribe: (() -> Void)? = nil,
                 onNickname: (() -> Void)? = nil,
                 onShare: (() -> Void)? = nil,
+                hasLiveNow: Bool = false,
+                onGoLive: (() -> Void)? = nil,
                 captionText: String = "",
                 onSwipeUp: (() -> Void)? = nil,
                 onSwipeDown: (() -> Void)? = nil,
@@ -558,7 +720,13 @@ public struct PlayerShellView: View {
                 scrubBarExpandedForTesting: Bool = false,
                 cleanModeForTesting: Bool = false,
                 lastLikeableTapAtForTesting: Date? = nil,
-                performLikeForTesting: (() -> Void)? = nil) {
+                performLikeForTesting: (() -> Void)? = nil,
+                liveTapSchedule: @escaping (TimeInterval, @escaping () -> Void) -> (() -> Void) = { delay, action in
+                    let work = DispatchWorkItem(block: action)
+                    DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+                    return { work.cancel() }
+                },
+                pendingLiveTapMuteCommitCancelForTesting: (() -> Void)? = nil) {
         self.model = model
         self.theme = theme
         self.paintsBackgroundPlaceholder = paintsBackgroundPlaceholder
@@ -571,6 +739,8 @@ public struct PlayerShellView: View {
         self.onSubscribe = onSubscribe
         self.onNickname = onNickname
         self.onShare = onShare
+        self.hasLiveNow = hasLiveNow
+        self.onGoLive = onGoLive
         self.captionText = captionText
         self.onSwipeUp = onSwipeUp
         self.onSwipeDown = onSwipeDown
@@ -585,6 +755,7 @@ public struct PlayerShellView: View {
         self.onScrubBarExpandedChange = onScrubBarExpandedChange
         self.onCleanModeChange = onCleanModeChange
         self.performLikeForTesting = performLikeForTesting
+        self.liveTapSchedule = liveTapSchedule
         // Test-only seed for the two scrub-driven `@State` properties (see their doc comments
         // below) — there is no production gesture-simulation path to reach these states in a
         // synchronous snapshot render, so `PlayerShellPlaybackProgressBarSnapshotTests` seeds them
@@ -601,6 +772,13 @@ public struct PlayerShellView: View {
         // one (see `lastLikeableTapAt`'s doc comment for why that is NOT reliable outside a live
         // SwiftUI hierarchy).
         _lastLikeableTapAt = State(initialValue: lastLikeableTapAtForTesting)
+        // Test-only seed for `pendingLiveTapMuteCommitCancel` (rb-ios-live-tap-delay-mute-commit) —
+        // same rationale as `lastLikeableTapAtForTesting` directly above: lets a test simulate "the
+        // FIRST tap already scheduled a pending mute-commit" and drive the SINGLE `handleDragEnded`
+        // call under test (the SECOND tap, classified as a double-tap via `lastLikeableTapAtForTesting`
+        // above), asserting that call cancels the seeded closure — without depending on `@State`
+        // carrying a value written by one top-level call into a separate one.
+        _pendingLiveTapMuteCommitCancel = State(initialValue: pendingLiveTapMuteCommitCancelForTesting)
     }
 
     /// Resolves a committed vertical drag into the correct video-switch action,
@@ -806,29 +984,51 @@ public struct PlayerShellView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.muteToastDuration, execute: work)
     }
 
-    /// LIVE video-area tap dispatch (rb-ios-live-double-tap-like). The existing unconditional
-    /// mute-toggle + toast fires on EVERY LIVE tap — SYNCHRONOUSLY, unchanged from before this
-    /// change — so `testTapDispatch_liveCallsOnToggleMuteNotTogglePlayPause` keeps passing
-    /// untouched. Additionally (not instead), `registerLikeableTap()` layers the double-tap-to-like
-    /// judgment on top (rb-ios-live-double-tap-like-replay-extend extracted that judgment into a
-    /// method shared with the already-ended-live-replay branch of `handleDragEnded` — see its doc
-    /// comment; this method's own LIVE-specific behavior, the unconditional mute-toggle + toast, is
-    /// unchanged).
+    /// LIVE video-area tap dispatch (rb-ios-live-double-tap-like; REVISED by
+    /// `rb-ios-live-tap-delay-mute-commit`). A single tap no longer commits the mute-toggle
+    /// SYNCHRONOUSLY — it now DEFERS it by `liveTapMuteCommitDelay` (~300ms), matching
+    /// `design/templates/minimal/screens.jsx`'s `onPointerUp` LIVE branch (`setTimeout(..., 300)`)
+    /// that `rb-ios-live-double-tap-like`'s design.md Decision 2 previously declined to follow. A
+    /// following SECOND tap landing within `doubleTapLikeWindow` (0.32s, unchanged) is recognized
+    /// by `registerLikeableTap()`'s return value as a double-tap: it CANCELS the pending commit
+    /// (so the user never sees the mute-toggle + toast flicker the old unconditional-sync version
+    /// caused) and fires `performLike()` + the heart burst INSTEAD. No following second tap within
+    /// the window → the deferred commit fires on its own after `liveTapMuteCommitDelay`, running
+    /// the SAME `onToggleMute?() + showMuteToast()` pair the old synchronous call used to run
+    /// inline.
     ///
-    /// Deliberately does NOT defer the mute-toggle the way
-    /// `design/templates/minimal/screens.jsx`'s `onPointerUp` LIVE branch does (300ms `setTimeout`
-    /// before committing to a single tap) — see `rb-ios-live-double-tap-like`'s design.md
-    /// Decision 2. Two independent reasons: (1) the existing synchronous regression test above
-    /// would break; (2) deferring would need an escaping `DispatchWorkItem` mutating `@State`,
-    /// which this exact test file's own §9.3 comment already documents as UNOBSERVABLE by a test
-    /// holding a `PlayerShellView` value outside a live SwiftUI hierarchy (proven empirically for
-    /// `cleanMode` / `scheduleCleanModeToggle`). Accepted trade-off: a genuine rapid double-tap
-    /// visibly toggles mute twice (net no permanent change, toast flickers twice) IN ADDITION to
-    /// firing the like.
+    /// **Reversal of Decision 2's two reasons for NOT deferring**: (1) the OLD synchronous
+    /// regression test `testTapDispatch_liveCallsOnToggleMuteNotTogglePlayPause` is UPDATED (not
+    /// broken) — it now injects a capturing fake `liveTapSchedule` and asserts against that,
+    /// rather than asserting `onToggleMute` synchronously. (2) mutating `@State` from inside an
+    /// escaping `DispatchWorkItem` closure is still NOT observable by a test holding a bare
+    /// `PlayerShellView` value outside a live SwiftUI hierarchy (§9.3's finding stands) — but this
+    /// method no longer needs that observability: `liveTapSchedule` is a ctor-injected function,
+    /// so a test-injected fake observes "scheduled" / "cancelled" / (by invoking the captured
+    /// action directly) "fired" WITHOUT ever reading `@State` back. The side effects the deferred
+    /// action fires (`onToggleMute?()`) and the double-tap branch fires (`performLikeForTesting?()`
+    /// via `registerLikeableTap()`) are plain stored closures — the SAME already-PROVEN-reliable
+    /// observability pattern this file has always relied on, just no longer gated behind a
+    /// synchronous call.
+    ///
+    /// Already-ended-live-replay (`model.isFinishedLiveReplay == true`) is UNAFFECTED — it never
+    /// calls this method; its single-tap action (`model.togglePlayPause()`, in `handleDragEnded`'s
+    /// `.togglePlayPause` case) stays synchronous, and its own double-tap-to-like (also via
+    /// `registerLikeableTap()`) has no pending commit to cancel.
     private func handleLiveTap() {
-        onToggleMute?()
-        showMuteToast()
-        registerLikeableTap()
+        if registerLikeableTap() {
+            // Double-tap recognized: cancel the FIRST tap's pending mute-commit instead of
+            // letting it fire — this is the whole point of deferring.
+            pendingLiveTapMuteCommitCancel?()
+            pendingLiveTapMuteCommitCancel = nil
+        } else {
+            // Single tap (so far): defer the mute-commit instead of firing immediately, giving a
+            // following second tap (within `doubleTapLikeWindow`) the chance to cancel it above.
+            pendingLiveTapMuteCommitCancel = liveTapSchedule(Self.liveTapMuteCommitDelay) {
+                self.onToggleMute?()
+                self.showMuteToast()
+            }
+        }
     }
 
     /// Shared double-tap-to-like bookkeeping (extracted from `handleLiveTap()`,
@@ -837,11 +1037,17 @@ public struct PlayerShellView: View {
     /// `model.performLike()` + bumps `liveHeartTick` (the SAME heart-burst path the LIVE bottom
     /// bar's like button already uses, `rb-ios-live-bottom-heart-burst`) — this is layered ON TOP
     /// OF, never instead of, whatever the tap's own single-tap action already did. Called from TWO
-    /// sites in `handleDragEnded`: `handleLiveTap()` (LIVE, after the unconditional
-    /// `onToggleMute?()` + `showMuteToast()`) and the `.tap` → `.togglePlayPause` branch, gated at
-    /// that call site on `model.isFinishedLiveReplay` (already-ended live replay only — pure VOD
-    /// never reaches this method). Extracting this once avoids duplicating the time-window compare
-    /// + side-effect triplet across both call sites.
+    /// sites in `handleDragEnded`: `handleLiveTap()` (LIVE) and the `.tap` → `.togglePlayPause`
+    /// branch, gated at that call site on `model.isFinishedLiveReplay` (already-ended live replay
+    /// only — pure VOD never reaches this method). Extracting this once avoids duplicating the
+    /// time-window compare + side-effect triplet across both call sites.
+    ///
+    /// `@discardableResult` returns whether THIS call recognized a double-tap
+    /// (`rb-ios-live-tap-delay-mute-commit`) — `handleLiveTap()` consumes this to decide whether to
+    /// cancel the pending deferred mute-commit (double-tap) or schedule a fresh one (single tap so
+    /// far); the replay call site in `handleDragEnded` ignores it (its single-tap action,
+    /// `model.togglePlayPause()`, is unconditional and synchronous regardless of this outcome, so
+    /// it has nothing to cancel/schedule).
     ///
     /// Every mutation here is SYNCHRONOUS (no escaping closure captures `self`) — but unlike a
     /// plain stored closure (e.g. `onToggleMute`), `@State` such as `lastLikeableTapAt` /
@@ -850,10 +1056,12 @@ public struct PlayerShellView: View {
     /// `lastLikeableTapAt`'s doc comment) — hence `performLikeForTesting` for observability, and
     /// `lastLikeableTapAtForTesting` on `init` for seeding, so tests only ever need to drive ONE
     /// call.
-    private func registerLikeableTap() {
+    @discardableResult
+    private func registerLikeableTap() -> Bool {
         let now = Date()
         let elapsed = lastLikeableTapAt.map { now.timeIntervalSince($0) }
-        if Self.isDoubleTapLikeHit(elapsedSinceLastLikeableTap: elapsed, window: Self.doubleTapLikeWindow) {
+        let isDoubleTap = Self.isDoubleTapLikeHit(elapsedSinceLastLikeableTap: elapsed, window: Self.doubleTapLikeWindow)
+        if isDoubleTap {
             // Consumed: a THIRD rapid tap starts a fresh pairing rather than chaining into a
             // string of likes.
             lastLikeableTapAt = nil
@@ -863,6 +1071,7 @@ public struct PlayerShellView: View {
         } else {
             lastLikeableTapAt = now
         }
+        return isDoubleTap
     }
 
     // MARK: - Chrome gating (rb-ios-intro-chrome-minimal)
@@ -1309,12 +1518,15 @@ public struct PlayerShellView: View {
             // `GesturePauseIconView`/`isHolding` pairing): driven by the REAL `model.isPlaying`
             // (not a gesture transient) — shows for as long as the engine is actually paused,
             // however that pause was triggered (a VOD/replay tap via `resolveTapAction`, or an
-            // SDK-internal lifecycle `pause()`). Gated on `isMainPlaybackPhase` (mirrors
-            // `showsPlaybackProgressBar`'s `isMain`) so the cold-start loader / intro MP4 window
-            // — where `model.isPlaying` defaults `false` before any real playback state exists —
-            // never shows it. UNLIKE the retired static icon, this overlay IS interactive (two
-            // buttons), so it does NOT carry `.allowsHitTesting(false)`.
-            if isMainPlaybackPhase && !model.isPlaying {
+            // SDK-internal lifecycle `pause()`). UNLIKE the retired static icon, this overlay IS
+            // interactive (two buttons), so it does NOT carry `.allowsHitTesting(false)`.
+            //
+            // Composition condition is the pure `showsPlaybackPausedOverlay` (see its doc comment
+            // above `isMainPlaybackPhase` for the full `isMain` / `isScrubbing` / `isLive`
+            // rationale, incl. why `isScrubbing` / `isLive` were added by
+            // rb-ios-player-chrome-icon-and-overlay-visibility-fixes and why they are extracted as
+            // a pure function rather than left inline).
+            if showsPlaybackPausedOverlay {
                 PlaybackPausedOverlayView(
                     theme: theme,
                     muted: model.muted,
@@ -1354,6 +1566,19 @@ public struct PlayerShellView: View {
                         onScrubStarted: { handleScrubStarted() },
                         onScrub: { ratio in handleScrub(ratio) },
                         onScrubEnded: { handleScrubEnded() })
+                }
+            }
+
+            // 「現正直播」右緣半藥丸鈕 (rb-ios-live-now-pill)。獨立的 top-level `ZStack` sibling
+            // （不巢在 VOD / `usesLiveChrome` 任一支之內，因為兩者皆可能是它的顯示情境——design
+            // 的 `(state === 'main' || isReplay)`）。design `position: absolute, top: 50%, right:
+            // 0, transform: translateY(-50%)`：這裡不需要額外定位修飾——`HStack { Spacer();
+            // pill }` 本身沒有固定高度，ZStack 預設 `.center` alignment 會把它垂直置中，`Spacer`
+            // 把它推到最右緣（`right: 0`），兩者合起來逐位元對齊設計稿的絕對定位。
+            if showsLiveNowPill {
+                HStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    LiveNowPillView(theme: theme, onTap: { onGoLive?() })
                 }
             }
 

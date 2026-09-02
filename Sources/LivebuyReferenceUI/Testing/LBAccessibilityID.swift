@@ -68,6 +68,9 @@ public enum LBAccessibilityID {
     /// The drag-time centered `HH:MM:SS / HH:MM:SS` timestamp readout.
     public static let playbackProgressReadout = "lb_playback_progress_readout"
 
+    /// The right-edge「現正直播」半藥丸鈕 (rb-ios-live-now-pill, `LBLiveNowPill`).
+    public static let liveNowPill = "lb_live_now_pill"
+
     public static let infoPanel = "lb_info_panel"
     public static let infoTabDetail = "lb_info_tab_detail"
     public static let infoTabNotice = "lb_info_tab_notice"

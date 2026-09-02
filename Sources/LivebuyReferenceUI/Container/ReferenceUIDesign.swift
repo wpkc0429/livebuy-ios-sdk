@@ -86,6 +86,14 @@ public struct PlayerOverlayContext {
     public let onNicknameSubmit: (String) -> Void
     public let onProductTap: (LBProduct) -> Void
     public let onShare: () -> Void
+    /// 「現正直播」右緣半藥丸鈕 (rb-ios-live-now-pill) 的輪詢 / gate 生命週期擁有者。DEFAULT 一顆
+    /// `shopId == nil` 的實例（`start()` 對此永遠是 no-op）——host 沒有 opt-in
+    /// `LivebuyPlayerConfig.shopId` 時零額外副作用、鈕永遠不出現。獨立於 `LivebuyLiveEntry` 的
+    /// controller，兩個 drop-in 面互不耦合、互不共享狀態。
+    public let liveNowController: LiveNowPollController
+    /// LIVE-now 鈕點擊 → host-wired 換片意圖（`LivebuyPlayerConfig.onGoLive ?? 預設 in-place
+    /// 換片`，比照 `onPickHot` 的「容器解析目標、這顆鈕只回報 tap」形狀）。DEFAULT `{}`（inert）。
+    public let onGoLive: () -> Void
     /// 商品列表列縮圖點擊 → 影片跳轉到該商品介紹時間（`LBProduct.beginTime`）。issue 5。
     public let onSeekToProductIntro: (LBProduct) -> Void
     /// 商品列表列分享鈕 → 系統分享，連結帶該商品介紹時間 `?t=beginTime`。issue 6。
@@ -133,6 +141,8 @@ public struct PlayerOverlayContext {
         onNicknameSubmit: @escaping (String) -> Void = { _ in },
         onProductTap: @escaping (LBProduct) -> Void,
         onShare: @escaping () -> Void,
+        liveNowController: LiveNowPollController = LiveNowPollController(shopId: nil),
+        onGoLive: @escaping () -> Void = {},
         onSeekToProductIntro: @escaping (LBProduct) -> Void,
         onShareProduct: @escaping (LBProduct) -> Void,
         onSend: @escaping (String) -> Void,
@@ -171,6 +181,8 @@ public struct PlayerOverlayContext {
         self.onNicknameSubmit = onNicknameSubmit
         self.onProductTap = onProductTap
         self.onShare = onShare
+        self.liveNowController = liveNowController
+        self.onGoLive = onGoLive
         self.onSeekToProductIntro = onSeekToProductIntro
         self.onShareProduct = onShareProduct
         self.onSend = onSend

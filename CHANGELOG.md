@@ -5,6 +5,40 @@ All notable changes to the Livebuy iOS SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.12.0] - 2026-09-02
+
+> **Minor.** 延續 v4.11.0，本輪 iOS 新增：現正直播「前往直播」提示鈕（VOD/回放偵測到同頻道現正
+> 直播時顯示）、VOD 正在介紹中商品訊號（core）、活動入口 modal 曝露完整進行中活動清單+分頁狀態
+> （template 層），另加 4 項視覺/缺陷修復。**無 BREAKING**（`grep -rli -i BREAKING` 掃過本輪所有
+> 相關 archived 目錄命中 22 個檔案，逐一核實皆為否定敘述或對 v4.11.0 既有 BREAKING 項的引用，
+> 無真實命中）。**iOS + Android 兩端 lockstep**；React Native / Flutter 同一批主題已落地於套件
+> 本身，不隨本次 tag 對外發佈（見
+> [`livebuy-android-sdk/CHANGELOG.md`](../livebuy-android-sdk/CHANGELOG.md#4120---2026-09-02)
+> 的 Android 對照段）。
+
+### Added
+
+- **現正直播「前往直播」提示鈕（`LBLiveNowPill`）** — 觀看 VOD / 已結束直播回放時，若偵測到同一
+  頻道現正直播中，顯示提示鈕引導前往直播；後續一顆修復排除「正式直播進行中」場景，避免鈕誤疊在
+  真實直播畫面上。
+- **VOD 正在介紹中商品訊號（core）** — `LivebuyPlayerViewController` 新增 VOD 播放進度對應的
+  「正在介紹中商品」訊號，parity 既有 LIVE 行為。
+- **活動入口 modal 曝露完整進行中活動清單＋分頁狀態（`LivebuyUI` template 層）** — `DefaultActiveEvent`
+  反轉舊版「只取第一筆活動」決策，改曝露完整清單與分頁索引；`currentActivity` 簽章不變、預設分頁
+  索引 `0` 時行為與既有等價，純新增。**本輪 reference-ui 尚未消費新分頁 API**（`LiveActivitySheetView`
+  尚無分頁 UI，不同於 Android/RN/Flutter 已同步補上 reference-ui 分頁視覺——這是本輪盤點發現的一個
+  平台落差，非本 change 造成，如實記錄，待後續獨立 change 補齊）。
+- **活動入口切換影片立即隱藏＋換片還原快取（template 層）** — 換片時活動入口立即隱藏，換回原片時
+  從快取還原顯示狀態，避免短暫顯示上一部影片的活動資訊。
+
+### Fixed
+
+- **直播雙擊送愛心改延遲 commit 靜音＋可取消**，不再誤觸靜音閃爍。
+- **活動入口 modal CTA 接上既有三層閘**，加入成功後自動關閉，被閘攔截時維持開啟。
+- **縮小按鈕 icon 放大 18pt＋暫停覆蓋層拖曳中／直播進行中不顯示**。
+- **中獎/活動入口 icon 尺寸對齊設計稿 29pt**；**領獎 modal 頂部禮物徽章換成白底圓＋雙路徑向量
+  glyph 對齊設計稿**。
+
 ## [4.11.0] - 2026-09-01
 
 > **Minor.** 延續 v4.10.0，本輪 iOS 新增多項能力：播放器手勢重寫（乾淨模式）、直播抽獎活動入口、

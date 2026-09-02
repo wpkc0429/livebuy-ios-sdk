@@ -342,12 +342,26 @@ public struct FeedWinOverlayView: View {
             // D3): reads `model.currentActivity` FRESH at render time rather than a
             // captured value (see `showingActivitySheet`'s doc comment) so it never
             // shows a stale activity. Surface 4.
+            //
+            // `onJoin` (`activity-entry-cta-gate-and-close-ios`): forwards through
+            // `model.joinEvent(eid:keyword:)` — the SAME gated entry point the chat-feed
+            // 「加入活動」CTA uses (`onJoinEvent` above) — rather than `model.joinCurrentActivity()`
+            // (which forwards unconditionally, bypassing `joinEventGate`; see that method's doc
+            // comment). `joinEvent`'s `Bool` return reports whether the gate actually let the intent
+            // through: `true` (proceed / no gate injected) → `showingActivitySheet` collapses to
+            // `false` (auto-close on a real join); `false` (gate intercepted — login / nickname modal
+            // raised) → the sheet stays open so the user doesn't lose the "which activity" context
+            // while that modal takes over.
             if showingActivitySheet, let activity = model.currentActivity {
                 LiveActivitySheetView(
                     theme: theme,
                     activity: activity,
                     onClose: { showingActivitySheet = false },
-                    onJoin: { model.joinCurrentActivity() })
+                    onJoin: {
+                        if model.joinEvent(eid: activity.id, keyword: activity.keyword ?? "") {
+                            showingActivitySheet = false
+                        }
+                    })
             }
 
             // 四階段領獎 modal (LBWinSheet) — a CENTERED MODAL presented as a

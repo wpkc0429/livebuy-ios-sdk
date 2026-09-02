@@ -918,21 +918,32 @@ public struct WinClaimModalView: View {
 
     /// 禮物徽章 —— glyph **恆為 gift**，MUST NOT 依 `awardPresentation` 路由
     /// （對齊設計稿 `LBWinSheet` 的 `giftSvg` 與 Android / Flutter）。confetti 疊在它後面。
+    ///
+    /// 視覺結構對齊 `LiveActivitySheetView.badge`（同一設計元件的另一個既有正確實作）：
+    /// 白底圓（NOT accent 漸層底）+ `WinEntryGiftGlyph`（outline 填 `theme.accent`、inner
+    /// 固定填白，`FillStyle(eoFill: true)`）scale 至 30pt，取代舊款 SF Symbol `gift.fill` +
+    /// accent 對角漸層圓底（`win-claim-badge-icon-align-design-ios`）。
     private var giftBadge: some View {
-        ZStack {
+        let scale: CGFloat = 30 / 200
+        let transform = CGAffineTransform(scaleX: scale, y: scale)
+        return ZStack {
             confettiLayer
             ZStack {
-                LinearGradient(
-                    gradient: Gradient(colors: [theme.accent, Self.shade(theme.accent)]),
-                    startPoint: .topLeading, endPoint: .bottomTrailing)
-                Image(systemName: "gift.fill")
-                    .font(.system(size: 26, weight: .semibold))
-                    .foregroundColor(.white)
+                Circle()
+                    .fill(Color.white)
+                ZStack {
+                    WinEntryGiftGlyph.outlinePath()
+                        .applying(transform)
+                        .fill(theme.accent, style: FillStyle(eoFill: true))
+                    WinEntryGiftGlyph.innerPath()
+                        .applying(transform)
+                        .fill(Color.white, style: FillStyle(eoFill: true))
+                }
+                .frame(width: 30, height: 30)
             }
             .frame(width: 60, height: 60)
-            .clipShape(Circle())
             .overlay(Circle().stroke(theme.background, lineWidth: 4))
-            .shadow(color: theme.accent.opacity(0.33), radius: 11, x: 0, y: 8)
+            .shadow(color: Color.black.opacity(0.2), radius: 11, x: 0, y: 8)
         }
     }
 

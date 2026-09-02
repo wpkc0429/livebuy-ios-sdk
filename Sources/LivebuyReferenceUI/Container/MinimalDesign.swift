@@ -51,6 +51,8 @@ public struct MinimalDesign: ReferenceUIDesign {
                 onNicknameSubmit: context.onNicknameSubmit,
                 onProductTap: context.onProductTap,
                 onShare: context.onShare,
+                liveNowController: context.liveNowController,
+                onGoLive: context.onGoLive,
                 onSeekToProductIntro: context.onSeekToProductIntro,
                 onShareProduct: context.onShareProduct,
                 onSend: context.onSend,
@@ -207,6 +209,10 @@ struct PlayerOverlayRootView: View {
     let onNicknameSubmit: (String) -> Void
     let onProductTap: (LBProduct) -> Void
     let onShare: () -> Void
+    /// 「現正直播」右緣半藥丸鈕 (rb-ios-live-now-pill) 的輪詢 controller — `@ObservedObject` 讓
+    /// `liveNow` 每次更新都重新渲染，鏡像 `composerController`/`nicknameController` 的既有模式。
+    @ObservedObject var liveNowController: LiveNowPollController
+    let onGoLive: () -> Void
     let onSeekToProductIntro: (LBProduct) -> Void
     let onShareProduct: (LBProduct) -> Void
     let onSend: (String) -> Void
@@ -291,6 +297,11 @@ struct PlayerOverlayRootView: View {
                 // LIVE 底部 bar 分享鈕走與商品詳情分享同一條 `context.onShare` fallback
                 // （host 未攔截 → presentChannelShare 系統 sheet；rb-ios-live-share-default-sheet）。
                 onShare: onShare,
+                // 「現正直播」鈕：`hasLiveNow` 由本 root 觀察 `liveNowController.liveNow` 現算
+                // （每次輪詢更新都會經 `@ObservedObject` 重新渲染），`onGoLive` 原樣轉發
+                // （rb-ios-live-now-pill）。
+                hasLiveNow: liveNowController.liveNow != nil,
+                onGoLive: onGoLive,
                 onSwipeUp: onSwipeUp,
                 onSwipeDown: onSwipeDown,
                 onCloseRequest: onCloseRequest,

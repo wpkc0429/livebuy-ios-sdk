@@ -101,6 +101,20 @@ public struct LivebuyPlayerConfig {
     /// 熱門卡 tap. Default: switch in place to that video (`LBHotItem.id`).
     public var onPickHot: ((LivebuyPlayerViewController, LBHotItem) -> Void)?
 
+    /// 「現正直播」右緣半藥丸鈕 tap (rb-ios-live-now-pill). Default: switch in place to the
+    /// currently-detected other live (mirrors `onPickHot`'s default action). Receives the
+    /// `LBVideoItem` `LiveNowPollController` had detected AT TAP TIME.
+    public var onGoLive: ((LivebuyPlayerViewController, LBVideoItem) -> Void)?
+
+    /// Shop code used to poll「目前是否有另一場直播正在進行」(rb-ios-live-now-pill), driving
+    /// `LBLiveNowPill`'s presence. DEFAULT `nil` → the poller never starts and the pill never
+    /// appears — **zero extra API calls unless a host opts in**, mirroring
+    /// `LivebuyLiveEntry(shopId:)`'s existing precedent (SDK has no getter to reverse the shopId
+    /// `configure(shopId:)` was called with; the host supplies it again here). This drives a
+    /// SEPARATE `LiveNowPollController` instance from `LivebuyLiveEntry`'s — the two drop-in
+    /// surfaces stay decoupled, neither shares state nor a poll cadence with the other.
+    public var shopId: String?
+
     /// Start-screen 跳過. Default: `skipStart()`.
     public var onSkip: ((LivebuyPlayerViewController) -> Void)?
 
@@ -647,6 +661,14 @@ public struct LivebuyPlayer: UIViewControllerRepresentable {
         coordinator.nicknameController = NicknamePromptController()
         coordinator.loginController = LoginPromptController()
 
+        // 「現正直播」右緣半藥丸鈕 (rb-ios-live-now-pill)：一次性建立 poller（`config.shopId ==
+        // nil` → `start()` 內部永遠是 no-op，鈕永不出現、零額外 API call），`start()` 立即起輪詢
+        // ——與 `armAutoPiP` 等其他一次性生命週期接線同一慣例，`stop()` 於
+        // `teardownLifecycleObservers()` 對稱釋放。
+        let liveNowController = LiveNowPollController(shopId: config.shopId)
+        coordinator.liveNowController = liveNowController
+        liveNowController.start()
+
         // rb-ios-event-join-gate:「加入活動」抽獎 CTA 套與留言送出一致的三層閘（登入 → 暱稱 → 放行），
         // 共用同一組純函式故永不分歧。CTA tap → `FeedWinModel.joinEvent` 先問此注入 gate：登入閘 →
         // present login、不 join / 不 markJoined；暱稱閘 → present 設定暱稱 modal 並記住這次 pending
@@ -947,6 +969,23 @@ public struct LivebuyPlayer: UIViewControllerRepresentable {
                     Self.presentChannelShare(from: player, shareUrl: shellModel?.shareUrl ?? "")
                 }
             },
+            // 「現正直播」右緣半藥丸鈕 (rb-ios-live-now-pill)：唯一擁有目前偵測到的直播的一方
+            // 是 `coordinator.liveNowController`，故 controller 原樣轉發；tap → 讀出當下
+            // `liveNow`（可能在 tap 這一刻已被下一輪輪詢換掉／清空，屬預期行為，非 race）→
+            // host override 或預設 in-place 換片（比照 `onPickHot`）。
+            liveNowController: coordinator.liveNowController ?? LiveNowPollController(shopId: nil),
+            onGoLive: { [weak player, weak coordinator] in
+                guard let player = player,
+                      let live = coordinator?.liveNowController?.liveNow else { return }
+                if let custom = config.onGoLive {
+                    custom(player, live)
+                } else {
+                    coordinator?.currentVideoId = live.id
+                    coordinator?.coverVideoId = live.id
+                    player.load(videoId: live.id)
+                    config.onVideoSwitched?(live.id)
+                }
+            },
             // 商品列表列縮圖點擊 → 影片跳轉到商品介紹時間（issue 5）。預設 seek 到 `beginTime`
             // （VOD / replay；live 由 core `seek` gate 略過；`beginTime == nil` 不 seek）。
             onSeekToProductIntro: { [weak player] product in
@@ -1055,6 +1094,10 @@ public struct LivebuyPlayer: UIViewControllerRepresentable {
         var composerController: ChatComposerController?
         var nicknameController: NicknamePromptController?
         var loginController: LoginPromptController?
+        /// 「現正直播」右緣半藥丸鈕 (rb-ios-live-now-pill) 的輪詢生命週期擁有者. Created once in
+        /// `buildModels` (config.shopId — `nil` → the poller inside never actually starts) and
+        /// `stop()`-ped in `teardownLifecycleObservers()`, symmetric with `start()`.
+        var liveNowController: LiveNowPollController?
         var overlayHost: UIViewController?   // type-erased (PlayerOverlayRootView host)
 
         weak var player: LivebuyPlayerViewController?
@@ -1203,6 +1246,10 @@ public struct LivebuyPlayer: UIViewControllerRepresentable {
                 subtitleObserverTemplate?.removeObserver(token)
                 self.subtitleObserverToken = nil
             }
+            // 「現正直播」鈕輪詢 (rb-ios-live-now-pill)：對稱 `buildModels` 的 `start()`。
+            // `LiveNowPollController.stop()` 本身冪等（`pollTask?.cancel(); pollTask = nil`），
+            // 故本函式既有的「安全重複呼叫」不變式對這行也成立。
+            liveNowController?.stop()
         }
 
         deinit {

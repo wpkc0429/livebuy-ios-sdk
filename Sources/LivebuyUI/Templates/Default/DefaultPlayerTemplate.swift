@@ -93,7 +93,10 @@ public final class DefaultPlayerTemplate {
     /// conforms to `ActiveEventProviding`), mirroring the `winClaim` wiring
     /// above. The「加入目前活動」entry point is `joinCurrentActivity()` below
     /// — NOT a method on `DefaultActiveEvent` itself (see that type's doc
-    /// comment for why).
+    /// comment for why). Since `activity-sheet-multi-activity-template-ios`,
+    /// also exposes `activities` / `currentActivityPageIndex` /
+    /// `setActivityPageIndex(_:)` for hosts that want to page through
+    /// multiple simultaneous activities instead of only ever seeing the first.
     public let activeEvent: DefaultActiveEvent
 
     /// Player error-state (livebuy-ui-event-join-and-error-state-template) —
@@ -1234,6 +1237,11 @@ public final class DefaultPlayerTemplate {
         // (`currentVideoId` still nil). Only attempt while unknown; a nil `player?.channel?.id` is a
         // harmless no-op (rememberVideoId never nils out).
         if lastKnownVideoId == nil { rememberVideoId(player?.channel?.id) }
+        // 每一輪輪詢（與 goods/`event[]` 輪詢同一顆 coalesced tick）皆無條件清除任何仍生效中的換片
+        // 顯示覆寫，讓 currentActivity 恢復即時讀穿（video-switch bridge design.md D2）——不論這輪是否
+        // 真的帶回新的 event[] 內容，都要清，才能保證覆寫最多只存活一輪、不會因為快取的活動已在背景
+        // 結束、卻沒有對應 ACTIVE_EVENT_STARTED 通知去清除而永久 stale。
+        activeEvent.clearSwitchOverride()
         if pinnedMessage != poll.top {
             pinnedMessage = poll.top
             notifyChange()
@@ -1557,6 +1565,10 @@ public final class DefaultPlayerTemplate {
             if let from = from {
                 feedSnapshotCache.save(videoId: from, history: activityFeed.history, seenPushIds: seenPushIds)
             }
+            // 離開前先記住這支影片目前的 currentActivity（video-switch bridge，
+            // activity-entry-video-switch-cache-and-hide-ios）——MUST 在 applySwitchOverride 之前
+            // 呼叫，否則 rememberSnapshot 內讀到的 currentActivity 會已經是新影片的覆寫值。
+            activeEvent.rememberSnapshot(videoId: from)
             winClaim.clear()
             // 回放聊天游標同步歸 0（feed 即將 clear 或 restore，否則下一場前綴會誤判前進/倒退）—
             // replay-chat-feed-bridge-template。core 也會在 resetPerSessionState 送 `[]`，兩路皆安全。
@@ -1565,6 +1577,9 @@ public final class DefaultPlayerTemplate {
             // channel 之後才（或未）`ingestChannel`，deinit 仍能靠 `lastKnownVideoId` 存到正確的新場快照。
             rememberVideoId(to)
             arriveAt(videoId: to)
+            // 換片抵達端立即套用顯示覆寫（隱藏 or 還原快取），最多存活到下一輪輪詢
+            // （`handlePollReceived` 呼叫 `clearSwitchOverride()`）——video-switch bridge design.md D1/D2。
+            activeEvent.applySwitchOverride(videoId: to)
         }
     }
 

@@ -461,8 +461,10 @@ private extension WinEntryView {
     static let cornerRadius: CGFloat = 10         // borderRadius 10
 
     // Glyph — the SVG's native viewBox is 0...200; scaled down to this display
-    // size at render time (design.md D-1 / D-2, gallery 29×29 → 22×22 here).
-    static let glyphSize: CGFloat = 22
+    // size at render time (design.md D-1 / D-2), matching the design gallery's
+    // 29×29 (`moments.jsx` `LBWinEntry`, `width="29" height="29"`) exactly —
+    // shared by both `.win` and `.activity` variants (rb-ios-winentry-icon-size-align-design).
+    static let glyphSize: CGFloat = 29
     static let glyphOuterColor = Color(red: 0xF0 / 255.0, green: 0x32 / 255.0, blue: 0x46 / 255.0) // #F03246, hardcoded — NOT theme.accent
 
     // `.activity` background — `rgb(58 58 58 / 30%)` (design.md 1.4, moments.jsx

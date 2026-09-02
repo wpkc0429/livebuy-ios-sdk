@@ -285,9 +285,19 @@ public final class FeedWinModel: ObservableObject {
     /// INTERCEPTED the intent (raised a login / nickname modal) → this method MUST NOT forward
     /// (MUST NOT join / `markJoined`). `nil` gate (demo / snapshot instances) → NO gating, forward
     /// as before (baseline byte-identical). No-op for demo instances (no bound template).
-    public func joinEvent(eid: Int, keyword: String) {
-        if joinEventGate?(eid, keyword) == true { return }
+    ///
+    /// Returns whether the intent was actually forwarded (`true`) or intercepted by the gate
+    /// (`false`) — `activity-entry-cta-gate-and-close-ios`. The gate has side effects (presenting a
+    /// login / nickname modal, recording a pending join) and MUST be consulted exactly once per call;
+    /// callers that need to know the outcome (e.g. the activity-entry modal deciding whether to
+    /// auto-close) MUST read it off this return value rather than re-consulting `joinEventGate`
+    /// themselves. `@discardableResult` keeps existing call sites that ignore the outcome (the
+    /// chat-feed CTA's forwarder) source-compatible.
+    @discardableResult
+    public func joinEvent(eid: Int, keyword: String) -> Bool {
+        if joinEventGate?(eid, keyword) == true { return false }
         template?.joinEvent(eid: eid, keyword: keyword)
+        return true
     }
 
     /// Forward「加入活動」DIRECTLY to the bound template, **BYPASSING `joinEventGate`**. The drop-in
@@ -310,6 +320,14 @@ public final class FeedWinModel: ObservableObject {
     /// entry point `live-activity-entry-template` exposes — `DefaultActiveEvent`
     /// itself does NOT have a join method (see that type's doc comment for why).
     /// No-op for demo instances (no bound template).
+    ///
+    /// ⚠️ This forwards UNCONDITIONALLY — it does NOT consult `joinEventGate` (unlike
+    /// `joinEvent(eid:keyword:)` above). `activity-entry-cta-gate-and-close-ios`: this
+    /// package's OWN activity-entry sheet call site (`FeedWinOverlayView`'s `LiveActivitySheetView`
+    /// `onJoin`) no longer uses this method for that reason — it calls `joinEvent(eid: activity.id,
+    /// keyword: activity.keyword ?? "")` directly so the SAME gate the chat-feed CTA applies also
+    /// applies here. This method is kept as-is (source-compatible, still ungated) for any other
+    /// caller / host app that may already depend on its fire-and-forget contract.
     public func joinCurrentActivity() {
         template?.joinCurrentActivity()
     }
