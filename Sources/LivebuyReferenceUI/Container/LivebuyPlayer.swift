@@ -823,14 +823,15 @@ public struct LivebuyPlayer: UIViewControllerRepresentable {
                 guard let player = player else { return }
                 if let custom = config.onDismiss { custom(player) } else { player.unload() }
             },
-            // RETIRED (rb-ios-gesture-clean-mode-rewrite): long-press no longer drives
-            // pause/resume — it toggles the reference-ui-local `cleanMode` instead, which
-            // `PlayerShellView` never reports out (purely presentational). This dead
-            // core `player.pause()` / `player.play()` wiring is removed (design.md §4's
-            // recommended option (b)) rather than left in place pointing at a closure
-            // `PlayerShellView` no longer calls — VOD/replay pause is now driven by the
-            // single-tap `resolveTapAction(isLive:)` path instead (see `onToggleMute` below
-            // for the mirror-image tap-to-mute wiring on LIVE).
+            // RETIRED (rb-ios-gesture-clean-mode-rewrite, further superseded by
+            // `rb-ios-gesture-clean-mode-v2`): long-press no longer drives pause/resume — it
+            // drives 2×-speed seeking on seekable content instead (`PlayerShellModel.seekBy(_:)`,
+            // reference-ui-local, never reported out). This dead core `player.pause()` /
+            // `player.play()` wiring stays removed. Every short tap now toggles the
+            // reference-ui-local `cleanMode` instead (`handleVideoTap(zone:)`); VOD/replay
+            // play/pause is reached via `PlaybackProgressBarView`'s expanded-state button, and
+            // mute (LIVE or otherwise) via `PlayerHeaderBarView`'s clean-mode-only mute button —
+            // see `onToggleMute` below for that forwarder's wiring.
             onHoldStart: nil,
             onHoldEnd: nil,
             // Minimize (R2): default forwards to core `player.minimize()` seam.
@@ -972,7 +973,9 @@ public struct LivebuyPlayer: UIViewControllerRepresentable {
             // 「現正直播」右緣半藥丸鈕 (rb-ios-live-now-pill)：唯一擁有目前偵測到的直播的一方
             // 是 `coordinator.liveNowController`，故 controller 原樣轉發；tap → 讀出當下
             // `liveNow`（可能在 tap 這一刻已被下一輪輪詢換掉／清空，屬預期行為，非 race）→
-            // host override 或預設 in-place 換片（比照 `onPickHot`）。
+            // host override 或預設 in-place 換片（`applyGoLiveSwitch`，比照 `onPickHot`；
+            // fix-ios-live-now-pill-tap-and-size 問題 1 — see that function's doc comment for the
+            // regression its `onVideoSwitchedItem` fire closes）。
             liveNowController: coordinator.liveNowController ?? LiveNowPollController(shopId: nil),
             onGoLive: { [weak player, weak coordinator] in
                 guard let player = player,
@@ -980,10 +983,10 @@ public struct LivebuyPlayer: UIViewControllerRepresentable {
                 if let custom = config.onGoLive {
                     custom(player, live)
                 } else {
-                    coordinator?.currentVideoId = live.id
-                    coordinator?.coverVideoId = live.id
-                    player.load(videoId: live.id)
-                    config.onVideoSwitched?(live.id)
+                    applyGoLiveSwitch(live, coordinator: coordinator,
+                                     load: { player.load(videoId: $0) },
+                                     onVideoSwitched: config.onVideoSwitched,
+                                     onVideoSwitchedItem: config.onVideoSwitchedItem)
                 }
             },
             // 商品列表列縮圖點擊 → 影片跳轉到商品介紹時間（issue 5）。預設 seek 到 `beginTime`
@@ -1354,6 +1357,38 @@ func applyAutoAdvanceSwitch(_ nav: LBNavItem,
     coordinator?.currentVideoId = nav.id
     coordinator?.coverVideoId = nav.id
     onSwitchedItem(autoAdvanceSwitchedItem(nav))
+}
+
+/// The 「現正直播」pill's default in-place-switch side effects (fix-ios-live-now-pill-tap-and-size,
+/// 問題 1): pre-sync the coordinator's cover/current id to the target LIVE, `load` it (`player.load`
+/// is INJECTED — not called directly — so this stays unit-testable without a real player / network
+/// I/O), then fire `onVideoSwitched` / `onVideoSwitchedItem`. `live` is passed to
+/// `onVideoSwitchedItem` AS-IS (already a real `LBVideoItem` from `LiveNowPollController.liveNow` —
+/// no `switchedVideoItem(...)` reconstruction needed, unlike `onPickHot` / `onWatchNext` converting
+/// an `LBHotItem` / moments "next" item).
+///
+/// UNCONDITIONAL (unlike `applyAutoAdvanceSwitch`'s `onVideoSwitchedItem`-gated pre-sync): this is a
+/// discrete, deliberate USER TAP — the same shape as `onPickHot` / `onWatchNext` / the swipe seam's
+/// `onDidSwitchVideo` (all three ALREADY pre-sync + notify unconditionally) — not a core-driven event
+/// that fires for every host regardless of whether anyone is listening (auto-advance's reason for
+/// gating on `onVideoSwitchedItem` being set).
+///
+/// Regression this closes: without the `onVideoSwitchedItem` fire, `LivebuyPlayerPresenter
+/// .composedConfig` (which overrides `onVideoSwitchedItem` to keep ITS OWN `video` binding in sync)
+/// never re-binds `video` to the new id. The presenter's `playerLayer` reconstructs
+/// `LivebuyPlayer(videoId: v.id, ...)` on THE VERY NEXT unrelated SwiftUI re-render (position ticks
+/// every second) with the STALE OLD id; `updateUIViewController`'s cover-guard
+/// (`coordinator.coverVideoId != videoId`) then sees `live.id != <stale old id>` → reloads BACK to
+/// the old video — silently reverting the switch this function just made ("點這顆鈕沒有實際換片").
+func applyGoLiveSwitch(_ live: LBVideoItem, coordinator: LivebuyPlayer.Coordinator?,
+                       load: (String) -> Void,
+                       onVideoSwitched: ((String) -> Void)?,
+                       onVideoSwitchedItem: ((LBVideoItem) -> Void)?) {
+    coordinator?.currentVideoId = live.id
+    coordinator?.coverVideoId = live.id
+    load(live.id)
+    onVideoSwitched?(live.id)
+    onVideoSwitchedItem?(live)
 }
 
 // MARK: - VTT subtitle pipeline (rb-ios-subtitle-vtt-caption-display)

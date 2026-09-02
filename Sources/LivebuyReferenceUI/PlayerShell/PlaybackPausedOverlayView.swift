@@ -3,6 +3,20 @@ import LivebuyUI
 
 // MARK: - PlaybackPausedOverlayView — family-1 center paused overlay (interactive)
 //
+// ⚠️ RETIRED (`rb-ios-gesture-clean-mode-v2`, design R29): `PlayerShellView` no longer
+// composes this view — the R29 gesture model removes the central paused overlay entirely.
+// VOD / already-ended-live-replay play/pause is now driven by the existing
+// `PlaybackProgressBarView`'s expanded-state play/pause button instead (that button already
+// exists and is reachable whenever `isExpanded == true`, which `cleanMode` already feeds
+// into). This file is kept (struct definition + `LBAccessibilityID` ids untouched) rather
+// than deleted — mirroring this exact module's own precedent for the PREVIOUS retired
+// central overlay, `GesturePauseIconView.swift` (see its header comment) — so a future
+// change that wants to resurrect a central overlay has a working starting point, and so
+// this diff does not also have to hunt down every remaining reference.
+//
+// Everything below this point describes the ORIGINAL (`rb-ios-gesture-clean-mode-rewrite`,
+// design R23) behavior, kept verbatim as a historical record.
+//
 // Spec: `reference-ui-rendering/spec.md`
 //   § "LivebuyReferenceUI PlayerShellView 手勢重寫：單擊依直播/VOD 分流切換靜音或播放/暫停，
 //      長按切換乾淨模式" — 「中央暫停覆蓋層改為綁真實播放狀態的互動雙按鈕」.

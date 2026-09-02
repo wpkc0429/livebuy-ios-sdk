@@ -5,6 +5,46 @@ All notable changes to the Livebuy iOS SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.13.0] - 2026-09-02
+
+> **Minor.** 延續 v4.12.0，本輪 iOS 主打**播放器手勢三度改版（R29）**：短擊切換「乾淨模式」、
+> 雙擊送愛心整段退役（改為 VOD/回放雙擊 seek ±10 秒）、長按 VOD/回放近似 2 倍速快轉、中央暫停
+> 覆蓋層移除、商品袋按鈕縮小、頂列新增靜音鈕。含 **1 項 ⚠️ BREAKING**（reference-ui 內部行為
+> 契約——手勢觸發語意整個對調，取代 R23 舊模型）——比照 v4.5.0/v4.8.0/v4.9.0/v4.11.0 先例，
+> 含 BREAKING 但整輪仍判定 minor。另補齊 v4.12.0 遺留的活動入口多活動分頁 iOS reference-ui
+> 視覺缺口，四端現已 parity。**本輪零 core / 零 LivebuyUI（template）層觸碰，對 Tier 0 host
+> 讀者零行為變化**。**iOS + Android 兩端 lockstep**；React Native / Flutter 同一批主題已落地
+> 於套件本身，不隨本次 tag 對外發佈（見
+> [`livebuy-android-sdk/CHANGELOG.md`](../livebuy-android-sdk/CHANGELOG.md#4130---2026-09-02)
+> 的 Android 對照段）。
+
+### Added
+
+- **活動入口多活動分頁 reference-ui 視覺補齊** — `LiveActivitySheetView` 補上分頁 UI 消費
+  v4.12.0 已曝露的分頁資料，收斂 v4.12.0 遺留的 iOS 平台落差，四端現已 parity。
+- **播放器手勢三度改版（R29）新增**：`cleanMode` 期間 `PlayerHeaderBarView` 新增靜音切換鈕
+  （補回單擊切靜音手勢退役後的操作管道）；新增「退出乾淨模式」小圓鈕。
+- **已結束直播回放雙擊送愛心改延遲 commit 播放/暫停切換**（R29 之前的迭代，同輪一併收工）。
+- **縮小按鈕 icon 放大 18 → 20pt**，對齊設計稿。
+
+### Changed
+
+- **⚠️ BREAKING — 播放器手勢觸發語意整個對調**：取代 R23 定的「長按=乾淨模式、單擊=靜音/
+  播放暫停」：短擊（不分直播進行中/預告/VOD/回放）切換 `cleanMode`；雙擊（僅 VOD/回放）依左右
+  半螢幕 seek ±10 秒；長按（僅 VOD/回放）近似 2 倍速快轉。直播進行中/預告倒數不支援雙擊/長按。
+  **受影響對象**：直接呼叫 `handleLiveTap()`/`handleReplayTap()`/`registerLikeableTap()` 等
+  已移除內部方法的 host（正常情況下不會，這些非 public API）；走既有 `simulate*` 方法 + 事件
+  監聽的 host 不受影響。
+- **移除**：中央暫停覆蓋層 `PlaybackPausedOverlayView` 不再被組合；VOD/回放播放/暫停改由
+  `PlaybackProgressBarView` 展開態上的小按鈕操作。
+- **商品袋按鈕縮小**：48×48pt → 40×40pt，icon 34 → 22pt，對齊設計稿。
+
+### Fixed
+
+- **切換影片/拖曳進度條時中央暫停覆蓋層誤顯示修復**（R29 之前的迭代）。
+- **縮小後綁定同一支影片無反應修復**——`LivebuyPlayerPresenter` open-signal 重開判定缺口。
+- **現正直播提示鈕漏轉發換片信號導致換片被復原修復**＋對齊設計稿縮小尺寸。
+
 ## [4.12.0] - 2026-09-02
 
 > **Minor.** 延續 v4.11.0，本輪 iOS 新增：現正直播「前往直播」提示鈕（VOD/回放偵測到同頻道現正

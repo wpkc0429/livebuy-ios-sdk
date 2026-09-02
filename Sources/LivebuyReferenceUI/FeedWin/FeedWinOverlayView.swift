@@ -88,11 +88,14 @@ import LivebuyUI
 //       onPage: ((Int) -> Void)? = nil,        // rb-ios-win-claim-pagination, R27
 //       editable: Bool = true)
 //
-//   LiveActivitySheetView(                     // rb-ios-live-activity-sheet, NEW
+//   LiveActivitySheetView(                     // rb-ios-live-activity-sheet
 //       theme: ReferenceUITheme,
 //       activity: LBActiveEvent,
 //       onClose: (() -> Void)? = nil,
-//       onJoin: (() -> Void)? = nil)
+//       onJoin: (() -> Void)? = nil,
+//       pageCount: Int = 1,                    // activity-sheet-pagination-reference-ui-ios
+//       pageIndex: Int = 0,                    // activity-sheet-pagination-reference-ui-ios
+//       onPage: ((Int) -> Void)? = nil)        // activity-sheet-pagination-reference-ui-ios
 //
 // Rules every surface agent honours:
 //   • FIRST positional arg is `theme:`. Snapshot values are passed BY VALUE.
@@ -361,7 +364,13 @@ public struct FeedWinOverlayView: View {
                         if model.joinEvent(eid: activity.id, keyword: activity.keyword ?? "") {
                             showingActivitySheet = false
                         }
-                    })
+                    },
+                    // 多場同時進行中活動的分頁（activity-sheet-pagination-reference-ui-ios）
+                    // ——比照 `currentActivity` 現有讀法，經 `model`（不直讀 `template`），
+                    // 不新增第二份頁碼 state。
+                    pageCount: model.activities.count,
+                    pageIndex: model.currentActivityPageIndex,
+                    onPage: { model.setActivityPageIndex($0) })
             }
 
             // 四階段領獎 modal (LBWinSheet) — a CENTERED MODAL presented as a

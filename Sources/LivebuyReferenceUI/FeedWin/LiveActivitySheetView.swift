@@ -81,16 +81,41 @@ public struct LiveActivitySheetView: View {
     /// this to `FeedWinModel.joinCurrentActivity()`. Default `nil`.
     private let onJoin: (() -> Void)?
 
+    /// Total number of concurrently ongoing activities
+    /// (`activity-sheet-pagination-reference-ui-ios`). Default `1` — the existing
+    /// single-activity baseline is byte-identical when this default is used (no
+    /// pagination dots drawn, swipe gesture is inert). Mirrors
+    /// `WinClaimModalView.pageCount`.
+    public let pageCount: Int
+
+    /// The index into the (container-held) activities list this sheet currently
+    /// presents. Default `0`. This view does NOT hold the `activities` array
+    /// itself — `activity:` above is already the container-resolved snapshot for
+    /// this index (design.md D3); `pageIndex` is used ONLY for the pagination dots
+    /// / swipe target-page math.
+    public let pageIndex: Int
+
+    /// Page-change intent (swipe or dot tap), carrying the target index. The
+    /// container forwards this to `DefaultActiveEvent.setActivityPageIndex(_:)`.
+    /// Default `nil`.
+    private let onPage: ((Int) -> Void)?
+
     public init(
         theme: ReferenceUITheme,
         activity: LBActiveEvent,
         onClose: (() -> Void)? = nil,
-        onJoin: (() -> Void)? = nil
+        onJoin: (() -> Void)? = nil,
+        pageCount: Int = 1,
+        pageIndex: Int = 0,
+        onPage: ((Int) -> Void)? = nil
     ) {
         self.theme = theme
         self.activity = activity
         self.onClose = onClose
         self.onJoin = onJoin
+        self.pageCount = pageCount
+        self.pageIndex = pageIndex
+        self.onPage = onPage
     }
 
     // MARK: - UI-local state (NOT view-model, design.md D3)
@@ -110,7 +135,65 @@ public struct LiveActivitySheetView: View {
                 card(containerWidth: geo.size.width)
             }
             .frame(width: geo.size.width, height: geo.size.height)
+            // 分頁手勢（activity-sheet-pagination-reference-ui-ios）——掛在整張彈窗
+            // （scrim + 卡）上，對齊 `WinClaimModalView.pageSwipeGesture` 既有作法與設計稿
+            // 把 swipe handler 綁在最外層 wrapper 的行為。
+            .gesture(pageSwipeGesture)
         }
+    }
+
+    // MARK: - Pagination (activity-sheet-pagination-reference-ui-ios)
+
+    /// The target page index for a completed horizontal drag, or `nil` if the
+    /// drag should NOT change the page (below threshold, `pageCount <= 1`, or the
+    /// clamped target equals the current page — already at a boundary). Direction
+    /// + threshold + boundary clamp are all baked into the return value, mirroring
+    /// `WinClaimModalView.clampedPage` + `attemptPage`'s combined inert logic —
+    /// pure, no Combine/SwiftUI dependency, independently unit-testable.
+    static func activitySheetSwipeTargetPage(
+        totalDragWidth: CGFloat,
+        threshold: CGFloat,
+        pageIndex: Int,
+        pageCount: Int
+    ) -> Int? {
+        guard pageCount > 1, abs(totalDragWidth) >= threshold else { return nil }
+        let delta = totalDragWidth < 0 ? 1 : -1
+        guard pageIndex + delta >= 0, pageIndex + delta < pageCount else { return nil }
+        return pageIndex + delta
+    }
+
+    /// Horizontal drag threshold (aligns with `WinClaimModalView.pageSwipeThreshold`
+    /// / design source `Math.abs(dx) < 40`).
+    static let pageSwipeThreshold: CGFloat = 40
+
+    private var pageSwipeGesture: some Gesture {
+        DragGesture(minimumDistance: 16)
+            .onEnded { value in
+                guard let target = Self.activitySheetSwipeTargetPage(
+                    totalDragWidth: value.translation.width,
+                    threshold: Self.pageSwipeThreshold,
+                    pageIndex: pageIndex,
+                    pageCount: pageCount) else { return }
+                onPage?(target)
+            }
+    }
+
+    /// 分頁圓點列——每頁一顆、`6×6pt`，目前頁 `theme.accent` 填色、其餘中性色
+    /// （對齊 `WinClaimModalView.paginationDots` 既有視覺與 `LBActivitySheet` 設計稿）。
+    /// 點擊任一顆直接呼叫 `onPage(該索引)`（索引本身由 `ForEach(0..<pageCount)` 保證合法，
+    /// 不需要再經過 `activitySheetSwipeTargetPage` 的邊界夾制）。
+    private var paginationDots: some View {
+        HStack(spacing: 5) {
+            ForEach(0..<pageCount, id: \.self) { i in
+                Circle()
+                    .fill(i == pageIndex ? theme.accent : Self.dotInactive)
+                    .frame(width: 6, height: 6)
+                    .contentShape(Rectangle().inset(by: -4))
+                    .onTapGesture { onPage?(i) }
+            }
+        }
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(LBAccessibilityID.activitySheetPaginationDots)
     }
 
     // MARK: - Scrim (unconditionally clickable → onClose, design.md D3 / source `LBActivitySheet`)
@@ -134,6 +217,11 @@ public struct LiveActivitySheetView: View {
                 prizeNameText
                 keywordText
                 ctaButton
+                // 分頁圓點（activity-sheet-pagination-reference-ui-ios）——只在
+                // `pageCount > 1` 時畫，對齊設計稿只在 CTA 之後、footer 之前渲染。
+                if pageCount > 1 {
+                    paginationDots
+                }
                 footer
             }
             .padding(.top, 46)
@@ -279,6 +367,9 @@ public struct LiveActivitySheetView: View {
     static let joinedBackground = Color(hex: "#C9CDD3") ?? Color.gray.opacity(0.4)
     /// `theme.surface.textDim`（footer 次要文字，與 `WinClaimModalView.textDim` 同一色值）。
     static let textDim = Color(hex: "#6B6775") ?? Color.gray
+    /// 分頁圓點非目前頁色（對齊 `WinClaimModalView.dotInactive` 同一色值 / 設計稿
+    /// `S.border || '#D8DBE0'`）。
+    static let dotInactive = Color(hex: "#D8DBE0") ?? Color.gray.opacity(0.3)
 
     static let joinLabel = "立即參加"
     static let joinedLabel = "已參加"

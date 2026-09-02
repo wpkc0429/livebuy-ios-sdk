@@ -106,12 +106,16 @@ public struct LiveOverlayChromeView: View {
     @available(*, deprecated, message: "no longer gates anything; the hold-hint pill is always shown (long-press now toggles cleanMode, not pause)")
     public let showsHoldPauseHint: Bool
 
-    /// LIVE vs VOD flag (`PlayerShellModel.isLive`). Selects the tap-hint pill's copy
-    /// (rb-ios-gesture-clean-mode-rewrite, design R23): `true` → "點擊畫面 = 切換靜音"
-    /// (unchanged copy); `false` (VOD / 已結束直播的回放 / 直播預告倒數) → "點擊畫面 = 切換
-    /// 播放/暫停", matching `PlayerShellView.resolveTapAction(isLive:)`'s actual dispatch.
-    /// Default `true` keeps any call site that doesn't pass it byte-identical to the prior
-    /// unconditional copy.
+    /// LIVE vs VOD flag (`PlayerShellModel.isLive`). Gates the LONG-PRESS hint pill's
+    /// visibility (`rb-ios-gesture-clean-mode-v2`, design R29, supersedes R23's use of this
+    /// flag to branch the TAP-hint copy — every short tap now toggles `cleanMode`
+    /// unconditionally, so the tap-hint copy no longer depends on `isLive` at all, see
+    /// `hintTap`): `true` (actual live in progress, this sub-view's only reachable `isLive
+    /// == true` case per its `PlayerShellView` call site — replay feeds `false`) → the
+    /// hold-hint pill (`hintHold`, "長按畫面 = 2倍速快轉") does NOT render at all, since
+    /// long-press has no effect while actually live; `false` (已結束直播回放, the only other
+    /// case reaching this sub-view) → the hold-hint pill DOES render. Default `true` keeps
+    /// any call site that doesn't pass it byte-identical to the prior LIVE-shaped baseline.
     public let isLive: Bool
 
     /// When true, the gesture-hint pills fade out shortly after appearing
@@ -505,16 +509,20 @@ public struct LiveOverlayChromeView: View {
 
     // MARK: - LBPGestureHint — centered static gesture hints
 
-    /// Three centered dark hint pills (`LBPGestureHint`): tap (依 `isLive` 分流文案), 長按 =
-    /// 切換乾淨模式, swipe-to-switch. Pure static localized copy. ALL THREE always render — the
-    /// former `showsHoldPauseHint`-gated omission of the hold-hint pill is RETIRED
-    /// (rb-ios-gesture-clean-mode-rewrite, supersedes rb-ios-live-hold-pause-suppress): 乾淨模式
-    /// 不分直播/VOD 皆適用，該提示不再有第二層 per-line gate（只受整體 `showGestureHints` /
-    /// `cleanMode` 控制）。
+    /// Up to three centered dark hint pills (`LBPGestureHint`): tap (不分直播/VOD 恆為切換
+    /// 乾淨模式), 長按 = 2 倍速快轉（僅 seekable，即 `!isLive`，此 sub-view 情境下代表已結束
+    /// 直播回放——真直播進行中長按無對應動作，該行整條不渲染）, swipe-to-switch. Pure static
+    /// localized copy (`rb-ios-gesture-clean-mode-v2`, design R29, supersedes R23's
+    /// `isLive`-branched tap copy + unconditionally-shown hold copy). The former
+    /// `showsHoldPauseHint`-gated omission (rb-ios-gesture-clean-mode-rewrite, supersedes
+    /// rb-ios-live-hold-pause-suppress) remains RETIRED and irrelevant here — the hold pill's
+    /// visibility is now driven entirely by `!isLive` (seekable), not by that deprecated flag.
     private var gestureHints: some View {
         VStack(spacing: 8) {
-            gestureHintPill(symbol: "hand.point.up.left.fill", text: Self.hintTap(isLive: isLive))
-            gestureHintPill(symbol: "hand.raised.fill", text: Self.hintHold)
+            gestureHintPill(symbol: "hand.point.up.left.fill", text: Self.hintTap)
+            if !isLive {
+                gestureHintPill(symbol: "hand.raised.fill", text: Self.hintHold)
+            }
             gestureHintPill(symbol: "arrow.up.arrow.down", text: Self.hintSwipe)
         }
     }
@@ -557,15 +565,16 @@ public struct LiveOverlayChromeView: View {
     /// Gesture-hint copy (static localized presentation strings, matching
     /// `LBPGestureHint` in `sdk-components.jsx`).
     ///
-    /// Tap-hint copy now DEPENDS on `isLive` (rb-ios-gesture-clean-mode-rewrite, design R23,
-    /// matching `PlayerShellView.resolveTapAction(isLive:)`'s actual dispatch): 進行中直播
-    /// 單擊切靜音（文案不變）；VOD／已結束直播的回放／預告倒數單擊切播放/暫停（新文案）。
-    static func hintTap(isLive: Bool) -> String { isLive ? hintTapMute : hintTapPlayPause }
-    static let hintTapMute = "點擊畫面 = 切換靜音"
-    static let hintTapPlayPause = "點擊畫面 = 切換播放/暫停"
-    /// 長按提示文案（rb-ios-gesture-clean-mode-rewrite，取代舊版「長按畫面 = 暫停 / 繼續」）：
-    /// 長按已不再驅動暫停/播放，改驅動乾淨模式，不分直播/VOD。
-    static let hintHold = "長按畫面 = 切換乾淨模式"
+    /// Tap-hint copy (`rb-ios-gesture-clean-mode-v2`, design R29, supersedes R23's
+    /// `isLive`-branched `hintTap(isLive:)` / `hintTapMute` / `hintTapPlayPause` trio): every
+    /// short tap now toggles `cleanMode` — there is no longer a second outcome to branch on,
+    /// so the copy is a single unconditional constant regardless of `isLive`.
+    static let hintTap = "點擊畫面 = 切換乾淨模式"
+    /// 長按提示文案（`rb-ios-gesture-clean-mode-v2`，design R29，取代 R23「長按畫面 = 切換
+    /// 乾淨模式」版本）：長按改驅動 2 倍速快轉，僅在 seekable（此 sub-view 情境下即
+    /// `!isLive`，代表已結束直播回放）時才有意義——`gestureHints` 只在該情境渲染這一行；
+    /// 真直播進行中長按無對應動作，該行整條不渲染（見 `gestureHints`）。
+    static let hintHold = "長按畫面 = 2倍速快轉"
     static let hintSwipe = "上下滑動 = 切換影片"
 
     /// The pinned product is "narrating" when `narrateStatus == 2`

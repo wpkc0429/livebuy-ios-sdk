@@ -131,31 +131,40 @@ public struct LiveNowPillView: View {
         }
     }
 
-    // MARK: - Design tokens（逐字取自 `sdk-components.jsx` `LBLiveNowPill`）
+    // MARK: - Design tokens（逐字取自 `sdk-components.jsx` `LBLiveNowPill`；2026-09-02 隨設計稿
+    // 整體縮小 ~25–30%（`design/contract/claude-design-sync.md` R28 補充段落）同步縮小 ——
+    // fix-ios-live-now-pill-tap-and-size 問題 2）
+    //
+    // 每個常數皆逐字取自新版 design px 值，1:1 對應（沿用既有映射關係），僅 `chevronSize` 例外：
+    // 舊版既有映射是 13pt ↔ design svg 17px（NOT 1:1，比例 13/17 ≈ 0.7647）——本次沿用**同一比例**
+    // 套用新版 design 值 13px（13 × 13/17 ≈ 9.94），而非直接照抄 13。`pulseMaxScale` /
+    // `pulseDuration` 不在 design px 常數表內（`pulseMaxScale` 是動畫縮放倍率、非 px 值；design 的
+    // 脈動外圈 `inset` 改變靠 SwiftUI 的 `scaleEffect` 動畫達成、不是靠擴大靜態 frame，兩端實作手法
+    // 本就不同，故維持不變）。
 
     static let pillRed = Color(hex: "#F03246") ?? .red
     static let label = "LIVE"
 
-    static let contentSpacing: CGFloat = 6
-    static let labelFontSize: CGFloat = 16
-    static let chevronSize: CGFloat = 13
+    static let contentSpacing: CGFloat = 4
+    static let labelFontSize: CGFloat = 12
+    static let chevronSize: CGFloat = 13 * 13 / 17
 
-    static let paddingTop: CGFloat = 9
-    static let paddingLeading: CGFloat = 10
-    static let paddingBottom: CGFloat = 9
-    static let paddingTrailing: CGFloat = 12
+    static let paddingTop: CGFloat = 6
+    static let paddingLeading: CGFloat = 7
+    static let paddingBottom: CGFloat = 6
+    static let paddingTrailing: CGFloat = 9
 
-    static let dotSize: CGFloat = 14
-    static let dotInnerSize: CGFloat = 5
-    static let dotBorderWidth: CGFloat = 1.6
-    static let pulseRingLineWidth: CGFloat = 1.4
+    static let dotSize: CGFloat = 11
+    static let dotInnerSize: CGFloat = 4
+    static let dotBorderWidth: CGFloat = 1.3
+    static let pulseRingLineWidth: CGFloat = 1.1
     static let pulseMaxScale: CGFloat = 1.6
     static let pulseDuration: TimeInterval = 1.6
 
-    static let shadowColor = Color.black.opacity(0.28)
-    static let shadowRadius: CGFloat = 14
-    static let shadowOffsetX: CGFloat = -2
-    static let shadowOffsetY: CGFloat = 4
+    static let shadowColor = Color.black.opacity(0.25)
+    static let shadowRadius: CGFloat = 10
+    static let shadowOffsetX: CGFloat = -1
+    static let shadowOffsetY: CGFloat = 3
 }
 
 #if DEBUG

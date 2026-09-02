@@ -111,6 +111,17 @@ public final class FeedWinModel: ObservableObject {
     /// 快照 republish 出來，MUST NOT 加工、MUST NOT 自行判斷活動是否結束。
     @Published public private(set) var currentActivity: LBActiveEvent?
 
+    /// 完整進行中活動清單（`DefaultActiveEvent.activities`），供
+    /// `LiveActivitySheetView` 分頁圓點計數（`activity-sheet-pagination-reference-
+    /// ui-ios`）。同 `currentActivity`，是**只讀鏡像**——每次 `onChange` republish
+    /// 該時刻快照，MUST NOT 加工。
+    @Published public private(set) var activities: [LBActiveEvent]
+
+    /// 目前分頁索引（`DefaultActiveEvent.currentActivityPageIndex`），供
+    /// `LiveActivitySheetView` 分頁圓點高亮 + 滑動目標頁計算（`activity-sheet-
+    /// pagination-reference-ui-ios`）。同 `currentActivity`，是**只讀鏡像**。
+    @Published public private(set) var currentActivityPageIndex: Int
+
     // MARK: - Live binding
 
     /// The bound template, when constructed from a live player. nil for demo /
@@ -164,7 +175,9 @@ public final class FeedWinModel: ObservableObject {
             pinned: t.pinnedMessage,
             hostName: t.header.hostName,
             submitInFlight: t.winClaim.submitInFlight,
-            currentActivity: t.activeEvent.currentActivity
+            currentActivity: t.activeEvent.currentActivity,
+            activities: t.activeEvent.activities,
+            currentActivityPageIndex: t.activeEvent.currentActivityPageIndex
         )
     }
 
@@ -183,7 +196,9 @@ public final class FeedWinModel: ObservableObject {
         pinned: LBPinnedMessage? = nil,
         hostName: String = "",
         submitInFlight: Bool = false,
-        currentActivity: LBActiveEvent? = nil
+        currentActivity: LBActiveEvent? = nil,
+        activities: [LBActiveEvent] = [],
+        currentActivityPageIndex: Int = 0
     ) {
         self.feedItems = feedItems
         self.feedHistory = feedHistory
@@ -194,6 +209,8 @@ public final class FeedWinModel: ObservableObject {
         self.hostName = hostName
         self.submitInFlight = submitInFlight
         self.currentActivity = currentActivity
+        self.activities = activities
+        self.currentActivityPageIndex = currentActivityPageIndex
     }
 
     deinit {
@@ -220,6 +237,8 @@ public final class FeedWinModel: ObservableObject {
         hostName = t.header.hostName
         submitInFlight = t.winClaim.submitInFlight
         currentActivity = t.activeEvent.currentActivity
+        activities = t.activeEvent.activities
+        currentActivityPageIndex = t.activeEvent.currentActivityPageIndex
     }
 
     // MARK: - Read-only host intents (pass-through to the bound template)
@@ -330,6 +349,16 @@ public final class FeedWinModel: ObservableObject {
     /// caller / host app that may already depend on its fire-and-forget contract.
     public func joinCurrentActivity() {
         template?.joinCurrentActivity()
+    }
+
+    /// Forward「切換目前活動分頁」to the bound template
+    /// (`DefaultActiveEvent.setActivityPageIndex(_:)` — 範圍外 index 為 no-op，不
+    /// clamp、不崩潰、不觸發 host 通知；有效且與目前值不同的 index 才會更新並觸發
+    /// 一次 `onChange`，republish 進 `currentActivityPageIndex` / `currentActivity`）。
+    /// `activity-sheet-pagination-reference-ui-ios`——`LiveActivitySheetView` 的
+    /// `onPage(_:)` 轉發入口。No-op for demo instances (no bound template).
+    public func setActivityPageIndex(_ index: Int) {
+        template?.activeEvent.setActivityPageIndex(index)
     }
 
     // MARK: - Presentation classification (read-only)

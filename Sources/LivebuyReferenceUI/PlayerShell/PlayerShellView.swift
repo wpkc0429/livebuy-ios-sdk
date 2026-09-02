@@ -133,13 +133,18 @@ public struct PlayerShellView: View {
     /// to Android `0f6b56a5`). Local presentation state only.
     @State private var dismissedLivePinnedIds: Set<String> = []
 
-    /// 「乾淨模式」(rb-ios-gesture-clean-mode-rewrite, design R23) — toggled by a long-press
-    /// (>~0.45s) on the video area (see `scheduleCleanModeToggle`), unconditionally for both
-    /// LIVE and VOD/replay (no `isLive` gate, unlike the retired `allowsHoldToPause`). `true`
-    /// hides most floating chrome (§6 hide-lists) while keeping the minimize button, the
-    /// expanded transport bar, and — LIVE only — the currently-narrating pinned product card.
-    /// Pure呈現層 local state (design.md §1): it does NOT belong on `PlayerShellModel` and MUST
-    /// NOT influence any core / view-model state.
+    /// 「乾淨模式」(`rb-ios-gesture-clean-mode-v2`, design R29 — SUPERSEDES the retired
+    /// `rb-ios-gesture-clean-mode-rewrite`/R23 long-press trigger) — toggled by a SHORT TAP
+    /// on the video area (see `handleVideoTap(zone:)`): while actually live or in the
+    /// upcoming preview (`!isSeekable`) the toggle fires immediately; while seekable (VOD or
+    /// an already-ended live replay) it is DEFERRED (see `pendingCleanModeToggleCancel`) so a
+    /// following second tap in the same half can be recognized as a double-tap seek instead.
+    /// Unconditional for both LIVE and VOD/replay (no `isLive` gate on whether the toggle
+    /// itself happens — only on whether it is deferred). `true` hides most floating chrome
+    /// (§6 hide-lists) while keeping the minimize button, the clean-mode-only mute button, the
+    /// new「退出乾淨模式」button, the expanded transport bar, and — LIVE only — the currently-
+    /// narrating pinned product card. Pure呈現層 local state (design.md §1): it does NOT
+    /// belong on `PlayerShellModel` and MUST NOT influence any core / view-model state.
     ///
     /// NOT reset on a video switch (design.md §1 flagged this as an apply-stage decision: no
     /// existing per-video local-state reset hook was found to piggyback on — `dismissedVodProductIds`
@@ -174,10 +179,16 @@ public struct PlayerShellView: View {
     /// into `LiveOverlayChromeView(showGestureHints:)`.
     private let showGestureHints: Bool
 
-    /// Tap on the video area → host-wired mute toggle (design「點擊靜音」/ "first tap
-    /// unmutes"). The host wires it to the template's `toggleMute()` (→ core
-    /// `setMuted`). nil → inert (demo / snapshot). This layer NEVER calls core /
-    /// template mute itself; it only forwards the tap.
+    /// Mute toggle → host-wired forwarder (design「點擊靜音」/ "first tap unmutes"). The
+    /// host wires it to the template's `toggleMute()` (→ core `setMuted`). nil → inert
+    /// (demo / snapshot). This layer NEVER calls core / template mute itself; it only
+    /// forwards the tap.
+    ///
+    /// RETARGETED (`rb-ios-gesture-clean-mode-v2`, design R29): the video-area tap gesture
+    /// that used to call this directly is RETIRED — every short tap now toggles `cleanMode`
+    /// instead (see `handleVideoTap(zone:)`). This closure is still forwarded, just from a
+    /// NEW source: `PlayerHeaderBarView`'s clean-mode-only mute button (`body` passes a
+    /// non-nil closure to it only while `cleanMode == true`).
     private let onToggleMute: (() -> Void)?
 
     /// Rail「商品」(.goods) open-intent → host opens the product-list overlay
@@ -256,18 +267,19 @@ public struct PlayerShellView: View {
     /// never overridden by this). nil → the swipe-to-empty is a no-op (demo / snapshot).
     private let onCloseRequest: (() -> Void)?
 
-    /// RETIRED (rb-ios-gesture-clean-mode-rewrite): long-press no longer drives pause/resume —
-    /// it toggles `cleanMode` instead — so this closure is NEVER invoked any more (`handleDragEnded`'s
-    /// `.hold` case only resets `longPressFired`). Kept (not removed) for source compatibility: any
-    /// existing host that explicitly passed a non-nil closure here still compiles; it silently stops
-    /// firing. Superseded by `resolveTapAction(isLive:)` + `model.togglePlayPause()` for VOD/replay
-    /// pause, and by `PlaybackPausedOverlayView`'s resume button for resuming.
-    @available(*, deprecated, message: "long-press no longer drives pause/resume; see resolveTapAction(isLive:) + model.togglePlayPause()")
+    /// RETIRED (rb-ios-gesture-clean-mode-rewrite, `rb-ios-gesture-clean-mode-v2`): long-press no
+    /// longer drives pause/resume — it drives 2×-speed seeking on seekable content instead — so
+    /// this closure is NEVER invoked any more (`handleDragEnded`'s `.hold` case only resets
+    /// `longPressFired` and calls `stopSpeedMode()`). Kept (not removed) for source
+    /// compatibility: any existing host that explicitly passed a non-nil closure here still
+    /// compiles; it silently stops firing. VOD/replay pause is reached via
+    /// `PlaybackProgressBarView`'s expanded-state play/pause button.
+    @available(*, deprecated, message: "long-press no longer drives pause/resume; see PlaybackProgressBarView's expanded play/pause button")
     private let onHoldStart: (() -> Void)?
 
-    /// RETIRED (rb-ios-gesture-clean-mode-rewrite) — see `onHoldStart`'s doc comment; never
-    /// invoked any more, kept for source compatibility only.
-    @available(*, deprecated, message: "long-press no longer drives pause/resume; see resolveTapAction(isLive:) + model.togglePlayPause()")
+    /// RETIRED (rb-ios-gesture-clean-mode-rewrite, `rb-ios-gesture-clean-mode-v2`) — see
+    /// `onHoldStart`'s doc comment; never invoked any more, kept for source compatibility only.
+    @available(*, deprecated, message: "long-press no longer drives pause/resume; see PlaybackProgressBarView's expanded play/pause button")
     private let onHoldEnd: (() -> Void)?
 
     /// Whether the on-demand chat composer (`ChatComposerBar`) is currently presented. When
@@ -332,142 +344,194 @@ public struct PlayerShellView: View {
     /// snapshot) → no report (baseline unchanged).
     private let onCleanModeChange: ((Bool) -> Void)?
 
-    /// Test-only observability hook (rb-ios-live-double-tap-like, `docs/unit-test-discipline.md`
-    /// `*ForTesting` naming): called SYNCHRONOUSLY, alongside `model.performLike()`, exactly when
-    /// `registerLikeableTap()` recognizes a double-tap — reachable from BOTH `handleLiveTap()`
-    /// (LIVE) and the already-ended-live-replay branch of `handleDragEnded`'s `.togglePlayPause`
-    /// case (rb-ios-live-double-tap-like-replay-extend). `nil` (default, every production /
-    /// non-test call site) → inert. This exists ONLY because `model.performLike()` itself has no
-    /// other externally observable effect on a demo/no-template `PlayerShellModel` (`template` is a
-    /// `private weak var`, always `nil` there — the same constraint
-    /// `testTapDispatch_nonLiveDoesNotCallOnToggleMute`'s doc comment already notes for
-    /// `togglePlayPause()`), and reading the `@State` `liveHeartTick` back is NOT reliable outside
-    /// a live SwiftUI hierarchy (see `lastLikeableTapAt`'s doc comment) — mirrors the EXISTING,
-    /// PROVEN-reliable `onToggleMute` closure-observability pattern used by
-    /// `testTapDispatch_liveCallsOnToggleMuteNotTogglePlayPause`.
-    private let performLikeForTesting: (() -> Void)?
+    /// Test-only observability hook (`rb-ios-gesture-clean-mode-v2`, `docs/unit-test-discipline.md`
+    /// `*ForTesting` naming): called SYNCHRONOUSLY, alongside `model.seekBy(_:)`, from BOTH the
+    /// double-tap-seek commit (`handleVideoTap(zone:)`) and each 2×-speed tick
+    /// (`scheduleSpeedModeTick()`). `nil` (default, every production / non-test call site) →
+    /// inert. This exists ONLY because `model.seekBy(_:)` calls `template?.seekBy(_:)`
+    /// (`PlayerShellModel.swift`), and `template` is a `private weak var`, always `nil` on a
+    /// demo/no-template `PlayerShellModel` — so the call itself has no other externally observable
+    /// effect on such a model (the same constraint `testTapDispatch_nonLiveDoesNotCallOnToggleMute`'s
+    /// doc comment already notes for `togglePlayPause()`). Passes the exact delta seconds
+    /// (`+10`/`-10` for a seek commit, `+speedModeExtraSeekPerTick` for a speed tick) so a test can
+    /// tell the two apart.
+    private let seekByForTesting: ((Double) -> Void)?
 
-    /// Ctor-injected scheduling function for the LIVE tap's deferred mute-commit
-    /// (`rb-ios-live-tap-delay-mute-commit`): `(delay, action) -> cancel`. Production default
-    /// (set in `init`) wraps `DispatchWorkItem` + `DispatchQueue.main.asyncAfter` — the SAME
-    /// primitive `scheduleCleanModeToggle` / `showMuteToast` already use elsewhere in this file,
-    /// just made swappable. A plain function type (not a named `protocol`) so it can sit in this
-    /// `public init` without any cross-module accessibility mismatch — mirrors how
-    /// `performLikeForTesting` above already does this for a closure-typed test hook (a named
-    /// `protocol` declared `internal` in a DIFFERENT module, e.g. `LivebuySDK`'s own
-    /// `Scheduler`/`Cancellable`, cannot be referenced from THIS module's `public init` unless
-    /// also made `public`; a structural closure type carries no such restriction).
+    /// Ctor-injected scheduling function for a DEFERRED action: `(delay, action) -> cancel`.
+    /// Renamed from `liveTapSchedule` (`rb-ios-gesture-clean-mode-v2`, design R29 — the R23
+    /// lineage's "defer a LIVE mute-commit / already-ended-replay play-pause-commit so a
+    /// following double-tap can cancel it" concept is RETIRED along with double-tap-to-like; this
+    /// injection point is GENERIC scheduling machinery, not tied to that retired semantic, so it
+    /// is reused rather than reinvented): now drives TWO independent things, both reusing the same
+    /// primitive —
+    ///   1. `handleVideoTap(zone:)`'s deferred `cleanMode` toggle (seekable content only): a short
+    ///      tap schedules the toggle `doubleTapSeekWindow` (0.32s) out; a following same-half tap
+    ///      within that window cancels it and commits a seek instead.
+    ///   2. `scheduleSpeedModeTick()`'s recursive 2×-speed re-scheduling while a long-press is held
+    ///      (each tick, if `speedMode` is still `true`, calls `model.seekBy(_:)` then schedules the
+    ///      next tick via this SAME function).
+    /// Production default (set in `init`) wraps `DispatchWorkItem` + `DispatchQueue.main.asyncAfter`
+    /// — the SAME primitive `showMuteToast` already uses elsewhere in this file, just made
+    /// swappable. A plain function type (not a named `protocol`) so it can sit in this `public
+    /// init` without any cross-module accessibility mismatch.
     ///
     /// Tests inject a capturing fake instead of the production default (`Fake*` naming,
     /// `docs/unit-test-discipline.md`, defined in the test target) that records every
-    /// `(delay, action)` pair and the cancel-call count of the closure it returns — this resolves
-    /// BOTH reasons `rb-ios-live-double-tap-like`'s design.md Decision 2 previously cited for NOT
-    /// deferring the mute-commit: (1) the existing synchronous regression test is updated to drive
-    /// the fake instead of asserting synchronously (no longer breaks); (2) "scheduled" /
+    /// `(delay, action)` pair and the cancel-call count of the closure it returns — "scheduled" /
     /// "cancelled" / "fired" (by invoking the captured `action` directly) are each observed via a
     /// plain reference type the TEST itself holds — never by reading `@State` back across two
     /// separate top-level calls, which `PlayerShellGestureCleanModeRewriteTests.swift` §9.3
     /// already empirically proved unreliable outside a live SwiftUI hierarchy.
-    private let liveTapSchedule: (TimeInterval, @escaping () -> Void) -> (() -> Void)
+    private let cleanModeTapSchedule: (TimeInterval, @escaping () -> Void) -> (() -> Void)
 
     // MARK: - Transient gesture-feedback state (default hidden → snapshot-neutral)
 
     /// True once the CURRENT press has crossed the long-press threshold (`holdDelay`).
-    /// Renamed from `isHolding` (rb-ios-gesture-clean-mode-rewrite, design.md §2): it no longer
-    /// means "hold-to-pause is in progress" — long-press is now an EDGE-TRIGGERED toggle of
-    /// `cleanMode`, not a press-and-hold state — this flag now only answers "has this gesture
-    /// already fired its long-press?" for `resolveGestureEnd`'s tap/hold/swipe classification.
-    /// Reset to `false` on release (`handleDragEnded`'s `.hold` case) so the NEXT press starts
-    /// clean. Does NOT drive any visible overlay by itself any more (the retired
-    /// `GesturePauseIconView` used to key off this; the new `PlaybackPausedOverlayView` is keyed
-    /// off the REAL `model.isPlaying` instead — see `body`).
+    /// Renamed from `isHolding` (rb-ios-gesture-clean-mode-rewrite, design.md §2). Meaning
+    /// updated AGAIN by `rb-ios-gesture-clean-mode-v2` (design R29): it no longer answers "has
+    /// this gesture toggled `cleanMode`" (R23's long-press semantic) — long-press now drives
+    /// `speedMode` (2× seek, seekable content only) instead — this flag answers "has this
+    /// gesture's speed-mode timer already fired" for `resolveGestureEnd`'s tap/hold/swipe
+    /// classification. Reset to `false` on release (`handleDragEnded`'s `.hold` case) so the
+    /// NEXT press starts clean.
     @State private var longPressFired: Bool = false
 
+    /// `true` while the CURRENT long-press is driving 2×-speed seeking (`rb-ios-gesture-clean-
+    /// mode-v2`, design R29) — only ever set while `isSeekable == true` (a real live stream in
+    /// progress, or its upcoming preview, never schedules the long-press timer that would set
+    /// this — see `handleDragChanged`). Set `true` when `scheduleSpeedModeStart()`'s timer fires;
+    /// set back to `false` on release (`handleDragEnded`'s `.hold` case), which also stops the
+    /// recursive `scheduleSpeedModeTick()` chain (each tick checks this before calling
+    /// `model.seekBy(_:)` and before re-scheduling itself).
+    @State private var speedMode: Bool = false
+
+    /// The half of the video area (`TapZone`) the CURRENT press started in — captured once per
+    /// press (`handleDragChanged`'s first call) from the gesture's `startLocation.x` relative to
+    /// the container width, and read back by `handleVideoTap(zone:)` to decide double-tap-seek
+    /// direction. `nil` between presses. `rb-ios-gesture-clean-mode-v2`, design R29.
+    @State private var pressZone: TapZone?
+
+    /// Cancel closure for the currently-pending 2×-speed tick (`scheduleSpeedModeTick()`) —
+    /// `rb-ios-gesture-clean-mode-v2`, design R29. Kept mainly for symmetry / an immediate-stop
+    /// path on release; the recursive tick chain already self-terminates on its own the NEXT
+    /// time it fires and observes `speedMode == false` (see that method's doc comment).
+    @State private var speedModeTickCancel: (() -> Void)?
+
     /// True for ~0.7s after a tap toggles mute. Drives the centre `GestureMuteToastView`.
+    ///
+    /// ⚠️ NEVER SET by production code any more (`rb-ios-gesture-clean-mode-v2`, design R29):
+    /// the only call site that used to flip this — the video-area tap-to-mute gesture — is
+    /// retired (every short tap now toggles `cleanMode` instead; mute is reached via
+    /// `PlayerHeaderBarView`'s new clean-mode-only button, which does not show this toast).
+    /// Kept alongside `showMuteToast()` / `muteToastWorkItem` / `muteToastDuration` rather than
+    /// removed — mirrors this file's own established precedent for other retired-but-kept
+    /// mechanisms (`onHoldStart` / `onHoldEnd`, `PlaybackPausedOverlayView`'s composition).
     @State private var muteToastVisible: Bool = false
 
-    /// Cancellable timer that promotes a sustained press into a long-press (after `holdDelay`).
-    /// Cancelled if the finger moves past `moveTolerance` first (it is a swipe/scroll).
-    @State private var holdWorkItem: DispatchWorkItem?
+    /// Cancel closure for the currently-pending long-press-arms-2×-speed timer (after
+    /// `holdDelay`). Cancelled if the finger moves past `moveTolerance` first (it is a
+    /// swipe/scroll). Renamed from `holdWorkItem: DispatchWorkItem?`
+    /// (`rb-ios-gesture-clean-mode-v2`): now goes through the SAME injected
+    /// `cleanModeTapSchedule` primitive every other deferred action in this file uses, instead
+    /// of a raw `DispatchWorkItem` — this makes "was a long-press timer even armed" (it is
+    /// ONLY armed while `isSeekable`, see `handleDragChanged`) directly observable by a test's
+    /// injected fake scheduler, closing a gap the raw-timer version could not be tested for.
+    @State private var pendingSpeedModeStartCancel: (() -> Void)?
 
     /// Cancellable timer that auto-dismisses the mute toast after `muteToastDuration`.
     @State private var muteToastWorkItem: DispatchWorkItem?
 
-    /// Cancel closure for the currently-pending LIVE tap deferred mute-commit
-    /// (`rb-ios-live-tap-delay-mute-commit`) — `nil` once fired / cancelled / never scheduled.
-    /// Set by `handleLiveTap()`'s single-tap branch (holds the cancel closure `liveTapSchedule`
-    /// returned); cleared (and invoked first) by the SAME method's double-tap branch, so a
-    /// following double-tap cancels the FIRST tap's pending commit instead of letting it fire.
-    /// Same `@State`-across-escaping-closure PRODUCTION-persistence shape as `holdWorkItem` /
-    /// `muteToastWorkItem` above (works correctly once installed in a live SwiftUI hierarchy).
-    /// This value's mutations are never read back ACROSS two separate top-level test calls (the
-    /// §9.3 limitation) — `liveTapSchedule`'s injected fake is the observable surface for that
-    /// (see `liveTapSchedule`'s doc comment). It CAN be pre-seeded via
-    /// `pendingLiveTapMuteCommitCancelForTesting` on `init` (mirrors the `lastLikeableTapAtForTesting`
-    /// precedent below) so a test can simulate "a first tap already scheduled a pending commit"
+    /// Cancel closure for the currently-pending deferred `cleanMode` toggle
+    /// (`rb-ios-gesture-clean-mode-v2`, design R29 — renamed from `pendingLiveTapMuteCommitCancel`
+    /// / merges what used to be TWO separate pending slots, `pendingLiveTapMuteCommitCancel` and
+    /// `pendingReplayTapPauseCommitCancel`, into ONE: R29's short tap always defers the SAME
+    /// action — toggling `cleanMode` — regardless of which seekable branch it came from, so there
+    /// is only one kind of pending commit left to track) — `nil` once fired / cancelled / never
+    /// scheduled. Set by `handleVideoTap(zone:)`'s single-tap branch (holds the cancel closure
+    /// `cleanModeTapSchedule` returned); cleared (and invoked first) by the SAME method's
+    /// double-tap branch, so a following same-half double-tap cancels the FIRST tap's pending
+    /// toggle instead of letting it fire. Same `@State`-across-escaping-closure PRODUCTION-
+    /// persistence shape as `pendingSpeedModeStartCancel` / `muteToastWorkItem` above (works correctly once
+    /// installed in a live SwiftUI hierarchy). This value's mutations are never read back ACROSS
+    /// two separate top-level test calls (the §9.3 limitation) — `cleanModeTapSchedule`'s injected
+    /// fake is the observable surface for that. It CAN be pre-seeded via
+    /// `pendingCleanModeToggleCancelForTesting` on `init` (mirrors the `lastSeekTapAtForTesting`
+    /// precedent below) so a test can simulate "a first tap already scheduled a pending toggle"
     /// and drive a SINGLE call under test to observe that seeded closure being invoked.
-    @State private var pendingLiveTapMuteCommitCancel: (() -> Void)?
+    @State private var pendingCleanModeToggleCancel: (() -> Void)?
 
     /// Whether a single touch's drag is in progress (prevents re-scheduling the hold on
     /// every `onChanged`; reset on `onEnded`).
     @State private var dragActive: Bool = false
 
-    /// Wall-clock time of the most recent LIKEABLE tap — a tap landing while `model.isLive == true`
-    /// OR `model.isFinishedLiveReplay == true` (renamed from `lastLiveTapAt`,
-    /// rb-ios-live-double-tap-like-replay-extend: the original name became misleading once this
-    /// tracker started being fed from the `.togglePlayPause` / replay branch of `handleDragEnded`
-    /// too, not just the LIVE `.toggleMute` branch — see `registerLikeableTap()`). Used by
-    /// `registerLikeableTap()` to detect a following double-tap within `doubleTapLikeWindow`.
-    /// `nil` = no likeable tap tracked yet (or the previous one was just consumed by a recognized
-    /// double-tap). NOT reset on a video switch — mirrors the existing `cleanMode` /
-    /// `dismissedVodProductIds` precedent of local presentation state with no natural reset hook to
-    /// piggyback on (see `cleanMode`'s doc comment); the window is only 0.32s, so the risk of a
-    /// stray cross-video double-tap match is negligible.
+    /// Wall-clock time of the most recent SEEK-ELIGIBLE tap — a tap landing while `isSeekable ==
+    /// true` (VOD or an already-ended live replay). Renamed from `lastLikeableTapAt`
+    /// (`rb-ios-gesture-clean-mode-v2`, design R29: double-tap-to-like is retired; this tracker
+    /// now serves double-tap-to-SEEK instead — see `handleVideoTap(zone:)`). Used together with
+    /// `lastSeekTapZone` to detect a following same-half double-tap within `doubleTapSeekWindow`.
+    /// `nil` = no seek-eligible tap tracked yet (or the previous one was just consumed). NOT reset
+    /// on a video switch — mirrors the existing `cleanMode` / `dismissedVodProductIds` precedent of
+    /// local presentation state with no natural reset hook to piggyback on; the window is only
+    /// 0.32s, so the risk of a stray cross-video double-tap match is negligible.
     ///
     /// ⚠️ Like every OTHER `@State` on this SwiftUI `View` value type, a write made by ONE
     /// `handleDragEnded` call is NOT reliably observable by reading this property back — even via
     /// a SECOND, separate, purely-synchronous direct method call on the exact same `view` value
-    /// held by a test outside a live SwiftUI hierarchy (empirically verified while building
-    /// `rb-ios-live-double-tap-like`: two immediate, non-escaping, back-to-back
+    /// held by a test outside a live SwiftUI hierarchy (empirically verified while building the
+    /// R23 lineage this supersedes: two immediate, non-escaping, back-to-back
     /// `handleDragEnded(.zero)` calls did NOT recognize a double-tap — broader than, but consistent
     /// with, the escaping-closure-specific limitation `PlayerShellGestureCleanModeRewriteTests`
     /// §9.3's doc comment already documents for `cleanMode`). Tests therefore seed this via
-    /// `lastLikeableTapAtForTesting` on `init` (mirrors the `cleanModeForTesting` /
+    /// `lastSeekTapAtForTesting` on `init` (mirrors the `cleanModeForTesting` /
     /// `isScrubbingForTesting` precedent) and drive the SINGLE call whose outcome is under test —
     /// never two separate calls expecting this to have carried a value from the first into the
     /// second.
-    @State private var lastLikeableTapAt: Date?
+    @State private var lastSeekTapAt: Date?
 
-    /// Long-press (→ `cleanMode` toggle) is recognized after this press duration (distinguishes
-    /// it from a quick tap). `0.45` (rb-ios-gesture-clean-mode-rewrite, design.md §2) — aligned to
-    /// `screens.jsx`'s `450`ms; was `0.3` under the retired hold-to-pause gesture.
+    /// The `TapZone` of the tap tracked by `lastSeekTapAt` — a double-tap only counts if the
+    /// SECOND tap lands in the SAME half as this one (mirrors design `screens.jsx`'s
+    /// `last.zone === ps.zone` check). `nil` alongside `lastSeekTapAt == nil`. Seedable via
+    /// `lastSeekTapZoneForTesting` on `init`.
+    @State private var lastSeekTapZone: TapZone?
+
+    /// Long-press (→ 2×-speed seeking while held, seekable content only) is recognized after
+    /// this press duration (distinguishes it from a quick tap). `0.45` — VALUE UNCHANGED across
+    /// R23 → R29 (aligned to `screens.jsx`'s `450`ms both times), only what fires at the end of
+    /// it changed (R23: toggle `cleanMode`; R29: start `speedMode`).
     private static let holdDelay: TimeInterval = 0.45
     /// The mute toast auto-dismisses after this duration (issue 5: ~0.7s).
     private static let muteToastDuration: TimeInterval = 0.7
     /// Finger movement (pt) past which a pending hold is cancelled (it is a swipe/scroll).
     private static let moveTolerance: CGFloat = 12
-    /// Double-tap-to-like recognition window (renamed from `liveDoubleTapWindow`,
-    /// rb-ios-live-double-tap-like-replay-extend: applies to BOTH the LIVE `.toggleMute` branch and
-    /// the already-ended-live-replay `.togglePlayPause` branch now — see `registerLikeableTap()`): a
-    /// second likeable tap landing within this many seconds of the first counts as a double-tap.
-    /// Aligned to `design/templates/minimal/screens.jsx`'s `onPointerUp` LIVE branch
-    /// (`sinceLast < 320`ms) — including that web reference's DEFER of the single-tap
-    /// mute-toggle by 300ms so a real double-tap does not also flicker mute
-    /// (`rb-ios-live-tap-delay-mute-commit`, REVISING the earlier "does NOT defer" trade-off — see
-    /// `handleLiveTap()`'s doc comment for the full reversal rationale and `liveTapMuteCommitDelay`
-    /// below for the defer delay itself). The replay branch has no equivalent flicker (its single
-    /// tap toggles play/pause, not mute — see `registerLikeableTap()`'s doc comment).
-    private static let doubleTapLikeWindow: TimeInterval = 0.32
+    /// Double-tap-to-SEEK recognition window (renamed from `doubleTapLikeWindow`,
+    /// `rb-ios-gesture-clean-mode-v2`, design R29: double-tap-to-like is retired; this window now
+    /// serves double-tap-to-seek AND doubles as the seekable short-tap's `cleanMode`-toggle DEFER
+    /// delay — see `handleVideoTap(zone:)`): a second same-half tap landing within this many
+    /// seconds of the first counts as a double-tap. `0.32` — VALUE UNCHANGED from the retired
+    /// `doubleTapLikeWindow` (aligned to `design/templates/minimal/screens.jsx`'s
+    /// `tapTimerRef.current = setTimeout(..., 320)`, which serves BOTH roles in the design
+    /// reference too — the same `320`ms literal is both the defer delay and the double-tap match
+    /// window there).
+    private static let doubleTapSeekWindow: TimeInterval = 0.32
 
-    /// LIVE single-tap mute-commit DEFER delay (`rb-ios-live-tap-delay-mute-commit`, REVISES the
-    /// "does NOT defer" trade-off `rb-ios-live-double-tap-like`'s design.md Decision 2 previously
-    /// accepted — see `handleLiveTap()`'s doc comment for the full reversal rationale). `0.3`
-    /// (300ms), taken verbatim from `design/templates/minimal/screens.jsx`'s `onPointerUp` LIVE
-    /// branch `setTimeout(..., 300)`. Deliberately left LESS than `doubleTapLikeWindow` (0.32s,
-    /// unchanged) — the same 20ms buffer the design reference itself relies on so a genuine
-    /// double-tap's second touch lands, and cancels this pending commit, before it would have
-    /// fired on its own.
-    private static let liveTapMuteCommitDelay: TimeInterval = 0.3
+    /// Double-tap-seek step, seconds (`rb-ios-gesture-clean-mode-v2`, design R29): a same-half
+    /// double-tap seeks the video forward (right half) or backward (left half) by this many
+    /// seconds via `model.seekBy(_:)`. `10`, matching design `screens.jsx`'s `deltaSec = ps.zone
+    /// === 'ff' ? 10 : -10`.
+    private static let seekStepSeconds: Double = 10
+
+    /// 2×-speed tick interval, seconds (`rb-ios-gesture-clean-mode-v2`, design R29) — while a
+    /// long-press is held on seekable content, `scheduleSpeedModeTick()` re-fires this often.
+    /// reference-ui has no playback-engine rate-change API to call (see design.md Decision 3), so
+    /// this approximates "2× forward" by additionally seeking `speedModeExtraSeekPerTick` forward
+    /// every tick ON TOP OF the engine's own normal 1× playback — net effect ≈ 2× real time.
+    private static let speedModeTickInterval: TimeInterval = 0.5
+
+    /// Extra seconds seeked forward per 2×-speed tick (`rb-ios-gesture-clean-mode-v2`, design
+    /// R29) — see `speedModeTickInterval`'s doc comment for the approximation this implements.
+    /// Equal to `speedModeTickInterval` so the extra seek exactly doubles the engine's own
+    /// concurrent 1× progress (1× + 1× ≈ 2×).
+    private static let speedModeExtraSeekPerTick: Double = 0.5
 
     // MARK: - Playback-progress scrub state (rb-ios-restore-vod-playback-progress-bar)
 
@@ -486,7 +550,7 @@ public struct PlayerShellView: View {
 
     /// Cancellable timer that collapses `scrubBarExpanded` back to `false` `scrubHoldDuration`
     /// after the finger lifts. Re-scheduled (cancelling any pending collapse) on every new
-    /// scrub start, mirroring `holdWorkItem` / `muteToastWorkItem` above.
+    /// scrub start, mirroring `pendingSpeedModeStartCancel` / `muteToastWorkItem` above.
     @State private var scrubCollapseWorkItem: DispatchWorkItem?
 
     /// The transport bar stays expanded this long after the finger lifts (design: 2.8s).
@@ -592,45 +656,6 @@ public struct PlayerShellView: View {
     /// function was correct, but nothing proved the call site actually fed it the right values.
     var showsLiveNowPillForTesting: Bool { showsLiveNowPill }
 
-    /// PURE: whether the central `PlaybackPausedOverlayView` should be composed
-    /// (rb-ios-player-chrome-icon-and-overlay-visibility-fixes). Extracted as a pure function
-    /// (mirroring `showsPlaybackProgressBar`'s established pattern) specifically because a
-    /// full-render integration test CANNOT cleanly isolate `isScrubbing`'s effect on this one
-    /// element in isolation — `isScrubbing` also gates the VOD side rail / floating bag
-    /// (`showsVodMainChrome && !isScrubbing`), the LIVE bottom bar (`... && !isScrubbing`), and the
-    /// progress bar's own timestamp readout, so ANY full `PlayerShellView` fixture that flips
-    /// `isScrubbing` also visibly changes for reasons unrelated to this overlay — confirmed
-    /// empirically during this change's implementation (an injected-regression probe: reverting
-    /// just the `!isScrubbing` term left a full-frame byte-comparison test passing regardless,
-    /// because the VOD side rail / floating bag disappearing was enough to make the assertion
-    /// true on its own). A direct pure-function truth table sidesteps that confound entirely.
-    ///
-    /// `isMain && !isPlaying && !isScrubbing && !isLive`:
-    ///   - `isMain` — mirrors `showsPlaybackProgressBar`'s identical `isMain` (out of the cold-start
-    ///     loader / intro MP4 window).
-    ///   - `!isPlaying` — the engine is actually paused (`model.isPlaying`, unrelated to any gesture
-    ///     transient).
-    ///   - `!isScrubbing` — closes a gap this overlay was alone in NOT having: every OTHER sibling
-    ///     chrome element in this file already hides while `isScrubbing == true`.
-    ///   - `!isLive` — a true live stream's `model.isPlaying` is driven by core's VOD progress pump,
-    ///     which is a permanent no-op for `duration() == 0` (live), so it never leaves its
-    ///     constructor default `false` (an OBS drop/reconnect never touches it either way); without
-    ///     this term that stuck-`false` default would make this overlay appear during live playback
-    ///     and never clear. `isLive` (not `usesLiveChrome`) is deliberately the predicate: it is
-    ///     mutually exclusive with `model.isFinishedLiveReplay`, so a finished-live replay (real
-    ///     `duration() > 0`, pump works normally) is NEVER affected by this term.
-    static func showsPlaybackPausedOverlay(isMain: Bool, isPlaying: Bool, isScrubbing: Bool,
-                                           isLive: Bool) -> Bool {
-        isMain && !isPlaying && !isScrubbing && !isLive
-    }
-
-    /// Whether `PlaybackPausedOverlayView` should be composed for the current model snapshot. See
-    /// the static function's doc comment for why this is extracted as a pure function.
-    private var showsPlaybackPausedOverlay: Bool {
-        Self.showsPlaybackPausedOverlay(isMain: isMainPlaybackPhase, isPlaying: model.isPlaying,
-                                        isScrubbing: isScrubbing, isLive: model.isLive)
-    }
-
     /// The extra bottom padding (`scrubChromeLift`, ~36pt) applied to VOD chrome that has
     /// reappeared during the post-release hold window (`scrubBarExpanded && !isScrubbing`) so it
     /// clears the still-expanded transport bar; `0` at every other time (including while hidden
@@ -719,14 +744,15 @@ public struct PlayerShellView: View {
                 isScrubbingForTesting: Bool = false,
                 scrubBarExpandedForTesting: Bool = false,
                 cleanModeForTesting: Bool = false,
-                lastLikeableTapAtForTesting: Date? = nil,
-                performLikeForTesting: (() -> Void)? = nil,
-                liveTapSchedule: @escaping (TimeInterval, @escaping () -> Void) -> (() -> Void) = { delay, action in
+                lastSeekTapAtForTesting: Date? = nil,
+                lastSeekTapZoneForTesting: TapZone? = nil,
+                seekByForTesting: ((Double) -> Void)? = nil,
+                cleanModeTapSchedule: @escaping (TimeInterval, @escaping () -> Void) -> (() -> Void) = { delay, action in
                     let work = DispatchWorkItem(block: action)
                     DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
                     return { work.cancel() }
                 },
-                pendingLiveTapMuteCommitCancelForTesting: (() -> Void)? = nil) {
+                pendingCleanModeToggleCancelForTesting: (() -> Void)? = nil) {
         self.model = model
         self.theme = theme
         self.paintsBackgroundPlaceholder = paintsBackgroundPlaceholder
@@ -754,8 +780,8 @@ public struct PlayerShellView: View {
         self.onScrubbingChange = onScrubbingChange
         self.onScrubBarExpandedChange = onScrubBarExpandedChange
         self.onCleanModeChange = onCleanModeChange
-        self.performLikeForTesting = performLikeForTesting
-        self.liveTapSchedule = liveTapSchedule
+        self.seekByForTesting = seekByForTesting
+        self.cleanModeTapSchedule = cleanModeTapSchedule
         // Test-only seed for the two scrub-driven `@State` properties (see their doc comments
         // below) — there is no production gesture-simulation path to reach these states in a
         // synchronous snapshot render, so `PlayerShellPlaybackProgressBarSnapshotTests` seeds them
@@ -765,20 +791,22 @@ public struct PlayerShellView: View {
         // Test-only seed for `cleanMode` (rb-ios-gesture-clean-mode-rewrite §6 chrome-hiding
         // contract) — same rationale as the two scrub seeds directly above.
         _cleanMode = State(initialValue: cleanModeForTesting)
-        // Test-only seed for `lastLikeableTapAt` (rb-ios-live-double-tap-like; parameter renamed in
-        // rb-ios-live-double-tap-like-replay-extend) — same rationale: lets a test simulate "a
-        // first likeable tap already happened Δt ago" and drive the SINGLE `handleDragEnded` call
-        // under test, without depending on `@State` carrying a value from one call into a separate
-        // one (see `lastLikeableTapAt`'s doc comment for why that is NOT reliable outside a live
-        // SwiftUI hierarchy).
-        _lastLikeableTapAt = State(initialValue: lastLikeableTapAtForTesting)
-        // Test-only seed for `pendingLiveTapMuteCommitCancel` (rb-ios-live-tap-delay-mute-commit) —
-        // same rationale as `lastLikeableTapAtForTesting` directly above: lets a test simulate "the
-        // FIRST tap already scheduled a pending mute-commit" and drive the SINGLE `handleDragEnded`
-        // call under test (the SECOND tap, classified as a double-tap via `lastLikeableTapAtForTesting`
-        // above), asserting that call cancels the seeded closure — without depending on `@State`
-        // carrying a value written by one top-level call into a separate one.
-        _pendingLiveTapMuteCommitCancel = State(initialValue: pendingLiveTapMuteCommitCancelForTesting)
+        // Test-only seed for `lastSeekTapAt` / `lastSeekTapZone` (`rb-ios-gesture-clean-mode-v2`)
+        // — same rationale: lets a test simulate "a first seek-eligible tap already happened Δt
+        // ago, in this half" and drive the SINGLE `handleDragEnded` call under test, without
+        // depending on `@State` carrying a value from one call into a separate one (see
+        // `lastSeekTapAt`'s doc comment for why that is NOT reliable outside a live SwiftUI
+        // hierarchy).
+        _lastSeekTapAt = State(initialValue: lastSeekTapAtForTesting)
+        _lastSeekTapZone = State(initialValue: lastSeekTapZoneForTesting)
+        // Test-only seed for `pendingCleanModeToggleCancel` (`rb-ios-gesture-clean-mode-v2`) —
+        // same rationale as `lastSeekTapAtForTesting` directly above: lets a test simulate "the
+        // FIRST tap already scheduled a pending `cleanMode` toggle" and drive the SINGLE
+        // `handleDragEnded` call under test (the SECOND tap, classified as a double-tap via
+        // `lastSeekTapAtForTesting` / `lastSeekTapZoneForTesting` above), asserting that call
+        // cancels the seeded closure — without depending on `@State` carrying a value written by
+        // one top-level call into a separate one.
+        _pendingCleanModeToggleCancel = State(initialValue: pendingCleanModeToggleCancelForTesting)
     }
 
     /// Resolves a committed vertical drag into the correct video-switch action,
@@ -854,59 +882,74 @@ public struct PlayerShellView: View {
         return .tap
     }
 
-    /// The video-area single-tap action (rb-ios-gesture-clean-mode-rewrite, design R23,
-    /// supersedes the prior unconditional tap-to-mute). Single decision point for the `.tap`
-    /// branch of `handleDragEnded`.
-    enum TapAction: Equatable { case toggleMute, togglePlayPause }
+    /// Which half of the video area a press started in (`rb-ios-gesture-clean-mode-v2`, design
+    /// R29) — mirrors design `screens.jsx`'s `zone = (e.clientX - rect.left) < rect.width / 2 ?
+    /// 'rw' : 'ff'`. Drives double-tap-seek direction (`.rewind` → `-10s`, `.fastForward` →
+    /// `+10s`) — see `handleVideoTap(zone:)`. Deliberately NOT consulted by the long-press 2×
+    /// speed path (`scheduleSpeedModeStart()`) — see that method's doc comment for why the
+    /// direction bug is preserved on purpose.
+    public enum TapZone: Equatable { case rewind, fastForward }
 
-    /// PURE: resolve the single-tap action for the current mode. 進行中直播（`isLive`,
-    /// `liveStatus == 1`, 涵蓋串流直播與預錄直播）單擊維持切換靜音；VOD／已結束直播的回放／直播
-    /// 預告倒數（皆 `isLive == false`）單擊改為切換播放/暫停 —— 這使得進行中直播事實上無法被單擊
-    /// 手勢暫停（分流後自然沒有可觸達暫停/播放的入口，效果等同已退役的 `allowsHoldToPause` 抑制，
-    /// 但不再是對某個獨立手勢的顯式抑制）。抽成純函式使此決策可單元測試（不需渲染手勢）。
-    static func resolveTapAction(isLive: Bool) -> TapAction {
-        isLive ? .toggleMute : .togglePlayPause
+    /// PURE: classify a press's starting X position into a `TapZone`. `containerWidth <= 0`
+    /// (never expected in practice) falls back to `.fastForward` rather than dividing by zero.
+    static func tapZone(startX: CGFloat, containerWidth: CGFloat) -> TapZone {
+        guard containerWidth > 0 else { return .fastForward }
+        return startX < containerWidth / 2 ? .rewind : .fastForward
     }
 
-    /// PURE: whether a likeable tap ending `elapsed` seconds after the previous tracked likeable
-    /// tap counts as a double-tap (renamed from `isLiveDoubleTap`,
-    /// rb-ios-live-double-tap-like-replay-extend: the original name became misleading once this
-    /// same decision started being consulted from the already-ended-live-replay branch of
-    /// `handleDragEnded` too, not just the LIVE branch — see `registerLikeableTap()`) — i.e. it
-    /// should ALSO fire `performLike()` + the heart burst, on top of whatever the tap's own action
-    /// already does (LIVE: unconditional mute-toggle via `handleLiveTap()`; already-ended-live
-    /// replay: `model.togglePlayPause()`). `elapsed == nil` (no likeable tap tracked yet, or the
-    /// tracker was just consumed by a previously-recognized double-tap) is never a double-tap.
-    /// Extracted (unit-test discipline, mirrors `resolveTapAction` / `cleanModeAfterLongPress`
-    /// above) so the timing boundary is directly testable with synthetic elapsed values — no real
-    /// clock / timer / rendered gesture required.
-    static func isDoubleTapLikeHit(elapsedSinceLastLikeableTap elapsed: TimeInterval?, window: TimeInterval) -> Bool {
-        guard let elapsed = elapsed else { return false }
+    /// PURE: whether the CURRENT mode supports seeking (double-tap ±10s, long-press 2× speed) —
+    /// `rb-ios-gesture-clean-mode-v2`, design R29's single decision point for both gestures.
+    /// Mirrors design `screens.jsx`'s `seekable = isReplay || !isLive`, where that `isLive`
+    /// bundles upcoming INTO the live family (`stateInLiveFamily` includes `'upcoming_main'`) —
+    /// this iOS formula therefore takes `isUpcoming` as an EXPLICIT separate parameter rather
+    /// than relying on `model.isLive` alone: `model.isLive` is narrower here (`liveStatus == 1`,
+    /// mutually exclusive with `isUpcoming` — see `resolveGestureEnd`'s historical `isLive`
+    /// usage elsewhere in this file), so `!isLive` alone would wrongly mark the upcoming preview
+    /// as seekable. `isFinishedLiveReplay` and `(isLive || isUpcoming)` are mutually exclusive in
+    /// practice, so the two disjuncts never both fire, but both are written out for 1:1 fidelity
+    /// with the documented design formula.
+    static func isSeekable(isLive: Bool, isUpcoming: Bool, isFinishedLiveReplay: Bool) -> Bool {
+        isFinishedLiveReplay || !(isLive || isUpcoming)
+    }
+
+    /// PURE: whether a seek-eligible tap ending `elapsed` seconds after the previous tracked
+    /// seek-eligible tap, in the SAME `TapZone`, counts as a double-tap-seek hit
+    /// (`rb-ios-gesture-clean-mode-v2`, design R29 — renamed from the retired
+    /// `isDoubleTapLikeHit`, mirrors design `screens.jsx`'s `(now - last.t) < 320 && last.zone
+    /// === ps.zone` compound condition). `elapsed == nil` (no seek-eligible tap tracked yet, or
+    /// the tracker was just consumed) or `sameZone == false` (second tap landed in the OTHER
+    /// half) is never a double-tap — a following tap in a different half instead falls back to
+    /// its own independent deferred `cleanMode` toggle. Extracted (unit-test discipline) so the
+    /// timing boundary is directly testable with synthetic elapsed values — no real clock /
+    /// timer / rendered gesture required.
+    static func isDoubleTapSeekHit(elapsedSinceLastSeekTap elapsed: TimeInterval?, sameZone: Bool, window: TimeInterval) -> Bool {
+        guard let elapsed = elapsed, sameZone else { return false }
         return elapsed <= window
     }
 
-    /// PURE: the new `cleanMode` value after a recognized long-press, given the CURRENT value.
-    /// Encodes the "edge-triggered TOGGLE, not press-and-hold / not always-set-to-true" design
-    /// decision (design.md §2) as a directly unit-testable unit, mirroring `resolveTapAction`
-    /// above. `scheduleCleanModeToggle`'s timer closure calls this rather than inlining
-    /// `.toggle()` so the semantic is independently testable — `@State` mutated from inside an
-    /// escaping `DispatchWorkItem` closure cannot itself be observed by a test driving the view
-    /// outside a live SwiftUI hierarchy (the closure captures a value-type snapshot of `self`),
-    /// so this pure half of the decision is the unit-testable surface for that behavior.
-    static func cleanModeAfterLongPress(current: Bool) -> Bool { !current }
-
-    /// Drag in progress: on the first change schedule the long-press timer; if the finger moves
-    /// past `moveTolerance` before it fires, cancel the pending long-press (it is a swipe/scroll,
-    /// not a long-press) so `cleanMode` never toggles on a swipe.
+    /// Drag in progress: on the first change, record which half the press started in
+    /// (`pressZone`) and — ONLY while `isSeekable` — schedule the long-press 2×-speed promotion.
+    /// A real live stream in progress or its upcoming preview never schedules this timer at all,
+    /// so long-press is a structural no-op there (see `scheduleSpeedModeStart()`'s doc comment —
+    /// this is the specific detail R29 is easiest to get wrong: R23's long-press toggled
+    /// `cleanMode` unconditionally including LIVE; R29's long-press is seekable-ONLY). If the
+    /// finger moves past `moveTolerance` before the timer fires, cancel it (it is a swipe/scroll,
+    /// not a long-press).
+    ///
+    /// `startX` / `containerWidth` default to `0` / `1` so existing call sites that don't care
+    /// about `pressZone` (most tap/swipe/hold classification tests) need no changes.
     ///
     /// Extracted (`internal`, not `private`) so the schedule/cancel dispatch is directly
     /// unit-testable without rendering a SwiftUI gesture — mirrors the EXISTING
-    /// `handleSwipeEnded` precedent (its own doc comment: "extracted so the ... dispatch is
-    /// unit-testable without rendering a SwiftUI gesture").
-    func handleDragChanged(_ translation: CGSize) {
+    /// `handleSwipeEnded` precedent.
+    func handleDragChanged(_ translation: CGSize, startX: CGFloat = 0, containerWidth: CGFloat = 1) {
         if !dragActive {
             dragActive = true
-            scheduleCleanModeToggle()
+            pressZone = Self.tapZone(startX: startX, containerWidth: containerWidth)
+            if Self.isSeekable(isLive: model.isLive, isUpcoming: model.isUpcoming,
+                               isFinishedLiveReplay: model.isFinishedLiveReplay) {
+                scheduleSpeedModeStart()
+            }
         }
         if !longPressFired,
            abs(translation.width) > Self.moveTolerance || abs(translation.height) > Self.moveTolerance {
@@ -914,68 +957,95 @@ public struct PlayerShellView: View {
         }
     }
 
-    /// Drag ended: classify and dispatch. Long-press → already toggled `cleanMode` when the
-    /// timer fired (design.md §2: edge-triggered, NOT press-and-hold) — release only resets the
-    /// classification flag for the next gesture, it does NOT call `onHoldStart`/`onHoldEnd`
-    /// (retired, rb-ios-gesture-clean-mode-rewrite). Swipe → existing `handleSwipeEnded`. Tap →
-    /// `resolveTapAction(isLive:)` picks mute-toggle (+ toast) vs `model.togglePlayPause()` — this
-    /// single-tap ACTION dispatch is unchanged by rb-ios-live-double-tap-like-replay-extend.
-    /// `.togglePlayPause` additionally registers a likeable tap when the video is an already-ended
-    /// live replay (`model.isFinishedLiveReplay == true`) — see `registerLikeableTap()`'s doc
-    /// comment. Pure VOD (`isFinishedLiveReplay == false`) never calls it, unchanged from before
-    /// this extension.
+    /// Drag ended: classify and dispatch (`rb-ios-gesture-clean-mode-v2`, design R29 — SUPERSEDES
+    /// the retired R23 dispatch entirely; see this type's other doc comments for the individual
+    /// pieces). Long-press (`.hold`, only ever reachable when `isSeekable` scheduled the timer in
+    /// `handleDragChanged`) → stop 2×-speed seeking and reset the classification flag; it does
+    /// NOT call `onHoldStart`/`onHoldEnd` (retired). Swipe → existing `handleSwipeEnded`,
+    /// unaffected. Tap → `handleVideoTap(zone:)`, fed the zone recorded at press-start.
     ///
     /// Extracted (`internal`, not `private`) — same rationale as `handleDragChanged` above.
-    func handleDragEnded(_ translation: CGSize) {
+    func handleDragEnded(_ translation: CGSize, startX: CGFloat = 0, containerWidth: CGFloat = 1) {
         cancelPendingHold()
+        let zone = pressZone ?? Self.tapZone(startX: startX, containerWidth: containerWidth)
         switch Self.resolveGestureEnd(isHolding: longPressFired, translationHeight: translation.height) {
         case .hold:
             longPressFired = false
+            stopSpeedMode()
         case .swipeUp, .swipeDown:
             handleSwipeEnded(translationHeight: translation.height)
         case .tap:
-            switch Self.resolveTapAction(isLive: model.isLive) {
-            case .toggleMute:
-                handleLiveTap()
-            case .togglePlayPause:
-                model.togglePlayPause()
-                // rb-ios-live-double-tap-like-replay-extend: already-ended-live replay ALSO gets
-                // double-tap-to-like, layered on top of the unchanged single-tap
-                // togglePlayPause() above. Pure VOD (isFinishedLiveReplay == false) is excluded,
-                // unchanged from rb-ios-live-double-tap-like. Reaching this branch already implies
-                // model.isLive == false (resolveTapAction's own contract), so this reduces to
-                // exactly the `usesLiveChrome` formula (`isLive || isFinishedLiveReplay`) without
-                // needing to reference that private var here.
-                if model.isFinishedLiveReplay {
-                    registerLikeableTap()
-                }
-            }
+            handleVideoTap(zone: zone)
         }
         dragActive = false
+        pressZone = nil
     }
 
-    /// Schedule the long-press promotion: after `holdDelay` (~0.45s) of a sustained press,
-    /// toggle `cleanMode` ONCE (rb-ios-gesture-clean-mode-rewrite, design.md §2 — renamed from
-    /// `scheduleHold`). Unlike the retired `scheduleHold`, this has NO `isLive` guard: clean
-    /// mode applies unconditionally to both LIVE and VOD/replay (the retired
-    /// `allowsHoldToPause(isLive:)` gate is fully removed, not merely bypassed). Cancelled by
-    /// movement or release first (`cancelPendingHold`).
-    private func scheduleCleanModeToggle() {
-        let work = DispatchWorkItem {
+    /// Schedule the long-press promotion: after `holdDelay` (~0.45s) of a sustained press on
+    /// SEEKABLE content, start 2×-speed seeking (`rb-ios-gesture-clean-mode-v2`, design R29 —
+    /// renamed from the retired `scheduleCleanModeToggle`, which used to toggle `cleanMode`
+    /// here instead). Only ever scheduled when `isSeekable` (see `handleDragChanged`) — a real
+    /// live stream in progress or its upcoming preview never reaches this method at all, so
+    /// long-press has NO effect there (not merely "does nothing when it fires" — the timer is
+    /// never even armed). Cancelled by movement or release first (`cancelPendingHold`).
+    private func scheduleSpeedModeStart() {
+        pendingSpeedModeStartCancel = cleanModeTapSchedule(Self.holdDelay) {
             self.longPressFired = true
-            self.cleanMode = Self.cleanModeAfterLongPress(current: self.cleanMode)
+            self.speedMode = true
+            self.speedModeTickCancel = self.scheduleSpeedModeTick()
         }
-        holdWorkItem = work
-        DispatchQueue.main.asyncAfter(deadline: .now() + Self.holdDelay, execute: work)
+    }
+
+    /// Recursively re-schedules itself every `speedModeTickInterval` (0.5s) for as long as
+    /// `speedMode` stays `true`, calling `model.seekBy(speedModeExtraSeekPerTick)` (+
+    /// `seekByForTesting?(_:)`) on each tick — see `speedModeTickInterval`'s doc comment for the
+    /// "extra seek on top of normal 1× playback ≈ 2×" approximation this implements
+    /// (`rb-ios-gesture-clean-mode-v2`, design R29; no reference-ui-level playback-rate API
+    /// exists to call instead — design.md Decision 3).
+    ///
+    /// Reuses the SAME injected `cleanModeTapSchedule` primitive `handleVideoTap(zone:)` uses for
+    /// its deferred `cleanMode` toggle (not a second scheduling mechanism) — this is exactly the
+    /// generic reuse that property's doc comment describes.
+    ///
+    /// **Direction bug preserved on purpose**: this method does NOT read `pressZone` — every
+    /// tick seeks FORWARD (`+speedModeExtraSeekPerTick`) regardless of which half the press
+    /// started in. This mirrors design `screens.jsx`'s own `setSpeedMode('ff')` (literal, not
+    /// zone-derived) — the user explicitly confirmed (after two rounds of back-and-forth
+    /// clarification, see design.md Decision 3) that this is intentional, not a defect to fix.
+    ///
+    /// Stops itself the NEXT time it fires after `stopSpeedMode()` sets `speedMode = false` — it
+    /// checks the flag BEFORE doing anything, so no extra `seekBy` call and no further
+    /// re-scheduling happen once released.
+    private func scheduleSpeedModeTick() -> (() -> Void) {
+        cleanModeTapSchedule(Self.speedModeTickInterval) {
+            guard self.speedMode else { return }
+            self.model.seekBy(Self.speedModeExtraSeekPerTick)
+            self.seekByForTesting?(Self.speedModeExtraSeekPerTick)
+            self.speedModeTickCancel = self.scheduleSpeedModeTick()
+        }
+    }
+
+    /// Stop 2×-speed seeking (release, or a re-entrant `.hold` outcome) — resumes normal playback
+    /// speed. The recursive `scheduleSpeedModeTick()` chain self-terminates the NEXT time it
+    /// fires and observes `speedMode == false`; this ALSO cancels the currently-pending tick
+    /// immediately, so no further `seekBy` call happens even if the tick interval has not yet
+    /// elapsed.
+    private func stopSpeedMode() {
+        speedMode = false
+        speedModeTickCancel?()
+        speedModeTickCancel = nil
     }
 
     /// Cancel a pending (not-yet-fired) hold timer.
     private func cancelPendingHold() {
-        holdWorkItem?.cancel()
-        holdWorkItem = nil
+        pendingSpeedModeStartCancel?()
+        pendingSpeedModeStartCancel = nil
     }
 
     /// Show the centre mute toast and auto-dismiss it after `muteToastDuration` (~0.7s).
+    ///
+    /// ⚠️ NEVER CALLED by production code any more (`rb-ios-gesture-clean-mode-v2`) — see
+    /// `muteToastVisible`'s doc comment. Kept (not removed) for the same reason.
     private func showMuteToast() {
         muteToastWorkItem?.cancel()
         muteToastVisible = true
@@ -984,94 +1054,54 @@ public struct PlayerShellView: View {
         DispatchQueue.main.asyncAfter(deadline: .now() + Self.muteToastDuration, execute: work)
     }
 
-    /// LIVE video-area tap dispatch (rb-ios-live-double-tap-like; REVISED by
-    /// `rb-ios-live-tap-delay-mute-commit`). A single tap no longer commits the mute-toggle
-    /// SYNCHRONOUSLY — it now DEFERS it by `liveTapMuteCommitDelay` (~300ms), matching
-    /// `design/templates/minimal/screens.jsx`'s `onPointerUp` LIVE branch (`setTimeout(..., 300)`)
-    /// that `rb-ios-live-double-tap-like`'s design.md Decision 2 previously declined to follow. A
-    /// following SECOND tap landing within `doubleTapLikeWindow` (0.32s, unchanged) is recognized
-    /// by `registerLikeableTap()`'s return value as a double-tap: it CANCELS the pending commit
-    /// (so the user never sees the mute-toggle + toast flicker the old unconditional-sync version
-    /// caused) and fires `performLike()` + the heart burst INSTEAD. No following second tap within
-    /// the window → the deferred commit fires on its own after `liveTapMuteCommitDelay`, running
-    /// the SAME `onToggleMute?() + showMuteToast()` pair the old synchronous call used to run
-    /// inline.
+    /// Video-area single-tap dispatch (`rb-ios-gesture-clean-mode-v2`, design R29 — SUPERSEDES
+    /// the retired `handleLiveTap()` / `handleReplayTap()` / `registerLikeableTap()` trio and the
+    /// double-tap-to-like feature they protected). Every short tap toggles `cleanMode` — the
+    /// only question is WHEN:
     ///
-    /// **Reversal of Decision 2's two reasons for NOT deferring**: (1) the OLD synchronous
-    /// regression test `testTapDispatch_liveCallsOnToggleMuteNotTogglePlayPause` is UPDATED (not
-    /// broken) — it now injects a capturing fake `liveTapSchedule` and asserts against that,
-    /// rather than asserting `onToggleMute` synchronously. (2) mutating `@State` from inside an
-    /// escaping `DispatchWorkItem` closure is still NOT observable by a test holding a bare
-    /// `PlayerShellView` value outside a live SwiftUI hierarchy (§9.3's finding stands) — but this
-    /// method no longer needs that observability: `liveTapSchedule` is a ctor-injected function,
-    /// so a test-injected fake observes "scheduled" / "cancelled" / (by invoking the captured
-    /// action directly) "fired" WITHOUT ever reading `@State` back. The side effects the deferred
-    /// action fires (`onToggleMute?()`) and the double-tap branch fires (`performLikeForTesting?()`
-    /// via `registerLikeableTap()`) are plain stored closures — the SAME already-PROVEN-reliable
-    /// observability pattern this file has always relied on, just no longer gated behind a
-    /// synchronous call.
-    ///
-    /// Already-ended-live-replay (`model.isFinishedLiveReplay == true`) is UNAFFECTED — it never
-    /// calls this method; its single-tap action (`model.togglePlayPause()`, in `handleDragEnded`'s
-    /// `.togglePlayPause` case) stays synchronous, and its own double-tap-to-like (also via
-    /// `registerLikeableTap()`) has no pending commit to cancel.
-    private func handleLiveTap() {
-        if registerLikeableTap() {
-            // Double-tap recognized: cancel the FIRST tap's pending mute-commit instead of
-            // letting it fire — this is the whole point of deferring.
-            pendingLiveTapMuteCommitCancel?()
-            pendingLiveTapMuteCommitCancel = nil
+    /// - **Not seekable** (a real live stream in progress, or its upcoming preview): toggles
+    ///   `cleanMode` IMMEDIATELY. There is no double-tap outcome to protect against here (design
+    ///   R29: "直播進行中完全沒有雙擊反應"), so no defer is needed.
+    /// - **Seekable** (VOD or an already-ended live replay): DEFERS the toggle by
+    ///   `doubleTapSeekWindow` (0.32s) via the injected `cleanModeTapSchedule`, storing the
+    ///   returned cancel closure in `pendingCleanModeToggleCancel`. If a SECOND tap lands in the
+    ///   SAME `TapZone` within that window (`isDoubleTapSeekHit`), this method instead CANCELS
+    ///   the pending toggle (so the user never sees a `cleanMode` flicker — the exact class of
+    ///   bug the retired `live-tap-heart-delay-mute-commit-ios` / `-replay-ios` change pair
+    ///   fixed for the PREVIOUS gesture pairing, now prevented from EVER regressing under the
+    ///   NEW one) and commits `model.seekBy(±seekStepSeconds)` instead (+ `seekByForTesting?(_:)`)
+    ///   — `.fastForward` → `+10s`, `.rewind` → `-10s`. No following second tap in the window (or
+    ///   one landing in the OTHER half, which starts its OWN independent tracked/deferred pair
+    ///   instead of cancelling this one) → the deferred toggle fires on its own.
+    private func handleVideoTap(zone: TapZone) {
+        guard Self.isSeekable(isLive: model.isLive, isUpcoming: model.isUpcoming,
+                              isFinishedLiveReplay: model.isFinishedLiveReplay) else {
+            cleanMode.toggle()
+            return
+        }
+        let now = Date()
+        let elapsed = lastSeekTapAt.map { now.timeIntervalSince($0) }
+        let isDoubleTap = Self.isDoubleTapSeekHit(elapsedSinceLastSeekTap: elapsed,
+                                                  sameZone: lastSeekTapZone == zone,
+                                                  window: Self.doubleTapSeekWindow)
+        if isDoubleTap {
+            // Cancel the FIRST tap's pending `cleanMode` toggle instead of letting it fire — this
+            // is the whole point of deferring.
+            pendingCleanModeToggleCancel?()
+            pendingCleanModeToggleCancel = nil
+            lastSeekTapAt = nil
+            lastSeekTapZone = nil
+            let delta = zone == .fastForward ? Self.seekStepSeconds : -Self.seekStepSeconds
+            model.seekBy(delta)
+            seekByForTesting?(delta)
         } else {
-            // Single tap (so far): defer the mute-commit instead of firing immediately, giving a
-            // following second tap (within `doubleTapLikeWindow`) the chance to cancel it above.
-            pendingLiveTapMuteCommitCancel = liveTapSchedule(Self.liveTapMuteCommitDelay) {
-                self.onToggleMute?()
-                self.showMuteToast()
+            lastSeekTapAt = now
+            lastSeekTapZone = zone
+            pendingCleanModeToggleCancel = cleanModeTapSchedule(Self.doubleTapSeekWindow) {
+                self.pendingCleanModeToggleCancel = nil
+                self.cleanMode.toggle()
             }
         }
-    }
-
-    /// Shared double-tap-to-like bookkeeping (extracted from `handleLiveTap()`,
-    /// rb-ios-live-double-tap-like-replay-extend): compares this tap's time against
-    /// `lastLikeableTapAt`, and on a hit within `doubleTapLikeWindow`, fires
-    /// `model.performLike()` + bumps `liveHeartTick` (the SAME heart-burst path the LIVE bottom
-    /// bar's like button already uses, `rb-ios-live-bottom-heart-burst`) — this is layered ON TOP
-    /// OF, never instead of, whatever the tap's own single-tap action already did. Called from TWO
-    /// sites in `handleDragEnded`: `handleLiveTap()` (LIVE) and the `.tap` → `.togglePlayPause`
-    /// branch, gated at that call site on `model.isFinishedLiveReplay` (already-ended live replay
-    /// only — pure VOD never reaches this method). Extracting this once avoids duplicating the
-    /// time-window compare + side-effect triplet across both call sites.
-    ///
-    /// `@discardableResult` returns whether THIS call recognized a double-tap
-    /// (`rb-ios-live-tap-delay-mute-commit`) — `handleLiveTap()` consumes this to decide whether to
-    /// cancel the pending deferred mute-commit (double-tap) or schedule a fresh one (single tap so
-    /// far); the replay call site in `handleDragEnded` ignores it (its single-tap action,
-    /// `model.togglePlayPause()`, is unconditional and synchronous regardless of this outcome, so
-    /// it has nothing to cancel/schedule).
-    ///
-    /// Every mutation here is SYNCHRONOUS (no escaping closure captures `self`) — but unlike a
-    /// plain stored closure (e.g. `onToggleMute`), `@State` such as `lastLikeableTapAt` /
-    /// `liveHeartTick` is NOT reliably carried from one top-level `handleDragEnded` call into a
-    /// SEPARATE, later one when this view is not installed in a live SwiftUI hierarchy (see
-    /// `lastLikeableTapAt`'s doc comment) — hence `performLikeForTesting` for observability, and
-    /// `lastLikeableTapAtForTesting` on `init` for seeding, so tests only ever need to drive ONE
-    /// call.
-    @discardableResult
-    private func registerLikeableTap() -> Bool {
-        let now = Date()
-        let elapsed = lastLikeableTapAt.map { now.timeIntervalSince($0) }
-        let isDoubleTap = Self.isDoubleTapLikeHit(elapsedSinceLastLikeableTap: elapsed, window: Self.doubleTapLikeWindow)
-        if isDoubleTap {
-            // Consumed: a THIRD rapid tap starts a fresh pairing rather than chaining into a
-            // string of likes.
-            lastLikeableTapAt = nil
-            model.performLike()
-            liveHeartTick &+= 1
-            performLikeForTesting?()
-        } else {
-            lastLikeableTapAt = now
-        }
-        return isDoubleTap
     }
 
     // MARK: - Chrome gating (rb-ios-intro-chrome-minimal)
@@ -1165,14 +1195,31 @@ public struct PlayerShellView: View {
             // — see PlayerHeaderBarView). Genuinely-interactive controls (header buttons / rail /
             // bottom bar / pinned card) hit-test only their own content, so empty-area taps still
             // fall through to this layer.
-            Color.clear
-                .contentShape(Rectangle())
-                .gesture(
-                    DragGesture(minimumDistance: 0)
-                        .onChanged { value in handleDragChanged(value.translation) }
-                        .onEnded { value in handleDragEnded(value.translation) }
-                )
-                .accessibilityIdentifier(LBAccessibilityID.playerVideoSurface)
+            // Wrapped in a `GeometryReader` SOLELY to read the container's width for
+            // `TapZone` classification (`rb-ios-gesture-clean-mode-v2`, design R29) — the
+            // reader's own size is NOT the primary sizing mechanism for anything (this base
+            // view already fills its `ZStack` slot via `.frame(maxWidth: .infinity, maxHeight:
+            // .infinity)` below), avoiding the blank-under-`ImageRenderer` pitfall other
+            // `GeometryReader`-as-primary-sizing usages in this module document.
+            GeometryReader { proxy in
+                Color.clear
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                handleDragChanged(value.translation,
+                                                  startX: value.startLocation.x,
+                                                  containerWidth: proxy.size.width)
+                            }
+                            .onEnded { value in
+                                handleDragEnded(value.translation,
+                                               startX: value.startLocation.x,
+                                               containerWidth: proxy.size.width)
+                            }
+                    )
+                    .accessibilityIdentifier(LBAccessibilityID.playerVideoSurface)
+            }
 
             // Mode-branched chrome (design screens.jsx「VOD vs LIVE switches here」):
             //   UPCOMING → nothing drawn here (the UpcomingCountdownView background IS the
@@ -1222,12 +1269,13 @@ public struct PlayerShellView: View {
                     // Host-suppressible: a host that has already shown the hint once
                     // passes showGestureHints: false (it owns the persisted flag).
                     showGestureHints: showGestureHints,
-                    // 長按提示的 per-line `!model.isLive` gate 已退役（rb-ios-gesture-clean-mode-
-                    // rewrite，取代 rb-ios-live-hold-pause-suppress）：`showsHoldPauseHint` 恆傳
-                    // true（省略吃預設值即可）——乾淨模式提示不分直播/VOD 皆該顯示，只受整體
-                    // `showGestureHints` 控制。
-                    // 點擊提示文案改依 `model.isLive` 分流（單擊分流的同一組語意，見
-                    // `resolveTapAction(isLive:)`）。
+                    // `showsHoldPauseHint`（deprecated）恆吃預設值，不再有任何 gating 效果
+                    // （rb-ios-gesture-clean-mode-rewrite）。點擊提示文案自 `rb-ios-gesture-clean-
+                    // mode-v2`（design R29）起不分直播/VOD 恆為「切換乾淨模式」；長按提示改依
+                    // `isLive` 決定是否渲染——`isLive: model.isLive` 這裡餵的正是
+                    // `handleVideoTap(zone:)` / `isSeekable(isLive:isUpcoming:isFinishedLiveReplay:)`
+                    // 判斷用的同一個 `model.isLive`，故長按提示只在已結束直播回放（`isLive ==
+                    // false`）時顯示，對齊真直播進行中長按無對應動作的事實。
                     isLive: model.isLive,
                     // Real video overlay (placeholder bg suppressed) → fade the gesture
                     // hints; standalone / snapshot keeps them static (deterministic).
@@ -1355,6 +1403,10 @@ public struct PlayerShellView: View {
                     // 成同一顆 hostPill）——保留頂欄唯一的 minimize(PIP) 鈕不受影響（rb-ios-gesture-
                     // clean-mode-rewrite ADDED Requirement，見 `PlayerHeaderBarView.cleanMode`）。
                     cleanMode: cleanMode,
+                    // 乾淨模式限定靜音切換鈕（`rb-ios-gesture-clean-mode-v2`, design R29）：補回
+                    // 單擊切靜音手勢退役後的操作管道。`onToggleMute` 只在 `cleanMode == true` 期間
+                    // 非 nil——`PlayerHeaderBarView` 依此決定是否渲染這顆鈕（不佔位）。
+                    muted: model.muted,
                     onMinimize: { onMinimize?() },
                     // 訂閱徽章 → 容器注入的 gate（未登入 → AuthGate(.subscribe)）；未注入 fallback
                     // `model.toggleSubscribe()`（rb-ios-subscribe-login-gate）。與 info pill 共用。
@@ -1362,16 +1414,19 @@ public struct PlayerShellView: View {
                     // Host badge tap → open the VideoInfoPanel (design LBPHostBadge →
                     // video_info; presentation-only, replaces the removed VOD rail
                     // `more` pill). Same presentation toggle the `more` pill used.
-                    onTapHostBadge: { withAnimation { infoPanelPresented.toggle() } })
+                    onTapHostBadge: { withAnimation { infoPanelPresented.toggle() } },
+                    onToggleMute: cleanMode ? { onToggleMute?() } : nil)
 
                 Spacer(minLength: 0)
 
                 // Side rail is VOD-ONLY chrome (design screens.jsx gates `LBPSideRail`
                 // on `!isLive`; upcoming wears the slim LIVE bar instead). In LIVE /
                 // upcoming the bottom bar (below) replaces it; the rail anchors HIGHER
-                // (bottom ≈80) so the separate floating bag button (below) can sit lower
-                // next to the mini-cart strip (design `LBPSideRail` bottom:80 vs
-                // `LBPBagButton` bottom:16). Suppressed only during the VOD OPENING sequence
+                // (bottom ≈68, `rb-ios-gesture-clean-mode-v2`: was 80, lowered to keep the
+                // same visual gap now that `FloatingBagButtonView` below is smaller) so the
+                // separate floating bag button (below) can sit lower next to the mini-cart
+                // strip (design `LBPSideRail` bottom:68 vs `LBPBagButton` bottom:16).
+                // Suppressed only during the VOD OPENING sequence
                 // (full-screen loader `.loading` / intro MP4 `.splash`) — from `.buffering`
                 // onward the rail shows (rb-ios-vod-rail-show-on-buffering). Additionally hidden
                 // while actively dragging the playback-progress bar
@@ -1395,7 +1450,7 @@ public struct PlayerShellView: View {
                                 handleRailTap(kind)
                             })
                             .padding(.trailing, 12)
-                            .padding(.bottom, 80 + scrubChromeLiftIfExpanded)
+                            .padding(.bottom, 68 + scrubChromeLiftIfExpanded)
                     }
                 }
             }
@@ -1514,24 +1569,34 @@ public struct PlayerShellView: View {
 
             // Center gesture-feedback overlays. ZStack centers them.
             //
-            // Paused overlay (rb-ios-gesture-clean-mode-rewrite, supersedes the retired
-            // `GesturePauseIconView`/`isHolding` pairing): driven by the REAL `model.isPlaying`
-            // (not a gesture transient) — shows for as long as the engine is actually paused,
-            // however that pause was triggered (a VOD/replay tap via `resolveTapAction`, or an
-            // SDK-internal lifecycle `pause()`). UNLIKE the retired static icon, this overlay IS
-            // interactive (two buttons), so it does NOT carry `.allowsHitTesting(false)`.
+            // Central paused overlay RETIRED (`rb-ios-gesture-clean-mode-v2`, design R29,
+            // supersedes `rb-ios-gesture-clean-mode-rewrite`'s interactive `PlaybackPausedOverlayView`
+            // — see that view's own file header for the full history). VOD / already-ended-live-
+            // replay play/pause is now reachable via `PlaybackProgressBarView`'s existing expanded-
+            // state play/pause button instead (composed further below; `isExpanded` already
+            // includes `cleanMode`).
             //
-            // Composition condition is the pure `showsPlaybackPausedOverlay` (see its doc comment
-            // above `isMainPlaybackPhase` for the full `isMain` / `isScrubbing` / `isLive`
-            // rationale, incl. why `isScrubbing` / `isLive` were added by
-            // rb-ios-player-chrome-icon-and-overlay-visibility-fixes and why they are extracted as
-            // a pure function rather than left inline).
-            if showsPlaybackPausedOverlay {
-                PlaybackPausedOverlayView(
-                    theme: theme,
-                    muted: model.muted,
-                    onToggleMute: onToggleMute,
-                    onResume: { model.togglePlayPause() })
+            // 「退出乾淨模式」小圓鈕（`rb-ios-gesture-clean-mode-v2`, design R29 ADDED）：`cleanMode
+            // == true` 時顯示，點擊即退出。單一入口涵蓋 VOD/回放與 LIVE 兩種版型（不要求逐位元組對齊
+            // 設計稿分開兩處座標——語意正確即可，見 design.md Non-Goals）。
+            if cleanMode {
+                VStack(spacing: 0) {
+                    Spacer(minLength: 0)
+                    HStack(spacing: 0) {
+                        Button(action: { cleanMode = false }) {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 14, weight: .semibold))
+                                .foregroundColor(.white)
+                                .frame(width: 36, height: 36)
+                                .background(Circle().fill(Color.black.opacity(0.45)))
+                        }
+                        .buttonStyle(PlainButtonStyle())
+                        .accessibilityIdentifier(LBAccessibilityID.cleanModeExitButton)
+                        Spacer(minLength: 0)
+                    }
+                }
+                .padding(.leading, 14)
+                .padding(.bottom, 16 + scrubChromeLiftIfExpanded)
             }
             // Mute toast: 0.7s tap-to-mute feedback (reads model.muted = the post-toggle state).
             // Non-interactive (allowsHitTesting false) so it never blocks the gesture layer /

@@ -199,6 +199,18 @@ public struct LivebuyPlayerPresenter: ViewModifier {
     /// is NOT redefined here, so the two floating surfaces share one fallback boundary.
     let position: String?
 
+    /// A host-incremented counter marking an "open intent" (e.g. a carousel tap), independent of
+    /// whether the target video's `id` actually differs from the one currently bound
+    /// (`ios-collapsible-player-reopen-same-video-fix`). `.onChange(of: video?.id)` alone cannot
+    /// catch "user re-taps the SAME video while it's floating" — SwiftUI's `onChange(of:)` only
+    /// fires when the value truly CHANGES, and re-binding the same id leaves `video?.id` byte-for-
+    /// byte unchanged. Bumping `openSignal` on every open attempt (even a same-id one) gives the
+    /// presenter an independent, always-firing-on-intent trigger to re-evaluate
+    /// `shouldReopenOnVideoChange`. DEFAULT `0` via the `livebuyPlayer(...)` convenience function —
+    /// a host that never passes it keeps this byte-for-byte at `0` forever, so its behaviour is
+    /// unaffected (this `onChange` never fires for it).
+    let openSignal: Int
+
     /// Full vs floating. `video == nil` is fully closed (this flag is only meaningful while
     /// a session exists). Reset on close.
     @State private var isMinimized: Bool = false
@@ -232,6 +244,39 @@ public struct LivebuyPlayerPresenter: ViewModifier {
     /// title); only this mirror redirects the badge derivation (rb-ios-floating-card-live-status-sync).
     @State private var isVideoLive: Bool = false
 
+    /// The presenter's designated initializer. Mirrors the synthesized memberwise init this type
+    /// relied on before this change (still the shape `livebuyPlayer(...)` calls with 5 arguments,
+    /// all `@State` properties defaulting), PLUS a test-only trailing parameter,
+    /// `isMinimizedForTesting`, that seeds `isMinimized`'s INITIAL `@State` value — the same
+    /// pattern used elsewhere in this package for a state-behind-a-real-render-pass test seam (see
+    /// `LivebuyLiveEntry`'s `fetchForTesting`). DEFAULT `false` keeps every existing call site
+    /// (including `livebuyPlayer(...)`, which never passes it) byte-for-byte unaffected.
+    ///
+    /// WHY THIS EXISTS (`ios-collapsible-player-reopen-same-video-fix`): `isMinimized` is private
+    /// `@State` with no read window, and SwiftUI's per-view-identity state storage means an
+    /// externally-held `LivebuyPlayerPresenter` VALUE never reflects state mutated by a LIVE render
+    /// pass — the only way to get a hosted presenter STARTING already-floating (without needing to
+    /// drive a full minimize interaction through a rendered `LivebuyPlayer`, which this test target
+    /// has no infrastructure to simulate) is to seed the INITIAL `@State` value at construction,
+    /// before SwiftUI ever mounts it. This lets a test reproduce "presenter is already floating,
+    /// host re-opens the SAME video" end-to-end through a REAL SwiftUI render pass, entirely via
+    /// this package's public/testable surface — no filesystem or private-state inspection needed.
+    init(
+        video: Binding<LBVideoItem?>,
+        config: LivebuyPlayerConfig,
+        themeOverride: ReferenceUITheme?,
+        position: String?,
+        openSignal: Int = 0,
+        isMinimizedForTesting: Bool = false
+    ) {
+        self._video = video
+        self.config = config
+        self.themeOverride = themeOverride
+        self.position = position
+        self.openSignal = openSignal
+        self._isMinimized = State(initialValue: isMinimizedForTesting)
+    }
+
     public func body(content: Content) -> some View {
         content
             // KEEP-ALIVE full player overlay (issue 5): the player is composed as a PERSISTENT
@@ -264,22 +309,29 @@ public struct LivebuyPlayerPresenter: ViewModifier {
                 // OURSELVES (composed `onVideoSwitched`) and latches `isInternalSwitch`. That is
                 // NOT a host-driven swap, so it MUST NOT auto-restore full-screen — it keeps the
                 // current minimize/full phase and only re-binds the shown video (D-2). Consume the
-                // latch and bail. (A host swap leaves the latch false → falls through to restore.)
-                let restore = shouldAutoRestoreOnBindingChange(
-                    isInternalSwitch: isInternalSwitch,
-                    newVideoId: newId,
-                    isMinimized: isMinimized)
+                // latch here (NOT inside `attemptReopen` — that latch is a `video?.id`-onChange-
+                // local concern, see `attemptReopen`'s doc) and skip reopen when it was set. (A
+                // host swap leaves the latch false → falls through to `attemptReopen`.)
+                let wasInternalSwitch = isInternalSwitch
                 isInternalSwitch = false   // consume the latch on every id change
-                if restore {
-                    withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
-                        isMinimized = false
-                    }
-                    committedOffset = .zero
-                    dragTranslation = .zero
+                if !wasInternalSwitch {
+                    attemptReopen(newVideoId: newId)
                 }
                 // Drive the opt-in cover bridge from the resulting phase (open / close / host-swap
                 // auto-restore / internal switch all change `video?.id`). Placed at the TAIL so a
-                // just-applied auto-restore (`isMinimized = false` above) is already reflected.
+                // just-applied auto-restore (inside `attemptReopen`) is already reflected.
+                syncWidgetCover()
+            }
+            // A host's OPEN INTENT (e.g. re-tapping the SAME carousel card while it's already
+            // floating) does NOT change `video?.id` — the `onChange` above never fires for it, so
+            // `shouldReopenOnVideoChange` never gets re-evaluated and the floating card is stuck
+            // (縮小後點回同一支影片無反應, `ios-collapsible-player-reopen-same-video-fix`). This
+            // independent trigger, keyed on a host-incremented counter instead of the video id,
+            // re-evaluates reopen on every open intent regardless of whether the id actually
+            // changed. Bypasses the `isInternalSwitch` latch entirely: `openSignal` changing never
+            // touches `video?.id`, so there is no "was this id change caused by us" question here.
+            .onChange(of: openSignal) { _ in
+                attemptReopen(newVideoId: video?.id)
                 syncWidgetCover()
             }
             // full ⇄ floating phase flips (minimize / restore-tap) drive the cover bridge too.
@@ -303,6 +355,32 @@ public struct LivebuyPlayerPresenter: ViewModifier {
     private func syncWidgetCover() {
         LivebuyWidgetVisibility.setWidgetsCovered(
             presenterWidgetCovered(hasVideo: video != nil, isMinimized: isMinimized))
+    }
+
+    /// Re-evaluates whether the presenter should end floating and re-present full-screen for
+    /// `newVideoId`, shared by BOTH reopen triggers — `onChange(of: video?.id)` (a host-driven id
+    /// CHANGE) and `onChange(of: openSignal)` (a host's open INTENT that may target the SAME id,
+    /// `ios-collapsible-player-reopen-same-video-fix`).
+    ///
+    /// Calls `shouldReopenOnVideoChange` DIRECTLY — NOT `shouldAutoRestoreOnBindingChange`. That
+    /// wrapper's ONLY job is disambiguating an in-player switch WE caused from a host-driven id
+    /// change (D-2), which is irrelevant here: `openSignal` changing never touches `video?.id`, so
+    /// there is no "was this id change caused by us" question to ask on that path, and the
+    /// `video?.id` caller already resolved that question itself (consuming `isInternalSwitch`)
+    /// BEFORE deciding whether to call this at all.
+    ///
+    /// Deliberately takes ONLY `newVideoId` — no `isInternalSwitch` parameter — so the latch stays
+    /// a `video?.id`-onChange-local concern and cannot leak into the `openSignal` path (design.md
+    /// Decision 1 / Risk).
+    private func attemptReopen(newVideoId: String?) {
+        guard shouldReopenOnVideoChange(newVideoId: newVideoId, isMinimized: isMinimized) else {
+            return
+        }
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) {
+            isMinimized = false
+        }
+        committedOffset = .zero
+        dragTranslation = .zero
     }
 
     /// The KEEP-ALIVE full player overlay (issue 5). Mounted whenever a session exists
@@ -516,13 +594,24 @@ public extension View {
     /// passes straight through — DEFAULT `nil` normalizes to the existing bottom-right resting
     /// corner, so existing call sites need zero changes. This SDK does not read `sdkConfig`
     /// itself (rb-ios-floating-widget-position); see `LivebuyPlayerPresenter.position`.
+    ///
+    /// `openSignal` is an optional host-incremented counter marking an "open intent" (e.g. a
+    /// carousel tap), independent of whether the target video's `id` actually differs from the
+    /// one already bound (`ios-collapsible-player-reopen-same-video-fix`). Pass a value that
+    /// increments on EVERY open attempt (including re-opening the SAME video while it is
+    /// floating) so the presenter reliably reopens even when `video`'s `id` doesn't change.
+    /// DEFAULT `0` — a host that never passes it keeps existing behaviour byte-for-byte
+    /// unchanged (re-tapping the same floating video stays a silent no-op, as before this
+    /// parameter existed); see `LivebuyPlayerPresenter.openSignal`.
     func livebuyPlayer(
         video: Binding<LBVideoItem?>,
         config: LivebuyPlayerConfig = LivebuyPlayerConfig(),
         theme: ReferenceUITheme? = nil,
-        position: String? = nil
+        position: String? = nil,
+        openSignal: Int = 0
     ) -> some View {
         modifier(LivebuyPlayerPresenter(
-            video: video, config: config, themeOverride: theme, position: position))
+            video: video, config: config, themeOverride: theme, position: position,
+            openSignal: openSignal))
     }
 }

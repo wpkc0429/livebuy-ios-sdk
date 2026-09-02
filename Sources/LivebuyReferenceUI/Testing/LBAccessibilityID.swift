@@ -27,10 +27,21 @@ public enum LBAccessibilityID {
 
     /// Central paused-overlay mute-toggle button (44px, `PlaybackPausedOverlayView`,
     /// rb-ios-gesture-clean-mode-rewrite — takes over from the retired
-    /// `GesturePauseIconView`).
+    /// `GesturePauseIconView`). RETIRED (`rb-ios-gesture-clean-mode-v2`) — the overlay is
+    /// no longer composed by `PlayerShellView`; id kept (not removed) for the same reason
+    /// `PlaybackPausedOverlayView.swift` itself is kept, see that file's header comment.
     public static let pausedOverlayMuteButton = "lb_paused_overlay_mute_button"
-    /// Central paused-overlay resume button (64px, `PlaybackPausedOverlayView`).
+    /// Central paused-overlay resume button (64px, `PlaybackPausedOverlayView`). RETIRED
+    /// (`rb-ios-gesture-clean-mode-v2`) — see `pausedOverlayMuteButton` above.
     public static let pausedOverlayResumeButton = "lb_paused_overlay_resume_button"
+
+    /// Clean-mode-only mute-toggle button in `PlayerHeaderBarView`'s `iconCluster`
+    /// (`rb-ios-gesture-clean-mode-v2`, design R29) — restores the mute affordance the
+    /// retired single-tap-on-video-area gesture used to carry.
+    public static let playerHeaderMuteButton = "lb_player_header_mute_button"
+    ///「退出乾淨模式」small round button, shown only while `cleanMode == true`
+    /// (`rb-ios-gesture-clean-mode-v2`, design R29).
+    public static let cleanModeExitButton = "lb_clean_mode_exit_button"
 
     public static let operationRail = "lb_operation_rail"
     public static let railLike = "lb_rail_like"
@@ -145,6 +156,10 @@ public enum LBAccessibilityID {
     public static let activitySheetScrim = "lb_activity_sheet_scrim"
     /// 「立即參加」/「已參加」CTA。
     public static let activitySheetCta = "lb_activity_sheet_cta"
+    /// 分頁圓點列（`activity-sheet-pagination-reference-ui-ios`）——只在 `pageCount > 1`
+    /// 時出現。獨立於 `winClaimPaginationDots`（兩個彈窗是不同螢幕物件，共用 id 會讓 E2E
+    /// 無法區分究竟是哪個彈窗的分頁圓點）。
+    public static let activitySheetPaginationDots = "lb_activity_sheet_pagination_dots"
 
     // MARK: - Family 3 — product + sheets
 

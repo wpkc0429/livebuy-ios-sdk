@@ -230,18 +230,35 @@ public struct PlayerHeaderBarView: View {
     /// requirement. Default `false` keeps every existing call site byte-identical.
     public let cleanMode: Bool
 
+    /// Current mute state (`PlayerShellModel.muted`) — selects the clean-mode-only
+    /// mute-toggle button's glyph (`rb-ios-gesture-clean-mode-v2`, design R29). Only meaningful while
+    /// `onToggleMute` is non-nil (i.e. `cleanMode == true`); ignored (and the button not
+    /// drawn at all) otherwise. Default `false` keeps every existing call site byte-identical.
+    public let muted: Bool
+
     // -- Optional action closures (LAST, each defaulting to nil) ----------------
     //
-    // The header's top-right is a SINGLE minimize affordance (design `LBPTopBar`
-    // pip): tap → `onMinimize` (host collapses into the bottom-right floating widget).
-    // Subscribe stays on the avatar badge. info / share live in the side rail; mute is
-    // the tap-to-unmute gesture on the video area — neither is a header control.
+    // The header's top-right holds the minimize affordance (design `LBPTopBar` pip:
+    // tap → `onMinimize`, host collapses into the bottom-right floating widget) and, ONLY
+    // during `cleanMode` (`rb-ios-gesture-clean-mode-v2`, design R29), a mute-toggle button
+    // immediately to its left — the single-tap-on-video-area mute gesture retired when R29
+    // made every short tap toggle `cleanMode` instead, so this button restores the muting
+    // affordance while clean mode hides the rest of the chrome. Subscribe stays on the
+    // avatar badge. info / share live in the side rail.
 
     /// Tap on the top-right minimize button → host collapses the player into the
     /// bottom-right floating preview (`FloatingWidgetView`). nil → drawn but inert.
     public var onMinimize: (() -> Void)?
     /// Tap on the subscribe affordance (the small badge on the avatar).
     public var onSubscribe: (() -> Void)?
+
+    /// Tap on the clean-mode mute-toggle button (`rb-ios-gesture-clean-mode-v2`, design
+    /// R29). `PlayerShellView` passes a non-nil closure ONLY while `cleanMode == true`
+    /// (forwarding to the same host-wired mute path the retired video-area tap gesture
+    /// used); `nil` (default, and whenever `cleanMode == false`) → the button is NOT drawn
+    /// at all (not merely hidden — see `iconCluster`), so non-clean-mode baselines stay
+    /// byte-identical.
+    public var onToggleMute: (() -> Void)?
 
     /// Host-configurable subscribe-badge visibility (rb-ios-subscribe-favorite-visibility-toggle).
     /// See the `ShowSubscribeKey` / `EnvironmentValues.lbShowSubscribe` doc comments above for why
@@ -269,9 +286,11 @@ public struct PlayerHeaderBarView: View {
         titleScroll: Bool = true,
         startPhase: LBStartScreenPhase = .done,
         cleanMode: Bool = false,
+        muted: Bool = false,
         onMinimize: (() -> Void)? = nil,
         onSubscribe: (() -> Void)? = nil,
-        onTapHostBadge: (() -> Void)? = nil
+        onTapHostBadge: (() -> Void)? = nil,
+        onToggleMute: (() -> Void)? = nil
     ) {
         self.theme = theme
         self.title = title
@@ -287,9 +306,11 @@ public struct PlayerHeaderBarView: View {
         self.titleScroll = titleScroll
         self.startPhase = startPhase
         self.cleanMode = cleanMode
+        self.muted = muted
         self.onMinimize = onMinimize
         self.onSubscribe = onSubscribe
         self.onTapHostBadge = onTapHostBadge
+        self.onToggleMute = onToggleMute
     }
 
     // MARK: - Design tokens (literal decorative hex from live-chrome.jsx)
@@ -695,27 +716,62 @@ public struct PlayerHeaderBarView: View {
     // share live in the side rail; mute is the tap-to-unmute gesture on the video area.
 
     /// Minimize (PIP) glyph base size in points, before `theme.fontScale` (design
-    /// `Icons.pip size={18}`, `design/templates/minimal/sdk-components.jsx:273`).
+    /// `Icons.pip size={20}`, `design/templates/minimal/sdk-components.jsx:273`).
     /// Extracted as a `static let` (mirroring this file's `marqueeSpeedPointsPerSecond` /
     /// `marqueeGap` pattern) so it is directly unit-testable without rendering
     /// (`rb-ios-player-chrome-icon-and-overlay-visibility-fixes`). `rb-ios-icon-parity`
     /// aligned this glyph's SHAPE only (hand-drawn `PipGlyph` replacing SF Symbol
     /// `pip.enter`) and left the SIZE at a stale `16pt` — the same class of gap
     /// `rb-ios-bag-icon-enlarge` already fixed once for the bag glyph.
-    static let minimizeGlyphSize: CGFloat = 18
+    /// `rb-ios-player-chrome-icon-and-overlay-visibility-fixes` aligned it to `18pt`;
+    /// `player-header-minimize-icon-20px-ios` re-aligns it to `20pt` after the design
+    /// itself was re-approved from 18 to 20 (commit `ae8b1b2e`).
+    static let minimizeGlyphSize: CGFloat = 20
 
     /// A 36×36 round glass icon button (live-chrome.jsx iconBtn) drawing the
     /// hand-drawn `PipGlyph` (design `Icons.pip` — frame + inset rect + directional
     /// arrow, rb-ios-icon-parity; replaces SF Symbol `pip.enter`). Inert when
     /// `onMinimize` is nil — still rendered so the chrome is visually complete.
+    ///
+    /// Immediately to its LEADING side, a clean-mode-only mute-toggle button
+    /// (`rb-ios-gesture-clean-mode-v2`, design R29) draws ONLY when `onToggleMute` is
+    /// non-nil (i.e. `PlayerShellView` is in `cleanMode`) — see `muteToggleButton`. Group,
+    /// not HStack: `Group { if ... }` keeps this iOS-14-safe (D-7) and lets the mute button
+    /// occupy zero space (not merely zero pixels) when absent, so a non-clean-mode
+    /// `iconCluster` renders byte-identical to before this change.
     private var iconCluster: some View {
-        Button(action: { onMinimize?() }) {
-            PipGlyph(size: Self.minimizeGlyphSize * theme.fontScale, color: onGlass)
+        HStack(spacing: 8) {
+            Group {
+                if onToggleMute != nil {
+                    muteToggleButton
+                }
+            }
+            Button(action: { onMinimize?() }) {
+                PipGlyph(size: Self.minimizeGlyphSize * theme.fontScale, color: onGlass)
+                    .frame(width: 36, height: 36)
+                    .background(Circle().fill(iconGlass))
+            }
+            .buttonStyle(PlainButtonStyle())
+            .accessibilityIdentifier(LBAccessibilityID.playerMinimize)
+        }
+    }
+
+    /// The clean-mode-only mute-toggle button (`rb-ios-gesture-clean-mode-v2`, design R29):
+    /// a 36×36 round glass icon button matching `iconCluster`'s minimize button styling,
+    /// restoring the mute affordance the retired single-tap-on-video-area gesture used to
+    /// carry once R29 made every short tap toggle `cleanMode` instead. Glyph mirrors
+    /// `GestureMuteToastView`'s existing SF Symbol convention (`speaker.slash.fill` muted /
+    /// `speaker.wave.2.fill` unmuted).
+    private var muteToggleButton: some View {
+        Button(action: { onToggleMute?() }) {
+            Image(systemName: muted ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                .font(.system(size: 15, weight: .semibold))
+                .foregroundColor(onGlass)
                 .frame(width: 36, height: 36)
                 .background(Circle().fill(iconGlass))
         }
         .buttonStyle(PlainButtonStyle())
-        .accessibilityIdentifier(LBAccessibilityID.playerMinimize)
+        .accessibilityIdentifier(LBAccessibilityID.playerHeaderMuteButton)
     }
 
     // MARK: - Pure helpers
