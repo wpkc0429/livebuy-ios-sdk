@@ -5,6 +5,25 @@ All notable changes to the Livebuy iOS SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.13.1] - 2026-09-03
+
+> **Patch.** 兩項獨立修正：① 補齊 v4.13.0（R29 播放器手勢三度改版）design.md 當時刻意記錄的
+> Non-Goals 延後項——乾淨模式退出鈕像素對齊設計稿；② `CollapsibleLivebuyPlayer` 換片轉發修復
+> host 回呼被靜默覆蓋的問題。**純 reference-ui 視覺/接線修正，零 core / 零 LivebuyUI
+> （template）層觸碰**。**iOS + Android 兩端 lockstep**——Android 尚未跟進第②項（進行中，另行
+> 發版）。
+
+### Fixed
+
+- 乾淨模式退出鈕 icon 改為 `DetailGlyph`（對齊設計稿 `Icons.detail`：帶邊框圓角矩形＋3 排
+  dot+line 清單造型），取代先前的 SF Symbol `xmark`（X／關閉符號）。
+- 退出鈕底部位移改依 `model.isLive` 分流：LIVE 維持 `16pt`；VOD / 已結束直播回放由 `16pt`
+  修正為 `52pt`，對齊設計稿座標。
+- **`LivebuyPlayerPresenter` 內部組合 `composedConfig.onVideoSwitchedItem` 時，原本直接覆蓋
+  掉 host 自己在 `LivebuyPlayerConfig` 設定的同名回呼，host 的設定會被靜默吃掉、永遠不會被
+  呼叫**——改為先呼叫 host 原始設定、再執行 presenter 自己更新 binding 的內部邏輯，對齊既有
+  RN/Flutter 對等 seam 的 chain 模式。
+
 ## [4.13.0] - 2026-09-02
 
 > **Minor.** 延續 v4.12.0，本輪 iOS 主打**播放器手勢三度改版（R29）**：短擊切換「乾淨模式」、

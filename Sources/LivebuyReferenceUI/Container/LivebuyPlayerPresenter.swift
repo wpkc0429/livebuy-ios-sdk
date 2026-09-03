@@ -431,6 +431,13 @@ public struct LivebuyPlayerPresenter: ViewModifier {
         // current id to the new id before firing this, so the new `videoId` prop makes
         // `updateUIViewController`'s cover-guard a no-op (D-4).
         c.onVideoSwitchedItem = { item in
+            // rb-ios-collapsible-player-switched-item-chain-not-overwrite: forward to the HOST's own
+            // original `onVideoSwitchedItem` (if any) FIRST — unconditionally, before the internal
+            // guard below — so a host that also wires this seam (e.g. its own analytics, or a session
+            // mirror like RN / Flutter's equivalent seam already lets a host do) is never silently
+            // dropped. This presenter used to OVERWRITE `c.onVideoSwitchedItem` entirely, discarding
+            // whatever `config.onVideoSwitchedItem` the host set.
+            config.onVideoSwitchedItem?(item)
             guard item.id != video?.id else { return }
             isInternalSwitch = true
             video = item
@@ -458,6 +465,19 @@ public struct LivebuyPlayerPresenter: ViewModifier {
     /// unit test read the resolved resting corner off a freshly-constructed presenter without
     /// mounting SwiftUI — the same shape as `LivebuyLiveEntry.appearedForTesting`.
     var resolvedPositionForTesting: LBFloatingEntryPosition { resolvedPosition }
+
+    /// Test-only read window (internal-testability; NOT public, host apps never see this): lets a
+    /// unit test read the composed config (with the presenter's internal seam overrides applied) off
+    /// a freshly-constructed presenter WITHOUT mounting SwiftUI — same shape as
+    /// `resolvedPositionForTesting` above. `composedConfig` itself needs no live render pass to build
+    /// (it only CAPTURES `self` in closures; nothing inside it is evaluated until a returned closure
+    /// is actually invoked), so a test can construct a presenter directly, read this, invoke one of
+    /// the returned closures (e.g. `onVideoSwitchedItem`) itself, and assert on the result — this is
+    /// how `rb-ios-collapsible-player-switched-item-chain-not-overwrite` proves the
+    /// `onVideoSwitchedItem` chain-vs-override behavior without needing the full
+    /// `LivebuyPlayerViewController` / network pipeline that a real in-place switch would otherwise
+    /// require.
+    var composedConfigForTesting: LivebuyPlayerConfig { composedConfig }
 
     /// Full-bleed layer that anchors the floating preview card at the `resolvedPosition` corner
     /// and applies the (clamped) drag offset. A `GeometryReader` provides the container size for

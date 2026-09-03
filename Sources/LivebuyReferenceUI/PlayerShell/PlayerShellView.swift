@@ -665,6 +665,21 @@ public struct PlayerShellView: View {
         (scrubBarExpanded && !isScrubbing) ? Self.scrubChromeLift : 0
     }
 
+    /// The "exit clean mode" button's full bottom offset: the `isLive`-branched base value (see
+    /// `cleanModeExitButtonBaseBottomInset(isLive:)`'s doc comment) plus the existing, independent
+    /// dynamic `scrubChromeLiftIfExpanded` lift — `rb-ios-clean-mode-exit-icon-fix`.
+    private var cleanModeExitButtonBottomInset: CGFloat {
+        Self.cleanModeExitButtonBaseBottomInset(isLive: model.isLive) + scrubChromeLiftIfExpanded
+    }
+
+    /// Test seam exposing the private `cleanModeExitButtonBottomInset` computed property
+    /// (`*ForTesting` naming per `docs/unit-test-discipline.md` §3; mirrors the existing
+    /// `showsLiveNowPillForTesting` precedent above) so a test can construct a REAL
+    /// `PlayerShellView` and assert the CALL-SITE wiring — i.e. that `model.isLive` is actually
+    /// threaded through to `cleanModeExitButtonBaseBottomInset(isLive:)` — rather than only
+    /// exercising the pure static function with hand-picked arguments.
+    var cleanModeExitButtonBottomInsetForTesting: CGFloat { cleanModeExitButtonBottomInset }
+
     /// Touch-down on the progress bar → begin a scrub: cancel any pending collapse, mark both
     /// `isScrubbing` and `scrubBarExpanded` true, report both transitions.
     private func handleScrubStarted() {
@@ -925,6 +940,23 @@ public struct PlayerShellView: View {
     static func isDoubleTapSeekHit(elapsedSinceLastSeekTap elapsed: TimeInterval?, sameZone: Bool, window: TimeInterval) -> Bool {
         guard let elapsed = elapsed, sameZone else { return false }
         return elapsed <= window
+    }
+
+    /// PURE: base bottom offset (pt, BEFORE the dynamic post-scrub-release `scrubChromeLiftIfExpanded`
+    /// lift) for the "exit clean mode" button — `rb-ios-clean-mode-exit-icon-fix`, aligning the
+    /// button to design `screens.jsx`'s two separate clean-mode-exit-button branches: the LIVE
+    /// branch (`cleanMode && !isReplay`) anchors at `bottom: 16 + safeArea.bottom`; the VOD/replay
+    /// branch anchors at `bottom: 16 + safeArea.bottom + 36` (i.e. `52`) — that `+36` there is a
+    /// FIXED clearance baked into that design branch (it always renders with the transport bar
+    /// expanded), NOT this view's own dynamic `scrubChromeLiftIfExpanded`, which is layered on top
+    /// separately by the caller. `isLive` mirrors `model.isLive` (`liveStatus == 1`, mutually
+    /// exclusive with VOD / finished-live replay — see `isSeekable`'s doc comment above), matching
+    /// the design's LIVE-vs-VOD/replay split exactly. This view is documented (file header) as
+    /// safe-area-inset-free manual padding — no other bottom-anchored element in this file reads a
+    /// dynamic safe-area value, so neither does this one (see design.md Decision 2 for the full
+    /// rationale); the `52`/`16` constants are the complete story, not a partial one.
+    static func cleanModeExitButtonBaseBottomInset(isLive: Bool) -> CGFloat {
+        isLive ? 16 : 52
     }
 
     /// Drag in progress: on the first change, record which half the press started in
@@ -1576,17 +1608,17 @@ public struct PlayerShellView: View {
             // state play/pause button instead (composed further below; `isExpanded` already
             // includes `cleanMode`).
             //
-            // 「退出乾淨模式」小圓鈕（`rb-ios-gesture-clean-mode-v2`, design R29 ADDED）：`cleanMode
-            // == true` 時顯示，點擊即退出。單一入口涵蓋 VOD/回放與 LIVE 兩種版型（不要求逐位元組對齊
-            // 設計稿分開兩處座標——語意正確即可，見 design.md Non-Goals）。
+            // 「退出乾淨模式」小圓鈕（`rb-ios-gesture-clean-mode-v2`, design R29 ADDED；icon +
+            // 位置由 `rb-ios-clean-mode-exit-icon-fix` 對齊設計稿）：`cleanMode == true` 時顯示，
+            // 點擊即退出。單一入口涵蓋 VOD/回放與 LIVE 兩種版型，icon 為 `DetailGlyph`（對齊
+            // 設計稿 `Icons.detail`），bottom 依 `model.isLive` 分流為 16（LIVE）/ 52（VOD/回放）
+            // （見 `cleanModeExitButtonBaseBottomInset(isLive:)` doc comment）。
             if cleanMode {
                 VStack(spacing: 0) {
                     Spacer(minLength: 0)
                     HStack(spacing: 0) {
                         Button(action: { cleanMode = false }) {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 14, weight: .semibold))
-                                .foregroundColor(.white)
+                            DetailGlyph(size: 18, color: .white)
                                 .frame(width: 36, height: 36)
                                 .background(Circle().fill(Color.black.opacity(0.45)))
                         }
@@ -1596,7 +1628,7 @@ public struct PlayerShellView: View {
                     }
                 }
                 .padding(.leading, 14)
-                .padding(.bottom, 16 + scrubChromeLiftIfExpanded)
+                .padding(.bottom, cleanModeExitButtonBottomInset)
             }
             // Mute toast: 0.7s tap-to-mute feedback (reads model.muted = the post-toggle state).
             // Non-interactive (allowsHitTesting false) so it never blocks the gesture layer /
