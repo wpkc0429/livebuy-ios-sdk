@@ -105,7 +105,18 @@ public final class ProductSheetsModel: ObservableObject {
 
     /// Playback-mode signals for the product-row thumbnail overlay
     /// (rb-ios-product-row-status-overlay). Mirrored from the template
-    /// `header.isLive` / `playbackProgress.isReplay` / `playbackProgress.position`.
+    /// `header.isLive` / `header.isFinishedLiveReplay` / `playbackProgress.position`.
+    ///
+    /// `isReplay` here means a **finished-live replay** (`header.isFinishedLiveReplay`,
+    /// `type==3 || (type==2 && liveStatus==3)`) — NOT the narrower DVR
+    /// behind-live-edge concept `playbackProgress.isReplay` that `PlayerShellModel`
+    /// (family-1) separately mirrors for its own, unrelated live-chrome purpose
+    /// (`PlayerShellModel.isReplay`). `playbackProgress.isReplay` is only ever `true`
+    /// while a stream is ACTIVELY live and the viewer has scrubbed behind the live
+    /// edge — for any finished-live replay it is permanently `false`, so reading it
+    /// here previously mis-classified finished-live-replay rows as `.vod`
+    /// (rb-ios-product-row-replay-flag-fix). MUST NOT revert to
+    /// `playbackProgress.isReplay` — see the two assignments below.
     @Published public private(set) var isLive: Bool
     @Published public private(set) var isReplay: Bool
     @Published public private(set) var position: Double
@@ -236,7 +247,7 @@ public final class ProductSheetsModel: ObservableObject {
             introducingProductId: t.productOverlay.introducingProductId,
             liveActiveProducts: t.liveActiveProducts,
             isLive: t.header.isLive,
-            isReplay: t.playbackProgress.isReplay,
+            isReplay: t.header.isFinishedLiveReplay,
             position: t.playbackProgress.position,
             detail: t.productSheet.detail,
             variant: t.variantPicker.state,
@@ -319,7 +330,7 @@ public final class ProductSheetsModel: ObservableObject {
         introducingProductId = t.productOverlay.introducingProductId
         liveActiveProducts = t.liveActiveProducts
         isLive = t.header.isLive
-        isReplay = t.playbackProgress.isReplay
+        isReplay = t.header.isFinishedLiveReplay
         position = t.playbackProgress.position
         detail = t.productSheet.detail
         variant = t.variantPicker.state

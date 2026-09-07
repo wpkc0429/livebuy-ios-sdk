@@ -14,13 +14,16 @@ public enum ProductRowMode: Equatable {
 /// / rb-ios-live-hide-product-share / rb-ios-product-row-vod-intro-mask). The play
 /// affordance and the「介紹中」label are mutually exclusive on any single row.
 ///
-/// - VOD (rb-ios-product-row-vod-intro-mask, design R36): THREE-phase, driven by
-///   `position` vs the product's `[beginTime, endTime)` window — `upcoming`
-///   (`position < beginTime`) → play affordance; `now`
-///   (`beginTime <= position < endTime`, i.e. the product is currently in core's
-///   `LBPlaybackProgress.vodActiveProducts`) → 介紹中 (`showIntroducing`); `done`
-///   (`position >= endTime`) → NEITHER (no overlay at all — a VOD-exclusive third
-///   state; `.live` / `.replay` below have no equivalent). Missing `beginTime` or
+/// - VOD (rb-ios-product-row-vod-done-state-removed, 2026-09-07 撤回
+///   rb-ios-product-row-vod-intro-mask 的三態): TWO-phase, mirroring `.replay`
+///   below — driven by `position` vs the product's `[beginTime, endTime)`
+///   window. `now` (`beginTime <= position < endTime`, i.e. the product is
+///   currently in core's `LBPlaybackProgress.vodActiveProducts`) → 介紹中
+///   (`showIntroducing`); everything else (`position < beginTime` OR
+///   `position >= endTime`) → the play affordance (`showPlay`). There is no
+///   "done" state for VOD anymore — a row always shows one overlay or the
+///   other, same structure as `.replay` (visual skin still differs: full-bleed
+///   equalizer mask vs replay's bottom banner). Missing `beginTime` or
 ///   `endTime` falls back to the pre-existing behavior — always the play
 ///   affordance, so a VOD product with no scheduled intro window never silently
 ///   loses its seek affordance. Share icon shown regardless of phase (a VOD
@@ -36,6 +39,14 @@ public enum ProductRowMode: Equatable {
 ///   `isNarrating` is ignored for replay (`introducingProductId` is non-nil only
 ///   during active live). Share icon shown — replay products have real
 ///   `beginTime`/`endTime`, same semantics as VOD.
+///   EXCEPTION (rb-ios-replay-never-introduced-no-ui): `beginTime == 0 &&
+///   endTime == 0` is a distinct backend sentinel meaning this product was
+///   NEVER narrated during the original live broadcast (not merely "missing
+///   data", which is the existing `nil` fallback below) — a zero-length
+///   `[0, 0]` window can never legitimately be a real intro segment. Neither
+///   the play affordance nor 介紹中 SHALL show for that row (both `false`) —
+///   a THIRD, distinct state from the two-phase "always show something"
+///   description above, deliberately scoped to this one sentinel.
 public enum ProductRowOverlay {
     public static func decide(
         mode: ProductRowMode,
@@ -51,19 +62,29 @@ public enum ProductRowOverlay {
                 // No scheduled intro window — pre-existing always-play fallback.
                 return (showPlay: true, showIntroducing: false, showShare: showShare)
             }
-            if position < begin {
-                return (showPlay: true, showIntroducing: false, showShare: showShare)  // upcoming
-            } else if position < end {
-                return (showPlay: false, showIntroducing: true, showShare: showShare)  // now
-            } else {
-                return (showPlay: false, showIntroducing: false, showShare: showShare) // done
-            }
+            let isNow = begin <= position && position < end
+            return (showPlay: !isNow, showIntroducing: isNow, showShare: showShare)
         case .live:
             return (showPlay: false, showIntroducing: isNarrating, showShare: showShare)
         case .replay:
+            if isReplayNeverIntroduced(beginTime: beginTime, endTime: endTime) {
+                // Never introduced during the original live broadcast — no play
+                // affordance, no 介紹中 (rb-ios-replay-never-introduced-no-ui).
+                return (showPlay: false, showIntroducing: false, showShare: showShare)
+            }
             let inWindow = beginTime != nil && endTime != nil
                 && beginTime! <= position && position <= endTime!
             return (showPlay: !inWindow, showIntroducing: inWindow, showShare: showShare)
         }
+    }
+
+    /// The `.replay`-only「never introduced」sentinel (rb-ios-replay-never-introduced-no-ui):
+    /// `beginTime == 0 && endTime == 0` is a backend sentinel meaning this product was NEVER
+    /// narrated during the original live broadcast — distinct from `nil` (missing data).
+    /// Exposed (not `private`) so callers that need to know "is this row's thumbnail tap
+    /// meaningful" (e.g. the seek-and-dismiss tap handler) can reuse the SAME condition
+    /// `decide(...)` uses, rather than re-deriving it and risking drift.
+    public static func isReplayNeverIntroduced(beginTime: Int?, endTime: Int?) -> Bool {
+        beginTime == 0 && endTime == 0
     }
 }

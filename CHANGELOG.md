@@ -5,6 +5,34 @@ All notable changes to the Livebuy iOS SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.15.0] - 2026-09-07
+
+> **Minor.** 自 `4.14.0` 以來累積 67 個 commit（iOS 13 個），主軸是商品列表 sheet 售完/
+> 介紹中/回放旗標一系列使用者實機回報後的行為訂正。**含 1 項 ⚠️ BREAKING**
+> （reference-ui-internal 視覺行為）——比照 v4.5.0/v4.8.0/v4.9.0/v4.11.0/v4.13.0/v4.14.0
+> 先例，整輪仍判定 minor。完整敘述見
+> [`docs/release-notes/v4.15.0.md`](../docs/release-notes/v4.15.0.md)。
+
+### Added
+
+- **`VIDEO_OPEN` 事件新增 `prev_video_id` / `next_video_id`**（core，additive，供 RN/Flutter
+  後續接線 swipe 換片導覽；iOS 自身行為不受影響）。
+
+### Changed
+
+- **⚠️ BREAKING — 售完商品不再排除「介紹中」效果**：LIVE/回放橫幅、VOD 等化器遮罩、縮圖 HOT
+  徽章現在可與「已售完」文字同時顯示，不再互斥（純視覺行為，無 API 簽章影響）。
+
+### Fixed
+
+- **商品明細主圖 cache-hit 時卡在舊版裁切排版**（`RemoteStillImageView` 補上 async 延遲）。
+- **直播/回放置頂商品卡售完時顯示「已售完」**，並訂正售完文字顏色 `#6B6775` → `#9A96A3`。
+- **直播回放從未介紹過的商品縮圖點擊改為完全 no-op**。
+- **直播回放 begin/end 皆為 0 時不顯示看講解/介紹中 UI**。
+- **商品列表縮圖覆蓋層模式改讀 `header.isFinishedLiveReplay`**。
+- **VOD 商品列表縮圖撤回 v4.14.0（R36）新增的「已結束」第三態**，回到與回放同構的二態。
+- **VOD 商品列表 sheet 置頂邏輯排除純 VOD**（只保留直播與直播回放）。
+
 ## [4.14.0] - 2026-09-07
 
 > **Minor.** 本輪規模遠大於任何一輪先例（221 個 commit，v4.13.0 只有 25 個），主軸是「四端

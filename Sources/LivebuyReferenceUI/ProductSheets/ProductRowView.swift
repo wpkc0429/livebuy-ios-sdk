@@ -186,9 +186,12 @@ public struct ProductRowView: View {
             position: playbackPosition)
     }
 
-    /// 優先序 sold_out > narrating：售罄時壓過「介紹中」橫幅（rb-ios-goods-label-unified ③,
-    /// verbatim from the pre-extraction `productRow(_:index:)`).
-    private var isIntroducing: Bool { overlay.showIntroducing && !soldOut }
+    /// 「已售完」與「介紹中」互不影響、可同時成立（rb-ios-product-row-soldout-introducing-visible,
+    /// 2026-09-07 使用者拍板訂正 `design/contract/claude-design-sync.md` D6 — 設計稿 `sdk-components
+    /// .jsx` 的 `introBadge`/`numberBadge` 渲染條件從未有 `!p.sold` 排除；先前的
+    /// `sold_out > narrating` 排除（`&& !soldOut`）是 reference-ui 實作層自行加上的規則，非設計決定，
+    /// 已移除）。
+    private var isIntroducing: Bool { overlay.showIntroducing }
 
     // MARK: - Number / HOT badge (rb-ios-product-row-number-badge, design R35)
     //

@@ -171,38 +171,52 @@ public final class DefaultPlayerTemplate {
 
     /// UNIFIED product-list ordering read point — extends the LIVE-only
     /// `productOverlay.productsIntroducingFirst` (single `narrate_status==2`
-    /// `activeProduct` moved to front) to ALSO reorder for VOD / replay, so
+    /// `activeProduct` moved to front) to ALSO reorder for finished-live replay, so
     /// `ProductSheetsModel`'s product-list drawer can bind ONE computed regardless of
-    /// live-vs-VOD (vod-product-list-introducing-order-template).
+    /// live-vs-replay-vs-VOD (vod-product-list-introducing-order-template,
+    /// vod-product-list-introducing-order-exclude-vod-template).
     ///
+    /// Three branches, selected by the explicit `header.isLive` /
+    /// `header.isFinishedLiveReplay` flags (never by "is `vodActiveProducts`
+    /// non-empty"):
     /// - LIVE (`header.isLive == true`): delegates UNCHANGED to
     ///   `productOverlay.productsIntroducingFirst` (existing single-active-to-front
     ///   behaviour, untouched).
-    /// - VOD / replay (`header.isLive == false`): when `vodActiveProducts` (ALREADY
-    ///   ordered, beginTime ascending — this property does NOT re-derive or re-sort
-    ///   that ordering) is non-empty, ALL of its members move to the front IN THAT
-    ///   EXACT ORDER, followed by the remaining `productOverlay.products` preserving
-    ///   their existing relative order (`filter` is order-preserving). Empty
-    ///   `vodActiveProducts` (nothing playing at the current position) →
-    ///   `productOverlay.products` unchanged.
+    /// - Finished-live replay (`header.isLive == false && header.isFinishedLiveReplay
+    ///   == true`): when `vodActiveProducts` (ALREADY ordered, beginTime ascending —
+    ///   this property does NOT re-derive or re-sort that ordering) is non-empty, ALL
+    ///   of its members move to the front IN THAT EXACT ORDER, followed by the
+    ///   remaining `productOverlay.products` preserving their existing relative order
+    ///   (`filter` is order-preserving). Empty `vodActiveProducts` (nothing playing at
+    ///   the current position) → `productOverlay.products` unchanged.
+    /// - Pure VOD (`header.isLive == false && header.isFinishedLiveReplay == false`):
+    ///   ALWAYS `productOverlay.products` unchanged — pure VOD does NOT participate in
+    ///   front-placement, regardless of whether `vodActiveProducts` is non-empty. This
+    ///   is a 2026-09-07 correction: the prior revision folded the entire non-live
+    ///   branch (VOD + replay) into front-placement, which over-extended past what
+    ///   `design/templates/minimal/screens.jsx:ProductListSheet`'s `ordered` logic ever
+    ///   did (`live=true`-only reordering).
     ///
-    /// Branch selection deliberately reads `header.isLive` (the explicit, authoritative
-    /// live/VOD flag), NEVER "`vodActiveProducts` is non-empty" — `vodActiveProducts`
-    /// has no live-status gate of its own, so in a theoretical edge case both could be
-    /// non-empty at once; `isLive` wins so the LIVE branch's behaviour never depends on
-    /// whether a live product happens to also carry a `begin_time`/`end_time` window.
+    /// Branch selection deliberately reads `header.isLive` / `header.isFinishedLiveReplay`
+    /// (the explicit, authoritative flags), NEVER "`vodActiveProducts` is non-empty" —
+    /// `vodActiveProducts` has no live-status gate of its own, so in a theoretical edge
+    /// case it could be non-empty even under LIVE; `isLive` wins so the LIVE branch's
+    /// behaviour never depends on whether a live product happens to also carry a
+    /// `begin_time`/`end_time` window.
     ///
     /// Pure computed — no second state, no new notification channel (feeds off the
     /// already-wired `productOverlay` / `playbackProgress` / `header` mutation
     /// channels). `DefaultProductOverlayState.productsIntroducingFirst` itself is
     /// UNCHANGED (kept for direct LIVE-only testing / back-compat) — this is a NEW,
-    /// separate computed one layer up, not a replacement. Ordering (including the VOD
-    /// branch's front-placement) remains a DATA-LAYER responsibility: reference-ui
-    /// (`ProductSheetsModel`) binds THIS computed and MUST NOT re-slice / merge / sort.
+    /// separate computed one layer up, not a replacement. Ordering (including the
+    /// replay branch's front-placement) remains a DATA-LAYER responsibility:
+    /// reference-ui (`ProductSheetsModel`) binds THIS computed and MUST NOT re-slice /
+    /// merge / sort.
     public var productsIntroducingFirst: [LBProduct] {
         if header.isLive {
             return productOverlay.productsIntroducingFirst
         }
+        guard header.isFinishedLiveReplay else { return productOverlay.products }
         let active = vodActiveProducts
         guard !active.isEmpty else { return productOverlay.products }
         let activeIds = Set(active.map(\.id))

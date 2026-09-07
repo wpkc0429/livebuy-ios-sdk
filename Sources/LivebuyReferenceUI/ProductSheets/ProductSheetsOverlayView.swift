@@ -570,7 +570,17 @@ public struct ProductSheetsOverlayView: View {
     /// write to — no second sheet-state field, no second close path. Scoped to THIS ONE entry
     /// point: the list's other row actions (明細鈕 / 加購鈕 / 補貨鈴鐺 / 列分享鈕) are untouched
     /// and MUST NOT gain this side effect.
+    ///
+    /// EXCEPTION (rb-ios-replay-never-introduced-tap-noop): in `.replay` mode, a product whose
+    /// `[beginTime, endTime]` is the `[0, 0]`「never introduced」sentinel
+    /// (`ProductRowOverlay.isReplayNeverIntroduced`) has no real intro time to jump to — the tap
+    /// is a complete no-op (neither seek nor dismiss), rather than misleadingly seeking to
+    /// position 0 and closing the drawer as if something happened.
     private func seekToProductIntro(_ product: LBProduct) {
+        if model.rowMode == .replay,
+           ProductRowOverlay.isReplayNeverIntroduced(beginTime: product.beginTime, endTime: product.endTime) {
+            return
+        }
         withAnimation { model.listPresented = false }
         onSeekToProductIntro?(product)
     }

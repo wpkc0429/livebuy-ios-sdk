@@ -467,10 +467,14 @@ public struct LiveOverlayChromeView: View {
                     .multilineTextAlignment(.leading)
                     .truncationMode(.tail)
 
-                // Live price (accent, unchanged). `priceShow` is the pre-formatted string.
-                Text(Self.livePriceText(product))
-                    .font(.system(size: 13 * theme.fontScale, weight: .heavy))
-                    .foregroundColor(theme.accent)
+                // Live price — sold-out shows「已售完」(dim) instead of the price, matching
+                // the same sold_out > (nothing) precedence `MiniCartView`/`ProductRowView`
+                // already use (`ProductStatusBadge.resolve`, single-source-of-truth per
+                // goods-status-label-render). `priceShow` is the pre-formatted string.
+                Text(Self.isSoldOut(product) ? Self.soldOutLabel : Self.livePriceText(product))
+                    .font(.system(size: 13 * theme.fontScale,
+                                  weight: Self.isSoldOut(product) ? .semibold : .heavy))
+                    .foregroundColor(Self.isSoldOut(product) ? Self.soldOutColor : theme.accent)
             }
             .padding(.horizontal, 8)
             .padding(.top, 6)
@@ -662,4 +666,22 @@ public struct LiveOverlayChromeView: View {
         if !show.isEmpty { return show }
         return "NT$ \(Int(product.price))"
     }
+
+    /// Sold-out check for the pinned introducing-product card
+    /// (rb-ios-live-pinned-card-soldout-label) — single source of truth via
+    /// `ProductStatusBadge.resolve`, same helper `MiniCartView`/`ProductRowView` use.
+    static func isSoldOut(_ product: LBProduct) -> Bool {
+        ProductStatusBadge.resolve(product) == .soldOut
+    }
+
+    /// Sold-out price-line label (design「已售完」— same copy as `MiniCartView.soldOutLabel`).
+    static let soldOutLabel = "已售完"
+
+    /// Sold-out price-line color — CORRECTED from an earlier `textDim` (`#6B6775`) mistake
+    /// (rb-ios-live-pinned-card-soldout-label-color-fix): `#6B6775` is this module's general
+    /// dim-text token (struck-through original price etc — see `MiniCartView.textDim` /
+    /// `ProductRowView.textDim`), NOT the sold-out-specific color. The correct convention for
+    /// a「已售完」label specifically is `ProductRowView.soldOutColor` / `MiniCartView`'s own
+    /// sold-out color, both `#9A96A3`.
+    static let soldOutColor = Color(hex: "#9A96A3") ?? Color.gray
 }

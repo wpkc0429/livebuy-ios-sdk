@@ -1273,11 +1273,23 @@ struct RemoteStillImageView: UIViewRepresentable {
             // Clear immediately so a RECYCLED cell never shows the previous product's
             // photo while the new one loads (URLSessionDataTask.cancel is best-effort).
             imageView.image = nil
-            // Cache hit → no network / decode, no flicker. `onImageLoaded` fires SYNCHRONOUSLY
-            // here (rb-ios-product-detail-main-image-scale-down-letterbox D1).
+            // Cache hit → no network / decode, no flicker. `imageView.image` is set synchronously
+            // (imperative UIKit mutation, safe from any call context), but `onImageLoaded` is
+            // deferred one run-loop tick via `DispatchQueue.main.async` — this callback mutates
+            // SwiftUI `@State` (`loadedPhotoSizes`), and `load(url:into:onImageLoaded:)` runs
+            // synchronously from `makeUIView`/`updateUIView`, which SwiftUI itself calls DURING an
+            // active view-update pass. Mutating `@State` synchronously from inside that pass is
+            // undefined behavior (Apple's own "Modifying state during view update" runtime
+            // warning) — the write can silently fail to stick, which is exactly what caused the
+            // `.detail` main image to stay wedged on the fixed-168pt crop placeholder forever even
+            // though `onImageLoaded` reported the correct decoded size (rb-ios-product-detail-
+            // main-image-scale-down-letterbox — this async defer restores the "never crop" fix on
+            // the cache-hit path; the network-completion path below was already correctly async).
             if let cached = ReferenceUIImageCache.shared.object(forKey: url as NSURL) {
                 imageView.image = cached
-                onImageLoaded?(cached.size)
+                DispatchQueue.main.async {
+                    onImageLoaded?(cached.size)
+                }
                 return
             }
             let t = URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
