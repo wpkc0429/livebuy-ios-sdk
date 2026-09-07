@@ -134,12 +134,18 @@ public struct OperationRailView: View {
                     .fill(Self.pillBackground)
                 // Share uses the hand-drawn `ShareGlyph` (design `Icons.share` three-node share);
                 // serviceLink uses the hand-drawn `ContactGlyph` (design `Icons.contact` dual
-                // speech-bubble + question-mark, rb-ios-icon-parity); every other kind keeps its
-                // SF Symbol (rb-ios-share-icon-design-align).
+                // speech-bubble + question-mark, rb-ios-icon-parity); subtitle uses the hand-drawn
+                // `CcGlyph` (design `Icons.cc` rounded badge + twin "c" curves,
+                // rb-ios-cc-icon-design-align); every other kind keeps its SF Symbol
+                // (rb-ios-share-icon-design-align). The aligned VOD rail only ever draws these
+                // three kinds (`presentationOrder`), so the `else` branch below is unreachable in
+                // production but kept total for the wider view-model kind set.
                 if kind == .share {
                     ShareGlyph(size: Self.pillGlyphSize, color: .white)
                 } else if kind == .serviceLink {
                     ContactGlyph(size: Self.pillGlyphSize, color: .white)
+                } else if kind == .subtitle {
+                    CcGlyph(size: Self.pillGlyphSize, color: .white)
                 } else {
                     Image(systemName: Self.symbolName(for: kind))
                         .font(.system(size: Self.pillGlyphSize, weight: .semibold))
@@ -151,6 +157,14 @@ public struct OperationRailView: View {
         .buttonStyle(PlainButtonStyle())
         .accessibilityIdentifier(Self.accessibilityID(for: kind))
     }
+
+    /// TEST-ONLY: exposes the exact per-kind pill subtree `pillButton(for:)` renders (including
+    /// which glyph it draws), so structural tests can confirm e.g. the `.subtitle` pill draws
+    /// `CcGlyph` (not an SF Symbol `Image`) without going through `ForEach` — a plain `Mirror`
+    /// walk over `body` cannot see into `ForEach`'s per-element closure output, only into value
+    /// trees SwiftUI compiles directly (`Group { if ... }` branches, etc.). Mirrors the
+    /// established `PlayerHeaderBarView.iconClusterForTesting` precedent.
+    func pillButtonForTesting(for kind: LBSideRailKind) -> some View { pillButton(for: kind) }
 
     /// Maps a rail `kind` to its E2E `accessibilityIdentifier` (registry constant).
     /// Only `.subtitle` / `.share` / `.serviceLink` are drawn by the aligned VOD rail
@@ -183,7 +197,7 @@ public struct OperationRailView: View {
         case .chat:           return "bubble.left.fill"  // Icons.chat
         case .like:           return "heart.fill"        // Icons.heartFill
         case .share:          return "square.and.arrow.up" // unused for .share — pillButton draws ShareGlyph (Icons.share)
-        case .subtitle:       return "captions.bubble"   // Icons.cc
+        case .subtitle:       return "captions.bubble"   // unused for .subtitle — pillButton draws CcGlyph (Icons.cc)
         case .serviceLink:    return "bubble.left.fill"  // unused for .serviceLink — pillButton draws ContactGlyph (Icons.contact)
         case .guestNameEdit:  return "pencil"            // edit display name
         case .more:           return "ellipsis"          // more menu

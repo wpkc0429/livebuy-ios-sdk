@@ -124,10 +124,12 @@ struct PlayerOverlayRootView: View {
     static let liveBottomBarClearance: CGFloat = 68
 
     /// Trailing inset fed to `FeedWinOverlayView` so the merged chat feed stays in the design's
-    /// LEFT column (`live-chrome.jsx` `LBLiveChatOverlay` `right:152`) and leaves the bottom-right
+    /// LEFT column (`live-chrome.jsx` `LBLiveChatOverlay` `right:120`, R31 — was `right:152`,
+    /// tightened as a ripple of the pinned card's width shrink) and leaves the bottom-right
     /// `LBLivePinnedCard` column (`right:8 width:132`) free — both visually and for hit-testing,
-    /// so the product card shows and is tappable (rb-ios-live-pinned-card-appears).
-    static let liveChatTrailingClearance: CGFloat = 152
+    /// so the product card shows and is tappable (rb-ios-live-pinned-card-appears;
+    /// value itself corrected by rb-ios-live-announce-chat-clearance-restore).
+    static let liveChatTrailingClearance: CGFloat = 120
 
     /// Leading inset fed to `FeedWinOverlayView` so the merged chat feed's left edge aligns
     /// with the LIVE bottom bar's bag button left margin (`LiveBottomBarView.barHPadding == 10`)
@@ -280,6 +282,18 @@ struct PlayerOverlayRootView: View {
     /// Defaults `false` (baseline unchanged) until the first report.
     @State private var cleanMode: Bool = false
 
+    /// Mirrors `PlayerShellView`'s private `liveMoreSheetPresented` `@State` (LIVE bottom bar
+    /// 「更多」(⋯) collapsible menu open/closed), so the family-2 chat feed (a sibling composed
+    /// here — NOT a descendant of `PlayerShellView`, so `liveMoreSheetPresented` cannot reach it
+    /// any other way) can be hidden while the menu is up — the menu is presented as an internal
+    /// `PlayerShellView` bottom sheet, whose visual stacking is confined to that layer, and this
+    /// merged ZStack composes the chat feed ABOVE it, so without this mirror the menu would be
+    /// occluded / have its taps swallowed by the chat feed (rb-ios-live-more-sheet-above-chat).
+    /// `PlayerShellView` reports every open/close via `onMoreSheetPresentedChange`, mirroring the
+    /// existing `infoPanelOpen` precedent above. Defaults `false` (baseline unchanged) until the
+    /// first report.
+    @State private var moreSheetOpen: Bool = false
+
     var body: some View {
         ZStack {
             PlayerShellView(
@@ -323,7 +337,10 @@ struct PlayerOverlayRootView: View {
                 onScrubBarExpandedChange: { isScrubBarExpanded = $0 },
                 // Mirror clean mode so the family-2 chat feed can be hidden while it's on
                 // (rb-ios-clean-mode-hide-chat-feed).
-                onCleanModeChange: { cleanMode = $0 })
+                onCleanModeChange: { cleanMode = $0 },
+                // Mirror the LIVE bottom bar「更多」(⋯) menu open/closed so the family-2 chat feed
+                // can be hidden while it's up (rb-ios-live-more-sheet-above-chat).
+                onMoreSheetPresentedChange: { moreSheetOpen = $0 })
 
             // Keep the merged chat feed above the LIVE bottom bar (they share this ZStack /
             // safe-area space). Clearance = LiveBottomBarView height (8+36+8 ≈ 52) + its own
@@ -365,7 +382,12 @@ struct PlayerOverlayRootView: View {
                                // Hide the chat feed while clean mode is on, parity Android/
                                // Flutter — WinEntryView / claim sheet below are NOT gated by
                                // cleanMode (rb-ios-clean-mode-hide-chat-feed).
-                               cleanMode: cleanMode)
+                               cleanMode: cleanMode,
+                               // Hide the chat feed while the LIVE bottom bar「更多」(⋯) menu is
+                               // up so it doesn't occlude the menu / swallow its taps (the menu's
+                               // own scrim then cleanly covers the background) — rb-ios-live-
+                               // more-sheet-above-chat.
+                               moreSheetOpen: moreSheetOpen)
             ProductSheetsOverlayView(
                 model: productModel,
                 theme: theme,

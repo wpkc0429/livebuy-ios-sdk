@@ -231,8 +231,11 @@ public struct LiveOverlayChromeView: View {
             }
 
             // Bottom row: announce marquee (left) + pinned card (right).
-            // `live-chrome.jsx`: announce `left:8 right:152 bottom:70`,
-            // pinned card `right:8 bottom:64 width:132`.
+            // `live-chrome.jsx`: announce `left:8 right:120 bottom:70` (R31 — was `right:152`;
+            // resolved by `rb-ios-live-announce-chat-clearance-restore`, which followed up on
+            // the Open Question left by `rb-ios-vod-live-product-card-restyle` design.md and
+            // updated the announce banner's fixed width calc below to 265pt),
+            // pinned card `right:8 bottom:64 width:100` (R31, was `width:132`).
             VStack(spacing: 0) {
                 Spacer(minLength: 0)
                 HStack(alignment: .bottom, spacing: 8) {
@@ -254,7 +257,7 @@ public struct LiveOverlayChromeView: View {
                     pinnedCardCarousel
                 }
                 // Leading (announce side) stays 8 — the design's `left:8`, unrelated to the
-                // announce banner's own fixed 233pt width calc below. Trailing (pinned-card
+                // announce banner's own fixed 265pt width calc below. Trailing (pinned-card
                 // side) is 10 (was 8) so the pinned card's right edge aligns with the LIVE
                 // bottom bar's heart button right margin (rb-ios-live-chat-card-edge-align).
                 .padding(.leading, 8)
@@ -335,9 +338,11 @@ public struct LiveOverlayChromeView: View {
 
     // MARK: - LBLiveAnnounce — announcement marquee banner
 
-    /// Bottom-left yellow announcement banner with a red icon badge and a
-    /// horizontally-marqueeing text. Mirrors `LBLiveAnnounce` from
-    /// `live-chrome.jsx` (`#FFE08A` background, `#F03246` icon badge).
+    /// Bottom-left dark-glass announcement banner with a red icon badge and
+    /// white text. Mirrors `LBLiveAnnounce` from `live-chrome.jsx`
+    /// (`rgba(0,0,0,0.42)` background — drawn as a flat translucent fill, no
+    /// real backdrop blur, per repo convention — `#F03246` icon badge,
+    /// `rb-ios-live-announce-banner-recolor`, design-contract R30).
     private var announceBanner: some View {
         HStack(spacing: 8) {
             // Red icon badge (`#F03246`, 22×22, radius 5).
@@ -351,7 +356,7 @@ public struct LiveOverlayChromeView: View {
                 )
 
             // Announce copy — 2-line clamped text (`LBLiveAnnounce`
-            // `WebkitLineClamp:2`). Dark text on yellow; tail-truncates past 2 lines.
+            // `WebkitLineClamp:2`). White text on dark glass; tail-truncates past 2 lines.
             Text(announceText)
                 .font(.system(size: 10.5 * theme.fontScale, weight: .semibold))
                 .foregroundColor(Self.announceTextColor)
@@ -366,11 +371,13 @@ public struct LiveOverlayChromeView: View {
             RoundedRectangle(cornerRadius: 8)
                 .fill(Self.announceBgColor)
         )
-        // Design `LBLiveAnnounce` is `left:8 right:152` (`live-chrome.jsx`), i.e. its
-        // right edge sits 152pt from the screen edge so the pinned card clears it. On
-        // the 393pt reference frame that resolves to 393−8−152 = 233pt (the HStack's
-        // 8pt horizontal padding supplies `left:8`). Matches the Android parity width.
-        .frame(maxWidth: 233, alignment: .leading)
+        // Design `LBLiveAnnounce` is `left:8 right:120` (`live-chrome.jsx`, R31 — was
+        // right:152, tightened as a ripple of the pinned card's 132×92→100×88 shrink),
+        // i.e. its right edge sits 120pt from the screen edge so the (now-narrower)
+        // pinned card clears it. On the 393pt reference frame that resolves to
+        // 393−8−120 = 265pt (the HStack's 8pt horizontal padding supplies `left:8`).
+        // Matches the Android parity width (rb-ios-live-announce-chat-clearance-restore).
+        .frame(maxWidth: 265, alignment: .leading)
     }
 
     // MARK: - LBLivePinnedCard — pinned narrating-product card
@@ -381,12 +388,18 @@ public struct LiveOverlayChromeView: View {
     /// presentation-only.
     private func pinnedCard(_ product: LBProduct) -> some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Image area (design height 92). Themed placeholder so the snapshot
-            // baseline is deterministic without a network image (no AsyncImage).
+            // Image area (design height 88 — R31: was 92; R34, 2026-09-04, `rb-ios-product-
+            // detail-image-gallery`: 88→100 — the card's height 88 / width 100 non-equal
+            // rectangle from R31 is corrected to a 100×100 SQUARE, matching the card's own
+            // 100pt width below. This is a second, independent tweak on TOP of R31's 132×92→
+            // 100×88 shrink — it does NOT revert R31's shrink decision, only the aspect ratio).
+            // Themed placeholder so the snapshot baseline is deterministic without a network
+            // image (no AsyncImage).
             ZStack(alignment: .topTrailing) {
-                // Image area (design height 92): a gray placeholder with the REAL product
-                // image layered over it at runtime (`live` + a non-empty URL); the snapshot
-                // path keeps the deterministic placeholder (live-pinned-card-image-radius).
+                // Image area (design height 100, R34 — see above): a gray placeholder with the
+                // REAL product image layered over it at runtime (`live` + a non-empty URL); the
+                // snapshot path keeps the deterministic placeholder
+                // (live-pinned-card-image-radius).
                 ZStack {
                     Rectangle()
                         .fill(Color(hex: "#EFEFF2") ?? Color(.systemGray5))
@@ -398,8 +411,30 @@ public struct LiveOverlayChromeView: View {
                     if live, let url = Self.imageURL(product) {
                         RemoteStillImageView(url: url, contentMode: .scaleAspectFill)
                     }
+
+                    // Narrate badge (R31, `rb-ios-vod-live-product-card-restyle`): moved OFF
+                    // the below-image text row (see the name/price VStack below) onto a
+                    // full-bleed banner overlaid on the image's bottom edge — design
+                    // `LBLivePinnedCard` `position:absolute,left:0,right:0,bottom:0`, fixed
+                    // `rgba(240,50,70,0.7)` coral (unified with `ProductRowView`'s「介紹中」
+                    // badge — no longer `theme.accent`).
+                    if Self.isNarrating(product, isLive: isLive) {
+                        VStack(spacing: 0) {
+                            Spacer(minLength: 0)
+                            HStack(spacing: 3) {
+                                EqualizerGlyph(size: 9, color: .white)
+                                Text(Self.narrateTagText)
+                                    .font(.system(size: 12 * theme.fontScale, weight: .bold))
+                                    .foregroundColor(.white)
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 3)
+                            .padding(.horizontal, 4)
+                            .background(Self.narrateBadgeColor)
+                        }
+                    }
                 }
-                .frame(height: 92)
+                .frame(height: 100)
                 .clipped()
 
                 // Close affordance chip → per-product-id local dismiss. An INNER Button
@@ -423,25 +458,16 @@ public struct LiveOverlayChromeView: View {
             }
 
             VStack(alignment: .leading, spacing: 3) {
-                // Narrate tag (accent) — shown for the narrating product.
-                if Self.isNarrating(product) {
-                    HStack(spacing: 3) {
-                        Image(systemName: "chart.bar.fill")
-                            .font(.system(size: 9, weight: .bold))
-                        Text(Self.narrateTagText)
-                            .font(.system(size: 11 * theme.fontScale, weight: .bold))
-                    }
-                    .foregroundColor(theme.accent)
-                }
-
-                // Product name (1-line clamp, design dark text).
+                // Product name (R31: 2-line clamp / 10pt — was 1-line-clamp / 11pt; the
+                // narrate tag that used to sit here moved onto the image banner above).
                 Text(product.name)
-                    .font(.system(size: 11 * theme.fontScale, weight: .semibold))
+                    .font(.system(size: 10 * theme.fontScale, weight: .semibold))
                     .foregroundColor(theme.text)
-                    .lineLimit(1)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
                     .truncationMode(.tail)
 
-                // Live price (accent). `priceShow` is the pre-formatted string.
+                // Live price (accent, unchanged). `priceShow` is the pre-formatted string.
                 Text(Self.livePriceText(product))
                     .font(.system(size: 13 * theme.fontScale, weight: .heavy))
                     .foregroundColor(theme.accent)
@@ -450,7 +476,7 @@ public struct LiveOverlayChromeView: View {
             .padding(.top, 6)
             .padding(.bottom, 8)
         }
-        .frame(width: 132, alignment: .leading)
+        .frame(width: 100, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 10)
                 .fill(Color.white)
@@ -545,12 +571,24 @@ public struct LiveOverlayChromeView: View {
 
     // MARK: - Design tokens / derived copy (pure)
 
-    /// Announce banner background (`#FFE08A` — fixed decorative design hex).
-    static let announceBgColor = Color(hex: "#FFE08A") ?? Color.yellow
+    /// Announce banner background (`rgba(0,0,0,0.42)` — design-contract R30,
+    /// `rb-ios-live-announce-banner-recolor`; replaces the never-synced
+    /// `#FFE08A` yellow this layer shipped with since 2026-05-29). The design
+    /// pairs this with `backdropFilter: blur(6px)`, which this layer does NOT
+    /// implement — every `rgba(…)` "glass" fill in this package is drawn as a
+    /// plain translucent color instead (see `FloatingWidgetView.closeGlass`
+    /// and its doc comment for the documented rationale); this is that same
+    /// deliberate convention, not an oversight.
+    static let announceBgColor = Color.black.opacity(0.42)
     /// Announce icon badge (`#F03246` — the brand red used decoratively here).
+    /// UNCHANGED by `rb-ios-live-announce-banner-recolor` — the design only
+    /// recolored the banner background/text, not this square.
     static let announceBadgeColor = Color(hex: "#F03246") ?? Color.red
-    /// Announce text color (`#15131A` — fixed design dark text on yellow).
-    static let announceTextColor = Color(hex: "#15131A") ?? Color.black
+    /// Announce text color (`#fff` white on the dark-glass background —
+    /// design-contract R30, `rb-ios-live-announce-banner-recolor`; replaces
+    /// the never-synced `#15131A` dark text this layer shipped with since
+    /// 2026-05-29).
+    static let announceTextColor = Color.white
 
     /// Host caption label ("主持人").
     static let hostCaptionLabel = "主持人"
@@ -561,6 +599,10 @@ public struct LiveOverlayChromeView: View {
     static let captionPriceColor = Color(hex: "#FFD0D7") ?? Color.pink
     /// Narrate-tag copy shown on the pinned card ("介紹中").
     static let narrateTagText = "介紹中"
+    /// Narrate badge background (R31, `rb-ios-vod-live-product-card-restyle`): fixed
+    /// `rgba(240,50,70,0.7)` coral — no longer `theme.accent`. Shared verbatim with
+    /// `ProductRowView.introducingBadgeColor` (same design decision, same color).
+    static let narrateBadgeColor = (Color(hex: "#F03246") ?? Color.red).opacity(0.7)
 
     /// Gesture-hint copy (static localized presentation strings, matching
     /// `LBPGestureHint` in `sdk-components.jsx`).
@@ -578,9 +620,19 @@ public struct LiveOverlayChromeView: View {
     static let hintSwipe = "上下滑動 = 切換影片"
 
     /// The pinned product is "narrating" when `narrateStatus == 2`
-    /// (core convention — see `LivebuyPlayerViewController.narrating`).
-    static func isNarrating(_ product: LBProduct) -> Bool {
-        product.narrateStatus == 2
+    /// (core convention — see `LivebuyPlayerViewController.narrating`) — but ONLY when the
+    /// pinned card comes from a genuinely-live source (`isLive == true`, `pinnedProducts` fed
+    /// from `livePinnedProducts`). `narrate_status` is a per-product manual state machine the
+    /// host operator drives while a broadcast is live; once the broadcast ends it freezes at
+    /// whatever value it last had (may never have been cleared) and is no longer a meaningful
+    /// signal. For a finished-live replay (`isLive == false`), `pinnedCard(_:)` only ever
+    /// receives products already selected from `vodActiveProducts` — i.e. products whose
+    /// `[beginTime,endTime)` window already contains the current playhead — so membership in
+    /// that list IS the "narrating" signal; re-checking the stale `narrateStatus` on top of it
+    /// makes the ribbon depend on backend leftover state instead of the actual introduction
+    /// window (rb-ios-live-pinned-card-replay-narrate-fix).
+    static func isNarrating(_ product: LBProduct, isLive: Bool) -> Bool {
+        isLive ? product.narrateStatus == 2 : true
     }
 
     /// The pinned products that remain visible after applying the per-product-id local

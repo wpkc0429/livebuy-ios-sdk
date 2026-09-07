@@ -83,14 +83,38 @@ public struct VideoInfoPanelView: View {
     /// when mirroring this to Android / RN / Flutter.
     public let live: Bool
 
+    /// Whether the video this panel describes is a LIVE BROADCAST (`model.isLive`,
+    /// `channel.liveStatus == 1`) rather than VOD/replay. `false` (default) → existing
+    /// VOD copy (「點播間說明」/「影片詳情」/ plain dim publishAt caption), byte-identical to
+    /// before this flag existed. `true` → LIVE copy (「直播間說明」/「直播詳情」/ a red
+    /// 「直播中」pill + `|` + `info.publishAt`) (design R32,
+    /// rb-ios-live-replay-more-menu-and-video-info-live-copy).
+    ///
+    /// ⚠️ Deliberately named `isLiveBroadcast`, NOT `live`/`isLive`: this file's existing
+    /// `live` prop above is the live-RUNTIME IMAGE gate (whether to load a real network
+    /// image), a completely different axis — see that property's own doc comment for the
+    /// full "naming trap" warning. Do not conflate the two when mirroring this to Android /
+    /// RN / Flutter; give the parity prop an equally unambiguous name there too.
+    public let isLiveBroadcast: Bool
+
     /// Host-wired tab-switch intent. The shell forwards
     /// `model.selectInfoTab(tab)`. nil for demo / snapshot instances — the panel
     /// renders correctly action-free.
     private let onSelectTab: ((LBInfoPanelTab) -> Void)?
 
-    /// Footer「前往商城首頁」intent (design `VideoInfoSheet` primary CTA). Host wires
-    /// it to the storefront open-intent. nil → button renders but is inert (demo /
-    /// snapshot).
+    /// Footer「前往商城首頁」intent — **RETAINED for source-compat only**
+    /// (rb-ios-live-replay-more-menu-and-video-info-live-copy, design R32): the PRIMARY
+    /// 「前往商城首頁」footer CTA this closure used to drive has been REMOVED (design R32 —
+    /// upstream dropped it from `VideoInfoSheet` entirely, TAKE upstream per the corrected
+    /// R32 governance note in `claude-design-sync.md`: removing a PIXEL affordance is an
+    /// ordinary reference-ui change, not a public-API rename/remove under
+    /// `docs/contract-governance.md` I6/情境F — that policy protects host call sites that
+    /// pass a NAMED constructor argument from a compile break, which keeping this parameter
+    /// (unused) already satisfies). This parameter is **still accepted and stored** so any
+    /// existing host call site that explicitly passes `onOpenStorefront:` keeps compiling —
+    /// it now has **zero call sites** inside this view (there is no button left to wire it
+    /// to). MUST NOT be removed from the initializer signature; MUST NOT be reintroduced as
+    /// a rendered affordance without a new design decision.
     private let onOpenStorefront: (() -> Void)?
 
     /// Footer「與商家一對一對話」intent (design `VideoInfoSheet` ghost CTA). Host wires
@@ -131,6 +155,7 @@ public struct VideoInfoPanelView: View {
         systemNotice: String,
         notice: String,
         live: Bool = false,
+        isLiveBroadcast: Bool = false,
         onSelectTab: ((LBInfoPanelTab) -> Void)? = nil,
         onOpenStorefront: (() -> Void)? = nil,
         onContactMerchant: (() -> Void)? = nil,
@@ -144,6 +169,7 @@ public struct VideoInfoPanelView: View {
         self.systemNotice = systemNotice
         self.notice = notice
         self.live = live
+        self.isLiveBroadcast = isLiveBroadcast
         self.onSelectTab = onSelectTab
         self.onOpenStorefront = onOpenStorefront
         self.onContactMerchant = onContactMerchant
@@ -183,7 +209,7 @@ public struct VideoInfoPanelView: View {
 
     private var sheetHeader: some View {
         ZStack {
-            Text(Self.panelTitle)
+            Text(resolvedPanelTitle)
                 .font(.system(size: 15 * theme.fontScale, weight: .bold))
                 .foregroundColor(theme.text)
                 .frame(maxWidth: .infinity, alignment: .center)
@@ -198,6 +224,24 @@ public struct VideoInfoPanelView: View {
         .padding(.bottom, 14)
     }
 
+    /// Test-only hook exposing the SAME `sheetHeader` subtree `body` renders (mirrors
+    /// `tabBarForTesting` / `contentForTesting`), so unit tests can make structural
+    /// assertions on the isLive-conditional title (`resolvedPanelTitle`). MUST NOT be
+    /// called from production code, and MUST keep returning the very same `sheetHeader`.
+    var sheetHeaderForTesting: some View { sheetHeader }
+
+    /// The header title — VOD default「點播間說明」, or「直播間說明」when
+    /// `isLiveBroadcast == true` (design R32).
+    private var resolvedPanelTitle: String {
+        isLiveBroadcast ? Self.panelTitleLive : Self.panelTitle
+    }
+
+    /// The first tab's label — VOD default「影片詳情」, or「直播詳情」when
+    /// `isLiveBroadcast == true` (design R32).
+    private var resolvedInfoTabTitle: String {
+        isLiveBroadcast ? Self.infoTabTitleLive : Self.infoTabTitle
+    }
+
     // MARK: - Tab bar (VideoInfoSheet tab row — active = accent + 2pt underline)
 
     /// `canOpenNotice == false` → the 公告 tab item is NOT built at all
@@ -206,7 +250,7 @@ public struct VideoInfoPanelView: View {
     /// helper builds is therefore always selectable — see `tab(_:title:)`.
     private var tabBar: some View {
         HStack(spacing: 24) {
-            tab(.info, title: Self.infoTabTitle)
+            tab(.info, title: resolvedInfoTabTitle)
             if canOpenNotice {
                 tab(.notice, title: Self.noticeTabTitle)
             }
@@ -291,11 +335,32 @@ public struct VideoInfoPanelView: View {
 
     private var infoContent: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // publishAt — small dim caption.
+            // publishAt row — VOD default: a single plain dim caption (unchanged, byte-
+            // identical to before `isLiveBroadcast` existed). LIVE (design R32): a red
+            // 「直播中」pill + `|` + the SAME `info.publishAt` value (NOT a hardcoded date
+            // literal — the date portion still comes from the existing data source; only
+            // the leading VOD-caption text is replaced by the pill).
             if !info.publishAt.isEmpty {
-                Text(info.publishAt)
-                    .font(.system(size: 12 * theme.fontScale))
-                    .foregroundColor(Self.textDim)
+                if isLiveBroadcast {
+                    HStack(spacing: 8) {
+                        Text(Self.liveBadgeLabel)
+                            .font(.system(size: 10 * theme.fontScale, weight: .heavy))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 1)
+                            .background(RoundedRectangle(cornerRadius: 4).fill(Self.liveBadgeColor))
+                        Text("|")
+                            .font(.system(size: 12 * theme.fontScale))
+                            .foregroundColor(Self.textDim)
+                        Text(info.publishAt)
+                            .font(.system(size: 12 * theme.fontScale))
+                            .foregroundColor(Self.textDim)
+                    }
+                } else {
+                    Text(info.publishAt)
+                        .font(.system(size: 12 * theme.fontScale))
+                        .foregroundColor(Self.textDim)
+                }
             }
 
             // title — primary heading.
@@ -502,15 +567,19 @@ public struct VideoInfoPanelView: View {
 
     // MARK: - Footer CTAs (VideoInfoSheet bottom buttons — present on BOTH tabs)
 
-    /// The two bottom action buttons the design pins below the tab content
-    /// regardless of tab (`screens.jsx` `VideoInfoSheet`): a primary「前往商城首頁」and
-    /// a ghost「與商家一對一對話」. Stacked full-width (gap 10, padding `0 18 18`). Each
-    /// forwards its host-wired intent and is inert (but still drawn) when nil.
+    /// The bottom action the design pins below the tab content regardless of tab
+    /// (`screens.jsx` `VideoInfoSheet`): a ghost「與商家一對一對話」. Full-width
+    /// (padding `0 18 18`). Forwards its host-wired intent and is inert (but still drawn)
+    /// when nil.
+    ///
+    /// **The PRIMARY「前往商城首頁」CTA that used to sit above this one has been REMOVED**
+    /// (rb-ios-live-replay-more-menu-and-video-info-live-copy, design R32 — upstream dropped
+    /// it from `VideoInfoSheet` entirely, TAKE upstream per the corrected R32 governance note
+    /// in `claude-design-sync.md`: this is an ordinary pixel-layer removal, not a public-API
+    /// rename/remove). `onOpenStorefront` is **still accepted** on the initializer (source-
+    /// compat, see that property's own doc comment) but has **zero call sites** here.
     private var footer: some View {
         VStack(spacing: 10) {
-            footerButton(title: Self.storefrontLabel, kind: .primary, action: onOpenStorefront) { fg in
-                HouseFillGlyph(size: 16, color: fg)
-            }
             footerButton(title: Self.contactLabel, kind: .ghost, action: onContactMerchant) { fg in
                 ContactGlyph(size: 16, color: fg)
             }
@@ -562,11 +631,23 @@ public struct VideoInfoPanelView: View {
     static let stroke = Color(hex: "#ECEAF0") ?? Color.gray.opacity(0.2)
     /// `theme.surface.strokeStrong` (grab handle / stronger hairline).
     static let strokeStrong = Color(hex: "#D8D5DE") ?? Color.gray.opacity(0.35)
+    /// `#F03246` — the fixed brand-red LIVE badge fill (design R32's publishAt-row pill).
+    /// Hardcoded, NOT `theme.accent`: mirrors every other LIVE badge in this module family
+    /// (`LiveNowPillView.pillRed` / `CarouselCardView.liveRed` / `LiveOverlayChromeView.
+    /// announceBadgeColor`) — the brand-red LIVE marker stays fixed regardless of a
+    /// merchant's `theme.accent` override.
+    static let liveBadgeColor = Color(hex: "#F03246") ?? Color.red
 
     // MARK: - Fixed localized copy (static presentation strings)
 
     static let panelTitle = "點播間說明"
     static let infoTabTitle = "影片詳情"
+    /// LIVE variant of `panelTitle` (design R32, `isLiveBroadcast == true`).
+    static let panelTitleLive = "直播間說明"
+    /// LIVE variant of `infoTabTitle` (design R32, `isLiveBroadcast == true`).
+    static let infoTabTitleLive = "直播詳情"
+    /// The red publishAt-row pill label (design R32, `isLiveBroadcast == true`).
+    static let liveBadgeLabel = "直播中"
     static let noticeTabTitle = "公告"
     static let systemNoticeLabel = "系統公告"
     static let mallNoticeLabel = "商城公告"
@@ -574,6 +655,9 @@ public struct VideoInfoPanelView: View {
     static let subscribedLabel = "已訂閱"
     static let shopSublinePrefix = "這裡是 "
     static let noticeEmptyPlaceholder = "目前沒有公告"
+    /// The removed PRIMARY CTA's label (rb-ios-live-replay-more-menu-and-video-info-live-copy,
+    /// design R32). RETAINED (unused) alongside `HouseFillGlyph` and the `onOpenStorefront`
+    /// closure — see that property's own doc comment.
     static let storefrontLabel = "前往商城首頁"
     static let contactLabel = "與商家一對一對話"
 
@@ -706,6 +790,18 @@ struct VideoInfoPanelView_Previews: PreviewProvider {
                 systemNotice: "",
                 notice: "")
                 .previewDisplayName("notice tab hidden — activeTab fallback")
+
+            // LIVE copy (design R32): 「直播間說明」標題、「直播詳情」tab、紅底「直播中」徽章 +
+            // `info.publishAt`。
+            VideoInfoPanelView(
+                theme: theme,
+                info: VideoInfoPanelView.demoInfo,
+                activeTab: .info,
+                canOpenNotice: true,
+                systemNotice: VideoInfoPanelView.demoSystemNotice,
+                notice: VideoInfoPanelView.demoNotice,
+                isLiveBroadcast: true)
+                .previewDisplayName("info tab — LIVE copy")
         }
         .frame(width: 393, height: 520)
         .previewLayout(.sizeThatFits)

@@ -85,6 +85,15 @@ public struct ProductListView: View {
     /// shown.
     public let introducingProductIds: Set<String>
 
+    /// The RAW, backend-order products snapshot (`ProductSheetsModel.productsBackendOrder`,
+    /// rb-ios-product-row-number-badge) — used ONLY to resolve each row's number-badge position
+    /// (`ProductRowNumberBadge.resolveIndex`, below). Deliberately NOT the same array as `products`
+    /// above (which is introducing-first reordered for DISPLAY) — see that property's doc on
+    /// `ProductSheetsModel` for why reading the reordered array would make numbers jump. Default `[]`
+    /// (existing call sites / snapshots — none currently pass this) → every row resolves `nil` (no
+    /// badge), keeping every existing baseline byte-identical.
+    public let productsBackendOrder: [LBProduct]
+
     /// Playback mode for the thumbnail overlay (rb-ios-product-row-status-overlay):
     /// VOD → play icon; active-live → 介紹中 on the narrating row; replay → 介紹中 on the
     /// product whose `[beginTime, endTime]` contains `playbackPosition`, else play icon.
@@ -150,6 +159,7 @@ public struct ProductListView: View {
         cartCount: Int,
         live: Bool = false,
         introducingProductIds: Set<String> = [],
+        productsBackendOrder: [LBProduct] = [],
         mode: ProductRowMode? = nil,
         playbackPosition: Int = 0,
         onOpenProduct: ((LBProduct) -> Void)? = nil,
@@ -167,6 +177,7 @@ public struct ProductListView: View {
         self.cartCount = cartCount
         self.live = live
         self.introducingProductIds = introducingProductIds
+        self.productsBackendOrder = productsBackendOrder
         self.mode = mode
         self.playbackPosition = playbackPosition
         self.onOpenProduct = onOpenProduct
@@ -344,6 +355,10 @@ public struct ProductListView: View {
             // the sheet is a documented follow-up (the host can wrap in its own scroll).
             // `displayedProducts` applies the user search filter (rb-ios-product-list-search) —
             // a presentation filter only; the underlying `products` snapshot is untouched.
+            // Resolved once for the whole list (not per-row) — shared by both the existing
+            // `mode:` argument below AND the new number-badge resolution
+            // (`ProductRowNumberBadge.resolveIndex`, rb-ios-product-row-number-badge).
+            let effectiveMode = mode ?? (live ? .live : .vod)
             VStack(spacing: 0) {
                 ForEach(Array(displayedProducts.enumerated()), id: \.element.id) { index, product in
                     ProductRowView(
@@ -355,10 +370,12 @@ public struct ProductListView: View {
                         // defaults `nil` (→ falls back to `onSeekToIntro`) — this call site is
                         // therefore BYTE-IDENTICAL to the pre-extraction `productRow(_:index:)`
                         // (rb-ios-product-detail-recommendations §1).
-                        mode: mode ?? (live ? .live : .vod),
+                        mode: effectiveMode,
                         isNarrating: ProductBagNarratingBadge.isNarrating(
                             productId: product.id, narratingIds: introducingProductIds),
                         playbackPosition: playbackPosition,
+                        badgeIndex: ProductRowNumberBadge.resolveIndex(
+                            product: product, backendOrder: productsBackendOrder, mode: effectiveMode),
                         onOpenProduct: { onOpenProduct?(product) },
                         onQuickAdd: { (onQuickAdd ?? onOpenProduct)?(product) },
                         onNotifyRestock: { (onNotifyRestock ?? onOpenProduct)?(product) },
@@ -436,6 +453,26 @@ public struct ProductListView: View {
 enum ProductBagNarratingBadge {
     static func isNarrating(productId: String, narratingIds: Set<String>) -> Bool {
         narratingIds.contains(productId)
+    }
+}
+
+// MARK: - ProductRowNumberBadge — pure row number-badge index resolution
+//
+// Resolves the 1-based position a product-list row's thumbnail number badge should show
+// (rb-ios-product-row-number-badge, design R35 `sdk-components.jsx:LBPProductRow`
+// `numberBadge`). Extracted as a pure function (unit-test-discipline) so the VOD-exclusion
+// + lookup rule is unit-testable without mounting SwiftUI, mirroring `ProductBagNarratingBadge`
+// above. `backendOrder` MUST be the UN-reordered snapshot (`ProductSheetsModel
+// .productsBackendOrder`) — NOT the introducing-first `products` this file's `rows` also holds
+// (see that property's doc on `ProductSheetsModel` for why).
+enum ProductRowNumberBadge {
+    /// `nil` for `.vod` (the badge never shows there); otherwise the product's 1-based position
+    /// in `backendOrder`, or `nil` if the product isn't found there (a defensive fallback — the
+    /// row simply draws no badge rather than a stale / wrong number).
+    static func resolveIndex(product: LBProduct, backendOrder: [LBProduct], mode: ProductRowMode) -> Int? {
+        guard mode != .vod else { return nil }
+        guard let i = backendOrder.firstIndex(where: { $0.id == product.id }) else { return nil }
+        return i + 1
     }
 }
 

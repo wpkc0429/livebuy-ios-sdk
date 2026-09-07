@@ -20,9 +20,14 @@ import LivebuyUI
 //     monogram, mirroring `ProductDetailSheetView.productPhoto`),
 //   • a KIND BADGE top-left:
 //       - LIVE   → a red「LIVE」tag (pulse dot drawn statically) when `liveStatus`
-//                  indicates live,
-//       - VOD    → a「▶ mm:ss」duration pill (from `LBVideoItem.duration` seconds,
-//                  formatted) otherwise,
+//                  indicates live, optionally paired with a VIEWER-COUNT badge
+//                  (see VIEWER COUNT BADGE below),
+//       - VOD / UPCOMING → no kind badge (2026-09-04 design R33 removed the
+//                  「▶ mm:ss」duration pill that used to occupy this slot for VOD;
+//                  upcoming was already indicated by the centre `upcomingOverlay`,
+//                  not a top-left badge).
+//   • a PIN BADGE top-right (see PIN BADGE below) — independent of the kind badge;
+//     any of LIVE / VOD / UPCOMING can carry it simultaneously,
 //   • a PRODUCT CARD whose placement depends on `product_card` (see below) — drawn
 //     from `LBVideoItem.goods` (`LBFeaturedGood`: product thumb + `goods.name` +
 //     display price). The thumb binds `goods.pic` on the live runtime path (gradient
@@ -32,30 +37,56 @@ import LivebuyUI
 //     parameter (default `true`; `FloatingWidgetView` passes `false` — see
 //     TITLE VISIBILITY below, rb-ios-floating-widget-hide-title).
 //
+// PIN BADGE (rb-ios-carousel-card-pin-viewers-duration-removal, design R33): a
+// top-right thumbtack glyph gated by `LBVideoItem.pin == 1`, drawn via SF Symbol
+// `pin.fill` (the design's inline SVG is FontAwesome `thumbtack`, a close visual
+// match). This is a DIFFERENT glyph from `Glyphs/PinFillGlyph.swift` — that one is a
+// hand-drawn map-pin BALLOON silhouette used by `ChatFeedView`'s pinned-MESSAGE
+// banner (a different feature: pinned chat message, not pinned video). This card
+// MUST NOT reuse or modify `PinFillGlyph.swift`.
+//
+// VIEWER COUNT BADGE (rb-ios-carousel-card-pin-viewers-duration-removal, design R33):
+// a LIVE-only pill beside `liveTag` (person icon + `LBVideoItem.watchNum`, raw
+// digits — no K-abbreviation), gated by `LBVideoItem.showPvNum == 1` (mirrors
+// `PlayerHeaderBarView.viewerCountVisible`'s existing gating convention — pure
+// presentation, no core / view-model change). Never shown for VOD / UPCOMING.
+//
 // PRODUCT-CARD MODES (rb-ios-widget-product-card-modes, design R14; the `below`
 // placement was later reversed by design R17 / rb-ios-widget-product-card-below-slot-
-// reposition — `design/templates/minimal/widgets.jsx` `normalizeProductCardMode` /
+// reposition; the colour scheme of BOTH modes was replaced by design R33 (2026-09-04)
+// — `design/templates/minimal/widgets.jsx` `normalizeProductCardMode` /
 // `LBPCardProductRow` / `LBPCardProductOverlay`). `POST /sdk/widget` carries a root
 // `product_card` String (`inside` / `below` / `hidden`, backend default `inside`),
 // raw-passed through core → `LBWidgetContent.productCard` → `WidgetModel.productCard`
 // → this card's `productCard: String?` parameter:
 //
-//     inside (default)  the dark-glass overlay INSIDE the 9:16 thumbnail (the
-//                       historical, unconditional rendering — pixels unchanged).
+//     inside (default)  a WHITE card overlay INSIDE the 9:16 thumbnail
+//                       (`rgba(255,255,255,0.9)`, no border, 4pt corner radius,
+//                       `#1a1a1a` product name, existing sale-color price token,
+//                       44pt thumb — replaces the pre-R33 dark-glass treatment).
 //                       `goods == nil` → the whole block is not drawn.
 //     below             the product card moves OUTSIDE the thumbnail, landing UNDER
-//                       THE TITLE — at the very bottom of the card. Off the dark video
-//                       backdrop it switches to the design's surface vocabulary
-//                       (`bgElev` fill + `stroke` border + `theme.text` name +
-//                       `sale` price + `textFaint` struck-through original price).
-//                       `goods == nil` → an EQUAL-HEIGHT TRANSPARENT SPACER so
-//                       cards in the same row / grid cell stay the same height.
+//                       THE TITLE — at the very bottom of the card. Same white-card
+//                       vocabulary as `inside` (`rgba(255,255,255,0.9)`, no border,
+//                       4pt corner radius, `#1a1a1a` name, sale-color price,
+//                       36pt thumb) — replaces the pre-R33 `theme.surface.bgElev` +
+//                       `stroke` treatment. `goods == nil` → an EQUAL-HEIGHT
+//                       TRANSPARENT SPACER (fixed `belowRowHeight`) so cards in the
+//                       same row / grid cell stay the same height; a POPULATED row
+//                       no longer forces that fixed height (design R33 dropped the
+//                       constraint — see EQUAL HEIGHT below).
 //     hidden            no product card at all (neither overlay nor row, and NO
 //                       spacer — every card in the surface is equally card-less).
 //
-// The LIVE tag / duration pill / upcoming veil / title are IDENTICAL in all three
-// modes. Equal height comes from the FIXED constant `belowRowHeight` (design
-// `LB_BELOW_ROW_H = 44`), NOT from the content.
+// EQUAL HEIGHT (below mode, revised 2026-09-04 by design R33): only the `goods ==
+// nil` TRANSPARENT SPACER uses the FIXED constant `belowRowHeight` (design
+// `LB_BELOW_ROW_H = 44`). A POPULATED `below` row NO LONGER forces that height — it
+// grows with its content (thumb + text), typically shorter than 44pt. This means a
+// bound and an unbound `below` card in the same row/grid can now be different total
+// heights — a deliberate, user-approved design decision (R33), not a regression.
+//
+// The LIVE tag (+ optional viewer badge) / pin badge / upcoming veil / title are
+// IDENTICAL across all three product-card modes.
 //
 // FALLBACK IS THIS LAYER'S JOB: core deliberately does NOT substitute the backend
 // default (`widget-decode-robustness` — `nil` means "the backend sent nothing",
@@ -80,11 +111,12 @@ import LivebuyUI
 //
 // KIND MAPPING (three-way: LIVE → UPCOMING → VOD). The core `LBVideoItem` carries
 // `liveStatus: Int` + `type: Int` + `publishAt: String` (UTC+8):
-//     `liveStatus == 1`                          → LIVE tag (no duration pill).
+//     `liveStatus == 1`                          → LIVE tag (+ optional viewer badge).
 //     `liveStatus == 0 && type == 2` (直播)       → UPCOMING (直播預告): dark veil + centre
 //        && `publishAt` parses                     scheduled date + big time.
-//     otherwise (incl. `type == 1` regular VOD,  → VOD (duration pill from `duration` seconds).
-//        `type == 3` replay, or unparseable publishAt)
+//     otherwise (incl. `type == 1` regular VOD,  → VOD: no kind badge (2026-09-04 design
+//        `type == 3` replay, or unparseable publishAt)  R33 removed the duration pill this
+//                                                  branch used to draw).
 //
 // WHY `type == 2` (not a future-`publishAt` heuristic): `liveStatus == 0` is shared by BOTH a
 // regular VOD (`type == 1`, never a livestream) AND a scheduled live (`type == 2`, not yet
@@ -116,8 +148,8 @@ import LivebuyUI
 /// core; this enum is where it becomes a closed set, so the view body can `switch`
 /// exhaustively and the compiler flags every unhandled site if the domain ever grows.
 public enum LBProductCardMode: String {
-    /// Dark-glass overlay INSIDE the 9:16 thumbnail (backend default, and the
-    /// fallback for everything unrecognized).
+    /// White card overlay INSIDE the 9:16 thumbnail (backend default, and the
+    /// fallback for everything unrecognized). See `productOverlay(_:)`.
     case inside
     /// A surface-styled product row OUTSIDE the thumbnail, under the title (card bottom).
     case below
@@ -155,8 +187,8 @@ public struct CarouselCardView: View {
     public let item: LBVideoItem
 
     /// The resolved reference-ui theme (FIRST positional-after-data argument; the
-    /// card's title uses `theme.text`, badges use FIXED design colors per the
-    /// design's dark-glass treatment).
+    /// card's title uses `theme.text`, badges / pin / viewer / product-card colors
+    /// use FIXED design tokens per the design's literal color values).
     public let theme: ReferenceUITheme
 
     /// Card width (pt). Defaults to the design's `132`. The thumbnail height is
@@ -270,7 +302,7 @@ public struct CarouselCardView: View {
     // is a compile error here rather than a silently-unhandled mode. The raw wire
     // string is never compared outside `LBProductCardMode.normalized(_:)`.
 
-    /// `inside` → the dark-glass overlay is drawn inside the 9:16 thumbnail.
+    /// `inside` → the white product-card overlay is drawn inside the 9:16 thumbnail.
     private var drawsInsideOverlay: Bool {
         switch productCardMode {
         case .inside: return true
@@ -287,10 +319,10 @@ public struct CarouselCardView: View {
         }
     }
 
-    // MARK: - Thumbnail (9:16, placeholder + kind badge + product overlay)
+    // MARK: - Thumbnail (9:16, placeholder + kind badge + pin badge + product overlay)
     //
-    // Mirrors LBPCarouselCard's thumbnail block (widgets.jsx 145-213): a 9:16
-    // rounded media area with the kind badge top-left and the dark-glass product
+    // Mirrors LBPCarouselCard's thumbnail block: a 9:16 rounded media area with the
+    // kind badge top-left, the pin badge top-right, and the white product-card
     // overlay anchored bottom.
 
     private var thumbnail: some View {
@@ -302,21 +334,23 @@ public struct CarouselCardView: View {
 
             // UPCOMING (直播預告): a full-bleed dark veil + centred「即將開播」+ a
             // 距開播 countdown (design's upcoming = dark mask + centre countdown).
-            // Replaces the VOD duration pill (kindBadge returns EmptyView for upcoming).
+            // VOD / UPCOMING draw no top-left kind badge at all (see kindBadge).
             if isUpcoming {
                 upcomingOverlay
                     .accessibilityElement(children: .contain)
                     .accessibilityIdentifier(LBAccessibilityID.cardUpcomingOverlay)
             }
 
-            // Kind badge top-left: LIVE red tag, else VOD「▶ mm:ss」duration pill
-            // (EmptyView for upcoming — the centre overlay is the indicator).
+            // Kind badge top-left: LIVE red tag (+ optional viewer-count badge).
+            // VOD / UPCOMING draw nothing here (2026-09-04 design R33 removed the
+            // VOD duration pill; upcoming was already indicated by the centre
+            // `upcomingOverlay`, never by a top-left badge).
             kindBadge
                 .padding(6)
                 .accessibilityElement(children: .contain)
                 .accessibilityIdentifier(LBAccessibilityID.cardKindBadge)
 
-            // Bottom dark-glass product overlay — `inside` mode only (`below` draws
+            // Bottom white product-card overlay — `inside` mode only (`below` draws
             // the row outside the thumbnail, `hidden` draws nothing), and only when
             // goods != nil (an unbound card keeps a clean thumbnail).
             if drawsInsideOverlay, let goods = item.goods {
@@ -329,6 +363,15 @@ public struct CarouselCardView: View {
             }
         }
         .frame(width: width, height: width * 16.0 / 9.0)
+        // Pin badge top-right (rb-ios-carousel-card-pin-viewers-duration-removal,
+        // design R33): `.overlay(_:alignment:)` (the iOS-13+ non-closure overload,
+        // matching this codebase's existing convention — e.g. `MiniCartView`'s
+        // `closeButton`) positions it independently of the ZStack's `.topLeading`
+        // alignment used by `kindBadge` / `upcomingOverlay`. Independent of
+        // `kindBadge` — any of LIVE / VOD / UPCOMING can carry it simultaneously.
+        // `pinBadge` itself is an EmptyView when `item.pin != 1`, so this overlay
+        // costs zero pixels when the video is not pinned.
+        .overlay(pinBadge.padding(6), alignment: .topTrailing)
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 
@@ -350,7 +393,7 @@ public struct CarouselCardView: View {
         } else if live, let url = coverURL {
             ZStack {
                 coverPlaceholder
-                RemoteStillImageView(url: url)
+                RemoteStillImageView(url: url, contentMode: .scaleAspectFill)
             }
         } else {
             coverPlaceholder
@@ -388,17 +431,24 @@ public struct CarouselCardView: View {
         }
     }
 
-    // MARK: - Kind badge (LIVE tag / VOD duration pill)
+    // MARK: - Kind badge (LIVE tag + optional viewer-count badge — VOD/UPCOMING draw nothing)
+    //
+    // 2026-09-04 design R33 removed the VOD「▶ mm:ss」duration pill that used to occupy
+    // this slot (rb-ios-carousel-card-pin-viewers-duration-removal). UPCOMING was
+    // already indicated by the centred `upcomingOverlay`, never by a top-left badge —
+    // so with the VOD branch gone, `isLive` is the ONLY case this view draws anything
+    // for. Written as a single `if` (no `else`): `@ViewBuilder` implicitly returns
+    // `EmptyView()` for the untaken branch, which is a more honest reflection of
+    // "VOD / UPCOMING have no kind badge" than keeping two now-always-empty branches
+    // around. `isUpcoming` itself (the `upcomingOverlay` trigger) is untouched.
 
     @ViewBuilder
     private var kindBadge: some View {
         if isLive {
-            liveTag
-        } else if isUpcoming {
-            // Upcoming is indicated by the centred `upcomingOverlay`, not a top-left pill.
-            EmptyView()
-        } else {
-            durationPill
+            HStack(spacing: 6) {
+                liveTag
+                viewerCountBadge
+            }
         }
     }
 
@@ -449,74 +499,109 @@ public struct CarouselCardView: View {
         .accessibilityIdentifier(LBAccessibilityID.cardLiveBadge)
     }
 
-    /// VOD「▶ mm:ss」duration pill (LBPCarouselCard 193-210) over a translucent
-    /// dark capsule. `LBVideoItem.duration` is `Int` SECONDS — formatted to `mm:ss`.
-    private var durationPill: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "play.fill")
-                .font(.system(size: 8, weight: .bold))
-                .foregroundColor(.white)
-            Text(Self.formatSeconds(item.duration))
-                .font(.system(size: 10 * theme.fontScale, weight: .semibold))
-                .foregroundColor(.white)
+    // MARK: - Viewer-count badge (LIVE only, rb-ios-carousel-card-pin-viewers-duration-removal)
+
+    /// Viewer-count pill beside `liveTag` (design `LBPCarouselCard` R33): a person
+    /// icon + `LBVideoItem.watchNum` RAW digits (deliberately NOT the K-abbreviated
+    /// `PlayerHeaderBarView.formatViewerCount` — the design shows the bare number, and
+    /// that formatter belongs to a different family-1 component). Shown ⟺ `isLive &&
+    /// item.showPvNum == 1` (mirrors `PlayerHeaderBarView.viewerCountVisible`'s
+    /// existing gating convention — pure presentation, no core / view-model change).
+    /// `EmptyView()` when the gate is false, so `kindBadge`'s `HStack { liveTag;
+    /// viewerCountBadge }` costs zero extra pixels / spacing when there is no viewer
+    /// count to show.
+    @ViewBuilder
+    private var viewerCountBadge: some View {
+        if isLive && item.showPvNum == 1 {
+            HStack(spacing: 3) {
+                Image(systemName: "person.fill")
+                    .font(.system(size: 9, weight: .semibold))
+                Text("\(item.watchNum)")
+                    .font(.system(size: 10 * theme.fontScale, weight: .bold))
+            }
+            .foregroundColor(.white)
+            .padding(.leading, 5)
+            .padding(.trailing, 7)
+            .padding(.vertical, 2)
+            .background(
+                RoundedRectangle(cornerRadius: 999)
+                    .fill(Color.black.opacity(0.4)))
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier(LBAccessibilityID.cardViewerCountBadge)
         }
-        .padding(.leading, 4)
-        .padding(.trailing, 6)
-        .padding(.vertical, 2)
-        .background(
-            RoundedRectangle(cornerRadius: 999)
-                .fill(Color.black.opacity(0.55)))
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier(LBAccessibilityID.cardDurationPill)
     }
 
-    // MARK: - Bottom dark-glass product overlay (`inside` mode, goods != nil)
+    // MARK: - Pin badge (top-right, rb-ios-carousel-card-pin-viewers-duration-removal)
 
-    /// Dark-glass product overlay (`LBPCardProductOverlay`, widgets.jsx 107-131): a 24×24 product thumb +
-    /// the product name (1-line) + the display price, on a translucent dark surface.
-    /// The thumb binds `goods.pic` on the `live == true` runtime path (gradient chip
-    /// as the loading / empty fallback); `live == false` (snapshot / demo) keeps the
-    /// gradient chip so baselines stay byte-identical. The price is produced by
+    /// Top-right「置頂」badge (design `LBPCarouselCard` R33): `LBVideoItem.pin == 1`
+    /// gates a white thumbtack glyph, independent of `kindBadge` — LIVE / VOD /
+    /// UPCOMING can all carry it simultaneously. SF Symbol `pin.fill` renders as a
+    /// thumbtack (distinct from the `mappin.*` balloon family), a close visual match
+    /// for the design's inline SVG (FontAwesome `thumbtack`). This is a DIFFERENT
+    /// glyph from `Glyphs/PinFillGlyph.swift` (a hand-drawn map-pin BALLOON silhouette
+    /// used by `ChatFeedView`'s pinned-MESSAGE banner — a different feature with a
+    /// different shape) — this property MUST NOT reuse or modify that file.
+    /// `EmptyView()` when `item.pin != 1`, so the `.overlay` at the `thumbnail` call
+    /// site costs zero pixels for an unpinned video.
+    @ViewBuilder
+    private var pinBadge: some View {
+        if item.pin == 1 {
+            Image(systemName: "pin.fill")
+                .font(.system(size: 13, weight: .bold))
+                .foregroundColor(.white)
+                .accessibilityElement(children: .ignore)
+                .accessibilityIdentifier(LBAccessibilityID.cardPinnedBadge)
+        }
+    }
+
+    // MARK: - Bottom white product-card overlay (`inside` mode, goods != nil)
+
+    /// White product-card overlay (`LBPCardProductOverlay`, design R33, 2026-09-04): a
+    /// 44×44 product thumb + the product name (1-line, `#1a1a1a`) + the display price
+    /// (existing sale-color token), on a `rgba(255,255,255,0.9)` surface with NO
+    /// border, 4pt corner radius. Replaces the pre-R33 dark-glass + white-text
+    /// treatment (same white-card vocabulary as `belowProductRow(_:)`). The thumb
+    /// binds `goods.pic` on the `live == true` runtime path (gradient chip as the
+    /// loading / empty fallback); `live == false` (snapshot / demo) keeps the gradient
+    /// chip so baselines stay byte-identical. The price is produced by
     /// `displayPrice(_:)` (defensive prefix — no double currency).
     private func productOverlay(_ goods: LBFeaturedGood) -> some View {
         HStack(spacing: 6) {
-            productThumb(goods)
+            productThumb(goods, size: 44)
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(goods.name)
                     .font(.system(size: 10 * theme.fontScale, weight: .semibold))
-                    .foregroundColor(.white)
+                    .foregroundColor(Self.productCardTextColor)
                     .lineLimit(1)
                 Text(Self.displayPrice(goods.price))
                     .font(.system(size: 10 * theme.fontScale, weight: .heavy))
-                    .foregroundColor(.white)
+                    .foregroundColor(Self.saleColor)
                     .lineLimit(1)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.horizontal, 7)
-        .padding(.vertical, 5)
+        .padding(.trailing, 7)
         .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Self.productGlass)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Color.white.opacity(0.10), lineWidth: 0.5)))
+            RoundedRectangle(cornerRadius: 4)
+                .fill(Self.productCardBackground))
     }
 
-    /// Square product thumb chip (`24` inside the overlay, `32` in the `below` row).
+    /// Square product thumb chip (`44` inside the `inside` overlay, `36` in the
+    /// `below` row — design R33 enlarged both from their pre-R33 `24` / `32`).
     /// `live == true` + non-empty `goods.pic` → the remote product image
-    /// (`RemoteStillImageView`, iOS-14-safe — NOT `AsyncImage`, `scaleAspectFit` so the
-    /// COMPLETE product image is visible), with the deterministic gradient chip behind
-    /// it as the loading / pre-load fallback. `live == false` (snapshot / demo) or
-    /// empty `pic` → the gradient chip alone, so snapshot baselines stay
-    /// placeholder-only and byte-identical.
+    /// (`RemoteStillImageView`, iOS-14-safe — NOT `AsyncImage`, `scaleAspectFill` so the
+    /// image fills the chip edge-to-edge, no letterboxing — aligned with the
+    /// in-player product cards' cover treatment, rb-ios-widget-carousel-card-image-cover),
+    /// with the deterministic gradient chip behind it as the loading / pre-load
+    /// fallback. `live == false` (snapshot / demo) or empty `pic` → the gradient chip
+    /// alone, so snapshot baselines stay placeholder-only and byte-identical.
     @ViewBuilder
-    private func productThumb(_ goods: LBFeaturedGood, size: CGFloat = 24) -> some View {
+    private func productThumb(_ goods: LBFeaturedGood, size: CGFloat) -> some View {
         if live, let url = productPicURL(goods) {
             ZStack {
                 thumbPlaceholder(size: size)
-                RemoteStillImageView(url: url)
+                RemoteStillImageView(url: url, contentMode: .scaleAspectFill)
             }
             .frame(width: size, height: size)
             .clipShape(RoundedRectangle(cornerRadius: 5))
@@ -546,6 +631,10 @@ public struct CarouselCardView: View {
     /// `aria-hidden` empty div) is what keeps cards in the same carousel row / grid
     /// cell the same height without drawing an empty frame. `Color.clear` with a fixed
     /// height, NOT a `Spacer()` (which would absorb the container's free space).
+    /// **This spacer is the ONLY thing in `below` mode still pinned to
+    /// `belowRowHeight`** — design R33 (2026-09-04) dropped the matching constraint
+    /// on the POPULATED row (see `belowProductRow(_:)`), so a bound and an unbound
+    /// `below` card can now be different total heights (accepted, R33).
     @ViewBuilder
     private var belowProductSlot: some View {
         if let goods = item.goods {
@@ -555,34 +644,34 @@ public struct CarouselCardView: View {
         }
     }
 
-    /// Surface-styled product row (`LBPCardProductRow`, widgets.jsx 66-103): a 32×32
-    /// product thumb + the product name (1-line) + the sale price + an optional
-    /// struck-through original price, on an elevated surface with a hairline border.
-    /// Off the dark video backdrop the dark-glass + white-text vocabulary no longer
-    /// holds, so this row uses the design's surface tokens instead (see the token
-    /// constants below). Height is the FIXED `belowRowHeight` — never content-driven.
+    /// White product-card row (`LBPCardProductRow`, design R33, 2026-09-04): a 36×36
+    /// product thumb + the product name (1-line, `#1a1a1a`) + the sale price + an
+    /// optional struck-through original price, on a `rgba(255,255,255,0.9)` surface
+    /// with NO border, 4pt corner radius — same white-card vocabulary as
+    /// `productOverlay(_:)` (replaces the pre-R33 `theme.surface.bgElev` fill +
+    /// `theme.surface.stroke` border treatment). **Height is NO LONGER the fixed
+    /// `belowRowHeight` constant** — design R33 dropped that constraint for a
+    /// POPULATED row (only the `goods == nil` spacer in `belowProductSlot` still uses
+    /// it): this row grows with its content (thumb height + text block), typically
+    /// shorter than 44pt. A bound and an unbound `below` card can therefore end up
+    /// different total heights — a deliberate design decision, not a bug.
     private func belowProductRow(_ goods: LBFeaturedGood) -> some View {
         HStack(spacing: 7) {
-            productThumb(goods, size: 32)
+            productThumb(goods, size: 36)
 
             VStack(alignment: .leading, spacing: 1) {
                 Text(goods.name)
                     .font(.system(size: 11 * theme.fontScale, weight: .semibold))
-                    .foregroundColor(theme.text)
+                    .foregroundColor(Self.productCardTextColor)
                     .lineLimit(1)
                 belowPriceLine(goods)
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
-        .padding(.horizontal, 7)
-        .padding(.vertical, 5)
-        .frame(height: Self.belowRowHeight)
+        .padding(.trailing, 7)
         .background(
-            RoundedRectangle(cornerRadius: 8)
-                .fill(Self.belowRowBackground)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 8)
-                        .stroke(Self.belowRowStroke, lineWidth: 1)))
+            RoundedRectangle(cornerRadius: 4)
+                .fill(Self.productCardBackground))
     }
 
     /// The `below` row's price line: sale price + optional struck-through original
@@ -636,22 +725,6 @@ public struct CarouselCardView: View {
 
     // MARK: - Helpers
 
-    /// Format `Int` seconds → zero-padded `mm:ss` (`08:02`), or `hh:mm:ss`
-    /// (`01:24:36`) when ≥ 1h, for `LBVideoItem.duration` (which IS seconds). Mirrors
-    /// the design's `LB_CAROUSEL_DEMO` / `LB_SHOP_POOL` duration copy (`00:28` /
-    /// `08:42` / `01:24:36`) — minutes are always 2-digit; long replays carry an hours
-    /// component (so `5076s` reads `01:24:36`, not `84:36`).
-    static func formatSeconds(_ seconds: Int) -> String {
-        let s = max(0, seconds)
-        let h = s / 3600
-        let m = (s % 3600) / 60
-        let sec = s % 60
-        if h > 0 {
-            return String(format: "%02d:%02d:%02d", h, m, sec)
-        }
-        return String(format: "%02d:%02d", m, sec)
-    }
-
     /// The display price string from the raw `LBFeaturedGood.price` (core raw
     /// passthrough). The production wire value already carries the currency symbol
     /// (e.g. `"NT$590"`), so prefixing again would render a double currency
@@ -689,31 +762,38 @@ public struct CarouselCardView: View {
 
     /// Brand-red LIVE tag surface (`#F03246`, LBPCarouselCard 185).
     static let liveRed = Color(hex: "#F03246") ?? .red
-    /// Dark-glass product overlay surface (`rgba(20,20,24,0.78)`, LBPCardProductOverlay 111).
-    static let productGlass = (Color(hex: "#141418") ?? .black).opacity(0.78)
 
-    // `below` row tokens. iOS `ReferenceUITheme` is a 5-token thin palette with no
-    // surface / sale entries, so — following the existing convention in
-    // `ProductListView` / `WinClaimModalView` / `NotifyRestockSheetView` — the
-    // design's tokens are pinned here as LIGHT-MODE literals from
-    // `design/brands/livebuy/tokens.jsx`. The product NAME deliberately uses the
-    // RESOLVED `theme.text` (the design's `theme.surface.text`), matching how the
-    // card's own `title` is painted.
+    /// White product-card surface (`rgba(255,255,255,0.9)`, design R33 2026-09-04),
+    /// shared by BOTH `inside` (`productOverlay(_:)`) and `below`
+    /// (`belowProductRow(_:)`) — the two modes were unified onto the same white-card
+    /// vocabulary this design revision, replacing the pre-R33 dark-glass (`inside`)
+    /// and `theme.surface.bgElev` + `stroke` (`below`) treatments (`productGlass` /
+    /// `belowRowBackground` / `belowRowStroke` retired, no border in either mode now).
+    static let productCardBackground = Color.white.opacity(0.9)
+    /// Product-card name text color (`#1a1a1a`, design R33), shared by `inside` and
+    /// `below` — replaces `inside`'s prior `.white` and `below`'s prior resolved
+    /// `theme.text`.
+    static let productCardTextColor = Color(hex: "#1a1a1a") ?? .black
+
+    // `below` row / `inside` overlay shared price tokens. iOS `ReferenceUITheme` is a
+    // 5-token thin palette with no surface / sale entries, so — following the existing
+    // convention in `ProductListView` / `WinClaimModalView` / `NotifyRestockSheetView`
+    // — the design's tokens are pinned here as LIGHT-MODE literals from
+    // `design/brands/livebuy/tokens.jsx`.
     //
     // NOTE: `ProductListView.saleColor` carries an older `#E0334B`; the value below is
     // the one `tokens.jsx` currently defines for `theme.sale`. Converging the two is a
     // separate token-drift question and is NOT done here (it would move existing
     // family-3 baselines).
 
-    /// Fixed height of the `below` product row AND of its no-goods transparent spacer
-    /// (design `LB_BELOW_ROW_H = 44`). Equal card height comes from THIS constant, not
-    /// from how much content the row happens to hold.
+    /// Fixed height of `below` mode's no-goods TRANSPARENT SPACER ONLY (design
+    /// `LB_BELOW_ROW_H = 44`). Design R33 (2026-09-04) dropped the matching constraint
+    /// on the POPULATED `below` row (`belowProductRow(_:)` no longer pins its height to
+    /// this constant — it grows with content instead), so a bound and an unbound
+    /// `below` card can now be different total heights (accepted, R33).
     static let belowRowHeight: CGFloat = 44
-    /// `theme.surface.bgElev` — the `below` row's elevated fill (light mode).
-    static let belowRowBackground = Color(hex: "#FAFAFA") ?? Color.gray.opacity(0.04)
-    /// `theme.surface.stroke` — the `below` row's hairline border (light mode).
-    static let belowRowStroke = Color(hex: "#ECECEF") ?? Color.gray.opacity(0.2)
-    /// `theme.sale` — the `below` row's sale price.
+    /// `theme.sale` — both `inside` and `below` product-card sale price (design R33
+    /// unified `inside`'s prior plain `.white` price onto this same token).
     static let saleColor = Color(hex: "#F03246") ?? .red
     /// `theme.surface.textFaint` — the `below` row's struck-through original price.
     static let textFaint = Color(hex: "#9A9BA5") ?? Color.gray.opacity(0.5)
@@ -750,7 +830,10 @@ public extension LBVideoItem {
         upcoming: Bool = false,
         duration: Int = 754,
         goods: LBFeaturedGood? = .demo(),
-        liveurl: String = ""
+        liveurl: String = "",
+        pin: Int = 0,
+        watchNum: Int = 0,
+        showPvNum: Int = 0
     ) -> LBVideoItem {
         LBVideoItem(
             id: id,
@@ -761,11 +844,11 @@ public extension LBVideoItem {
             preview: "",
             duration: duration,
             publishAt: upcoming ? "2099-01-01 20:00:00" : "2026-06-06 20:00:00",
-            watchNum: 0,
+            watchNum: watchNum,
             pvNum: 0,
             liveStatus: live ? 1 : 0,
-            pin: 0,
-            showPvNum: 0,
+            pin: pin,
+            showPvNum: showPvNum,
             liveurl: liveurl,
             playbackurl: "",
             previewTime: "",
@@ -1138,6 +1221,14 @@ struct RemoteStillImageView: UIViewRepresentable {
     /// (no crop) — the widget card's cover / product thumb want the whole image visible. The
     /// Upcoming moment background passes `.scaleAspectFill` to fill the full screen.
     var contentMode: UIView.ContentMode = .scaleAspectFit
+    /// Fires once per successful load with the decoded image's NATIVE SIZE IN POINTS
+    /// (`UIImage.size` — already scale-corrected; do NOT divide by `UIScreen.main.scale` again,
+    /// that would systematically shrink every reported size by the device's scale factor).
+    /// Fired synchronously on a `ReferenceUIImageCache` cache hit, or on the main queue after a
+    /// successful `URLSession` decode. Additive, defaults to `nil` — every EXISTING call site
+    /// (none of which pass this) is byte-identical (rb-ios-product-detail-main-image-scale-down-
+    /// letterbox).
+    var onImageLoaded: ((CGSize) -> Void)? = nil
 
     func makeUIView(context: Context) -> UIImageView {
         // `FlexibleImageView` reports NO intrinsic content size, so a full-bleed host
@@ -1156,12 +1247,12 @@ struct RemoteStillImageView: UIViewRepresentable {
         iv.setContentHuggingPriority(.defaultLow, for: .vertical)
         iv.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
         iv.setContentCompressionResistancePriority(.defaultLow, for: .vertical)
-        context.coordinator.load(url: url, into: iv)
+        context.coordinator.load(url: url, into: iv, onImageLoaded: onImageLoaded)
         return iv
     }
 
     func updateUIView(_ uiView: UIImageView, context: Context) {
-        context.coordinator.load(url: url, into: uiView)
+        context.coordinator.load(url: url, into: uiView, onImageLoaded: onImageLoaded)
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -1170,7 +1261,7 @@ struct RemoteStillImageView: UIViewRepresentable {
         private var task: URLSessionDataTask?
         private var loadedURL: URL?
 
-        func load(url rawURL: URL, into imageView: UIImageView) {
+        func load(url rawURL: URL, into imageView: UIImageView, onImageLoaded: ((CGSize) -> Void)? = nil) {
             // Single http→https upgrade point for ALL remote images (every call site routes
             // through RemoteStillImageView). A cleartext `http` pic would be blocked by iOS
             // ATS and never load → placeholder; the Livebuy host serves the same path over
@@ -1182,9 +1273,11 @@ struct RemoteStillImageView: UIViewRepresentable {
             // Clear immediately so a RECYCLED cell never shows the previous product's
             // photo while the new one loads (URLSessionDataTask.cancel is best-effort).
             imageView.image = nil
-            // Cache hit → no network / decode, no flicker.
+            // Cache hit → no network / decode, no flicker. `onImageLoaded` fires SYNCHRONOUSLY
+            // here (rb-ios-product-detail-main-image-scale-down-letterbox D1).
             if let cached = ReferenceUIImageCache.shared.object(forKey: url as NSURL) {
                 imageView.image = cached
+                onImageLoaded?(cached.size)
                 return
             }
             let t = URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
@@ -1195,6 +1288,10 @@ struct RemoteStillImageView: UIViewRepresentable {
                     // was recycled to a different product) MUST NOT overwrite the image.
                     guard self?.loadedURL == url else { return }
                     imageView.image = image
+                    // `image.size` is already POINTS (scale-corrected) — do NOT divide by
+                    // `UIScreen.main.scale` again (rb-ios-product-detail-main-image-scale-down-
+                    // letterbox D1).
+                    onImageLoaded?(image.size)
                 }
             }
             task = t
@@ -1211,11 +1308,12 @@ struct CarouselCardView_Previews: PreviewProvider {
         let theme = ReferenceUIThemePalette.minimal
         Group {
             HStack(alignment: .top, spacing: 12) {
-                // VOD card with a product overlay (duration pill).
+                // VOD card with a product overlay (no kind badge, 2026-09-04 R33).
                 CarouselCardView(item: .demo(), theme: theme)
                     .previewDisplayName("vod + goods")
-                // LIVE card (red LIVE tag).
-                CarouselCardView(item: .demo(id: "demo-vid-002", title: "早春保養 LIVE", live: true),
+                // LIVE card (red LIVE tag + viewer-count badge).
+                CarouselCardView(item: .demo(id: "demo-vid-002", title: "早春保養 LIVE", live: true,
+                                             watchNum: 128, showPvNum: 1),
                                  theme: theme)
             }
             .frame(width: 320, height: 320)
@@ -1241,6 +1339,18 @@ struct CarouselCardView_Previews: PreviewProvider {
             }
             .frame(width: 320, height: 320)
             .previewDisplayName("showTitle: true vs false")
+
+            // pin badge (rb-ios-carousel-card-pin-viewers-duration-removal, design R33):
+            // all three kinds can carry it simultaneously, independent of kindBadge.
+            HStack(alignment: .top, spacing: 12) {
+                CarouselCardView(item: .demo(id: "demo-vid-007", pin: 1), theme: theme)
+                CarouselCardView(item: .demo(id: "demo-vid-008", title: "早春保養 LIVE", live: true,
+                                             pin: 1, watchNum: 128, showPvNum: 1),
+                                 theme: theme)
+                CarouselCardView(item: .demo(id: "demo-vid-009", upcoming: true, pin: 1), theme: theme)
+            }
+            .frame(width: 460, height: 320)
+            .previewDisplayName("pin badge: VOD / LIVE / upcoming")
         }
         .padding()
         .background(theme.background)

@@ -49,6 +49,24 @@ public struct LivebuyPlayerConfig {
     /// layer — as both Example hosts do (ExampleApp → floating preview; ShopHost → close).
     public var onMinimize: (() -> Void)?
 
+    /// Per-instance override of the global `Livebuy.shared?.enableDirectCloseButton` preference
+    /// (`player-direct-close-button-core`), controlling `LivebuyPlayerPresenter`'s right-corner
+    /// button (`rb-ios-player-direct-close-button`). `nil` (default) → resolves to the global
+    /// preference (default `false`, i.e. existing minimize-to-floating-preview behavior); a
+    /// non-nil value here overrides that global preference for THIS player instance only.
+    ///
+    /// - Resolves to `false` → the button draws the "minimize" icon (`PipGlyph`); tapping it
+    ///   collapses to the floating preview (`isMinimized = true`) — existing behavior, unchanged.
+    /// - Resolves to `true` → the button draws a "close" icon (`xmark`); tapping it directly
+    ///   dismisses through the SAME path as the floating card's own close button, skipping the
+    ///   floating-preview collapse entirely.
+    ///
+    /// Only meaningful when this config is used via `LivebuyPlayerPresenter`
+    /// (`.livebuyPlayer(video:)`) — a direct `LivebuyPlayer` host has no floating-preview concept,
+    /// so this flag does not change its own `onMinimize` default forwarding. See
+    /// `resolvedEnableDirectCloseButton(configValue:globalValue:)` in `LivebuyPlayerPresenter.swift`.
+    public var enableDirectCloseButton: Bool?
+
     /// Tap the video to unmute (REQ5c). Default: the bound template's `toggleMute()`
     /// (→ core engine) so playback produces sound. A host override still receives the
     /// bound template.
@@ -629,6 +647,15 @@ public struct LivebuyPlayer: UIViewControllerRepresentable {
         // Backend / merchant title-marquee capability gate (rb-ios-video-title-scroll): likewise a
         // per-shell constant, set once here from `config.titleScroll` (not template-derived).
         coordinator.model?.titleScroll = config.titleScroll
+        // Top-right button icon mode (rb-ios-player-direct-close-button): resolves
+        // `config.enableDirectCloseButton` against the global `Livebuy.shared
+        // ?.enableDirectCloseButton` preference (`player-direct-close-button-core`) via the SAME
+        // pure function `LivebuyPlayerPresenter.composedConfig` uses to decide the ACTUAL
+        // `onMinimize` behavior, so "which icon is drawn" and "what tapping it does" never
+        // disagree for a given `LivebuyPlayerConfig`.
+        coordinator.model?.showCloseIcon = resolvedEnableDirectCloseButton(
+            configValue: config.enableDirectCloseButton,
+            globalValue: Livebuy.shared?.enableDirectCloseButton ?? false)
         // Swipe-navigation in-place switch → report `onVideoSwitched` (swipe-video-switched-notify),
         // parity with the onWatchNext / onPickHot paths so a host-bound video mirror (the minimized
         // floating preview card's `video`) tracks the shown video after a swipe. Update cover AND

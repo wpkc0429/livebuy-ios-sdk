@@ -236,6 +236,23 @@ public struct PlayerHeaderBarView: View {
     /// drawn at all) otherwise. Default `false` keeps every existing call site byte-identical.
     public let muted: Bool
 
+    /// Top-right button icon/behavior-label mode (`rb-ios-player-direct-close-button`). A
+    /// by-value PRESENTATION flag — this view does NOT know `LivebuySDK.enableDirectCloseButton`
+    /// exists; it only draws what it is told, exactly like `isReplay` / `cleanMode` above. Source
+    /// is `PlayerShellModel.showCloseIcon`, itself resolved from `LivebuyPlayerConfig
+    /// .enableDirectCloseButton ?? Livebuy.shared?.enableDirectCloseButton` by
+    /// `LivebuyPlayer.buildModels()` (see `resolvedEnableDirectCloseButton(configValue:
+    /// globalValue:)` in `LivebuyPlayerPresenter.swift`).
+    ///
+    /// - `false` (default) → the button draws `PipGlyph` ("縮小" / minimize), byte-identical to
+    ///   every existing call site.
+    /// - `true` → the button draws SF Symbol `xmark` ("關閉" / close) instead. The `onMinimize`
+    ///   callback's TRIGGER TIMING (tap → call it) is completely unchanged by this flag — only
+    ///   the icon + accessibility label change here; WHAT `onMinimize` actually does (collapse to
+    ///   floating vs. dismiss outright) is entirely the caller's decision
+    ///   (`LivebuyPlayerPresenter.composedConfig`).
+    public let showCloseIcon: Bool
+
     // -- Optional action closures (LAST, each defaulting to nil) ----------------
     //
     // The header's top-right holds the minimize affordance (design `LBPTopBar` pip:
@@ -287,6 +304,7 @@ public struct PlayerHeaderBarView: View {
         startPhase: LBStartScreenPhase = .done,
         cleanMode: Bool = false,
         muted: Bool = false,
+        showCloseIcon: Bool = false,
         onMinimize: (() -> Void)? = nil,
         onSubscribe: (() -> Void)? = nil,
         onTapHostBadge: (() -> Void)? = nil,
@@ -307,6 +325,7 @@ public struct PlayerHeaderBarView: View {
         self.startPhase = startPhase
         self.cleanMode = cleanMode
         self.muted = muted
+        self.showCloseIcon = showCloseIcon
         self.onMinimize = onMinimize
         self.onSubscribe = onSubscribe
         self.onTapHostBadge = onTapHostBadge
@@ -332,21 +351,7 @@ public struct PlayerHeaderBarView: View {
     public var body: some View {
         VStack(spacing: 0) {
             HStack(alignment: .top, spacing: 8) {
-                // The whole host pill is tappable → info panel (design `LBPHostBadge
-                // onTap → video_info`). The nested subscribe Button inside takes its
-                // own taps first (SwiftUI inner-button priority), so tapping subscribe
-                // does NOT fire onTapHostBadge. PlainButtonStyle keeps the pixels
-                // identical (pixel-neutral wrapper).
-                //
-                // Hidden in `cleanMode` (rb-ios-gesture-clean-mode-rewrite ADDED
-                // Requirement) — `iconCluster` (the minimize button) stays UNCONDITIONALLY
-                // below, per the spec's "MUST 保留頂欄唯一的 minimize(PIP) 按鈕".
-                if !cleanMode {
-                    Button(action: { onTapHostBadge?() }) { hostPill }
-                        .buttonStyle(PlainButtonStyle())
-                        .accessibilityIdentifier(LBAccessibilityID.playerHeaderHostPill)
-                }
-                Spacer(minLength: 8)
+                headerLeadingSlot
                 iconCluster
             }
             .padding(.horizontal, 10)
@@ -380,6 +385,69 @@ public struct PlayerHeaderBarView: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(LBAccessibilityID.playerHeader)
     }
+
+    // MARK: - Leading slot (host pill vs. cleanMode Spacer) — rb-ios-player-header-title-flex-width
+    //
+    // Extracted from `body`'s inline `if !cleanMode { Button(...) }` + the `Spacer(minLength: 8)`
+    // that used to sit unconditionally next to it, mirroring this file's own established
+    // extraction precedent (`LiveBottomBarView.trailingAction` / `trailingActionForTesting`,
+    // `rb-ios-live-bottom-bar-cc-icon-align`) so `headerLeadingSlotForTesting` can expose the EXACT
+    // SAME subtree `body` renders for structural assertions — not a parallel copy.
+
+    /// The leading slot of the top-bar `HStack` (rb-ios-player-header-title-flex-width): the
+    /// tappable, WIDTH-CLAIMING host pill in the normal (`!cleanMode`) case, or a plain
+    /// `Spacer(minLength: 8)` fallback in `cleanMode` (host pill hidden entirely, per the
+    /// `rb-ios-gesture-clean-mode-rewrite` "MUST 保留頂欄唯一的 minimize(PIP) 按鈕" requirement —
+    /// `iconCluster` stays unconditionally visible regardless of which branch this resolves to).
+    ///
+    /// `.frame(maxWidth: .infinity, alignment: .leading)` on the `!cleanMode` branch's `Button`
+    /// makes THIS FRAME (not `hostPill`'s own content) claim ALL the leading space the outer
+    /// `HStack`'s negotiation has to give — mirroring the design's `LBPHostBadge` container
+    /// (`left: 14, right: 64`, its title/host column `flex: '1 1 auto'`). `hostPill`'s actual
+    /// drawn content still hugs the LEADING edge (`alignment: .leading`) — this claims WIDTH, it
+    /// does not paint new pixels, so a short / non-overflowing title's rendered pixels are
+    /// unchanged. What DOES change: (a) the tappable area now spans the full claimed width
+    /// instead of just the pill's own content, and (b) `titleView`'s `.overlay(GeometryReader {
+    /// ... })` measurement (see that property's doc comment) is proposed the REAL available width
+    /// instead of `hostPill`'s previous (too-narrow, content-hugging) width — a wider, more
+    /// accurate `containerWidth` is the INTENDED effect of this change, not a side effect to
+    /// guard against; `marqueeTitleOverflows` / `showsMarqueeTitle`'s own formulas are unchanged.
+    ///
+    /// Deliberately NOT paired with a separate `Spacer(minLength: 8)` sibling in the SAME branch:
+    /// two siblings that are BOTH maximally width-flexible (a `.frame(maxWidth: .infinity)` view
+    /// AND a bare `Spacer`) tie in the `HStack`'s space-negotiation and split the remaining width
+    /// evenly between them (see this change's `design.md` for the empirical basis) — which would
+    /// leave the host pill claiming only HALF the available leading space, not nearly all of it.
+    /// The outer `HStack`'s own `spacing: 8` already guarantees the minimum gap to `iconCluster`,
+    /// so no separate `Spacer` is needed in this branch.
+    ///
+    /// The `cleanMode` branch is the SAME `Spacer(minLength: 8)` this file used unconditionally
+    /// before this change — byte-identical `cleanMode` behavior (the `HStack` reduces to exactly
+    /// `[Spacer, iconCluster]` either way, so `iconCluster` still gets pushed fully to the
+    /// trailing edge).
+    private var headerLeadingSlot: some View {
+        Group {
+            if !cleanMode {
+                Button(action: { onTapHostBadge?() }) { hostPill }
+                    .buttonStyle(PlainButtonStyle())
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .accessibilityIdentifier(LBAccessibilityID.playerHeaderHostPill)
+            } else {
+                Spacer(minLength: 8)
+            }
+        }
+    }
+
+    /// Test-only hook exposing the SAME `headerLeadingSlot` subtree `body` renders, so unit tests
+    /// (rb-ios-player-header-title-flex-width) can make STRUCTURAL assertions confirming the
+    /// width-claiming `.frame(maxWidth: .infinity)` modifier is actually attached to the
+    /// `!cleanMode` branch's `Button`, and that the `cleanMode` branch is still a plain `Spacer`.
+    /// Follows the established `hostPillForTesting` / `iconClusterForTesting` precedent.
+    ///
+    /// MUST NOT be called from production code (it is on no `body` path, so it costs zero pixels),
+    /// and MUST keep returning the very same `headerLeadingSlot` — never a parallel copy, which
+    /// would decouple the structural assertions from what is actually drawn.
+    var headerLeadingSlotForTesting: some View { headerLeadingSlot }
 
     // MARK: - Host pill (LBPTopBar / LBPHostBadge)
 
@@ -503,13 +571,35 @@ public struct PlayerHeaderBarView: View {
     /// two copies drift, and that downgrades the equal-height guarantee from a structural fact to a
     /// coincidence. `Text(...).lineLimit(1)` already IS the design's non-scrolling branch (nowrap +
     /// overflow hidden + tail ellipsis).
+    ///
+    /// ⚠️ VISIBILITY vs. LAYOUT are two different roles (`rb-ios-marquee-title-overlay-fix`). The
+    /// `Text` below still owns the LAYOUT role above — same font / `lineLimit(1)` / no `.frame`,
+    /// still what the surrounding `HStack`/`VStack` measures and squeezes. But it MUST NOT also be
+    /// assumed to be the ONE visible copy: `.overlay()` only ever PAINTS ON TOP, it never hides
+    /// what is underneath. The base `Text` here therefore carries `.opacity(0)` — a pure paint-time
+    /// no-op that does NOT change its intrinsic size (SwiftUI opacity never affects layout), so
+    /// every guarantee above still holds — and the actually-visible content is decided exclusively
+    /// inside the `.overlay(GeometryReader { ... })`'s `Group { if/else }`: the marquee when
+    /// `showsMarqueeTitle` holds, or a plain visible `Text` sharing the SAME `font` / `title` /
+    /// `.lineLimit(1)` locals otherwise. Exactly one of those two branches is ever instantiated by
+    /// Swift's own `if/else` semantics (compiled to `_ConditionalContent<Marquee, Text>`, whose
+    /// storage is an enum of the two cases — never both at once), so at any instant there is
+    /// exactly one PAINTED title: the invisible ghost contributes zero pixels, and whichever
+    /// branch the `Group` picked contributes the only visible one. Before this change, the base
+    /// `Text` was ALSO the visible layer, so once `MarqueeTitleLoopView.startScroll()` actually
+    /// animated the overlay's offset (`.onAppear`, which `ImageRenderer` never fires — see that
+    /// view's own doc comment — so no snapshot ever caught this), the static base and the moving
+    /// overlay visibly diverged into overlapping/ghosting text. See `VideoTitleScrollTests` for what
+    /// automated coverage can and cannot see here (structural
+    /// assertions on the ghost's opacity + this file's `Group` shape; NOT the mid-animation frame
+    /// itself, which remains a documented `ImageRenderer` blind spot).
     private var titleView: some View {
         let font = Font.system(size: 12 * theme.fontScale, weight: .bold)
         let textWidth = Self.marqueeIntrinsicTextWidth(title, fontSize: 12 * theme.fontScale)
         return Text(title)
             .font(font)
-            .foregroundColor(onGlass)
             .lineLimit(1)
+            .opacity(0) // layout ghost only — reserves height/squeeze, paints nothing (see above)
             .overlay(
                 GeometryReader { proxy in
                     let containerWidth = proxy.size.width
@@ -526,6 +616,14 @@ public struct PlayerHeaderBarView: View {
                                 gap: Self.marqueeGap,
                                 durationSeconds: Self.marqueeDurationSeconds(textWidth: textWidth)
                             )
+                        } else {
+                            // The ONLY visible content when not scrolling — same font/title/
+                            // lineLimit locals as the ghost above, so it is pixel-identical to
+                            // what the ghost used to paint on its own before this change.
+                            Text(title)
+                                .font(font)
+                                .foregroundColor(onGlass)
+                                .lineLimit(1)
                         }
                     }
                 },
@@ -708,11 +806,14 @@ public struct PlayerHeaderBarView: View {
     /// pixels), and MUST keep returning the very same `viewerBadge` — never a parallel copy.
     var viewerBadgeForTesting: some View { viewerBadge }
 
-    // MARK: - Trailing control — SINGLE minimize button (LBPTopBar pip affordance)
+    // MARK: - Trailing control — SINGLE minimize/close button (LBPTopBar pip affordance)
     //
-    // The top-right contains ONLY a minimize control (design `LBPTopBar` pip; user
-    // requirement「右上角只有縮小的元件」). Tapping it collapses the player into the
-    // bottom-right floating preview (host-owned, reusing `FloatingWidgetView`). info /
+    // The top-right contains ONLY a minimize/close control (design `LBPTopBar` pip; user
+    // requirement「右上角只有縮小的元件」). By default (`showCloseIcon == false`) tapping it
+    // collapses the player into the bottom-right floating preview (host-owned, reusing
+    // `FloatingWidgetView`). When `showCloseIcon == true` (`rb-ios-player-direct-close-button`)
+    // the icon swaps to `xmark` and the caller (`LivebuyPlayerPresenter`) wires the SAME tap to a
+    // direct dismiss instead — this view never decides which; it only draws what it is told. info /
     // share live in the side rail; mute is the tap-to-unmute gesture on the video area.
 
     /// Minimize (PIP) glyph base size in points, before `theme.fontScale` (design
@@ -728,10 +829,31 @@ public struct PlayerHeaderBarView: View {
     /// itself was re-approved from 18 to 20 (commit `ae8b1b2e`).
     static let minimizeGlyphSize: CGFloat = 20
 
-    /// A 36×36 round glass icon button (live-chrome.jsx iconBtn) drawing the
+    /// SF Symbol `xmark` glyph size in points for the top-right button's CLOSE mode
+    /// (`showCloseIcon == true`, `rb-ios-player-direct-close-button`). No `theme.fontScale`
+    /// multiplication — matches this exact 36×36-button cluster's sibling `muteToggleButton`
+    /// SF Symbol precedent below (`.font(.system(size: 15, weight: .semibold))`), the closest
+    /// existing "SF Symbol inside this file's 36×36 glass icon button" reference point, chosen
+    /// over `FloatingWidgetView.closeButton`'s `12pt`/28×28 ratio because that button is a
+    /// DIFFERENT (smaller) size class.
+    static let closeGlyphSize: CGFloat = 15
+
+    /// Pure derivation of the top-right button's accessibility label from `showCloseIcon`
+    /// (`rb-ios-player-direct-close-button`). A `static func` (no instance needed) so the render
+    /// site and a unit test share exactly one source — mirrors this file's other pure `static
+    /// func` helpers (`showsViewerBadge` / `formatViewerCount` / …).
+    static func minimizeButtonAccessibilityLabel(showCloseIcon: Bool) -> String {
+        showCloseIcon ? "關閉" : "最小化"
+    }
+
+    /// A 36×36 round glass icon button (live-chrome.jsx iconBtn) drawing either the
     /// hand-drawn `PipGlyph` (design `Icons.pip` — frame + inset rect + directional
-    /// arrow, rb-ios-icon-parity; replaces SF Symbol `pip.enter`). Inert when
-    /// `onMinimize` is nil — still rendered so the chrome is visually complete.
+    /// arrow, rb-ios-icon-parity; replaces SF Symbol `pip.enter`) or, when `showCloseIcon`
+    /// is `true` (`rb-ios-player-direct-close-button`), SF Symbol `xmark`. Inert when
+    /// `onMinimize` is nil — still rendered so the chrome is visually complete. The TAP
+    /// still calls the very same `onMinimize` closure in both icon states — only the icon
+    /// + accessibility label are gated on `showCloseIcon`; WHAT the tap actually does is
+    /// entirely the caller's decision (`LivebuyPlayerPresenter.composedConfig`), not this view's.
     ///
     /// Immediately to its LEADING side, a clean-mode-only mute-toggle button
     /// (`rb-ios-gesture-clean-mode-v2`, design R29) draws ONLY when `onToggleMute` is
@@ -747,14 +869,32 @@ public struct PlayerHeaderBarView: View {
                 }
             }
             Button(action: { onMinimize?() }) {
-                PipGlyph(size: Self.minimizeGlyphSize * theme.fontScale, color: onGlass)
-                    .frame(width: 36, height: 36)
-                    .background(Circle().fill(iconGlass))
+                Group {
+                    if showCloseIcon {
+                        Image(systemName: "xmark")
+                            .font(.system(size: Self.closeGlyphSize, weight: .semibold))
+                            .foregroundColor(onGlass)
+                    } else {
+                        PipGlyph(size: Self.minimizeGlyphSize * theme.fontScale, color: onGlass)
+                    }
+                }
+                .frame(width: 36, height: 36)
+                .background(Circle().fill(iconGlass))
             }
             .buttonStyle(PlainButtonStyle())
             .accessibilityIdentifier(LBAccessibilityID.playerMinimize)
+            .accessibilityLabel(Self.minimizeButtonAccessibilityLabel(showCloseIcon: showCloseIcon))
         }
     }
+
+    /// Test-only hook exposing the SAME `iconCluster` subtree `body` renders, so unit tests
+    /// (rb-ios-player-direct-close-button) can make STRUCTURAL assertions confirming which
+    /// glyph is actually drawn for a given `showCloseIcon` value. Follows the established
+    /// `hostPillForTesting` / `viewerBadgeForTesting` / `avatarForTesting` precedent.
+    ///
+    /// MUST NOT be called from production code (it is on no `body` path, so it costs zero
+    /// pixels), and MUST keep returning the very same `iconCluster` — never a parallel copy.
+    var iconClusterForTesting: some View { iconCluster }
 
     /// The clean-mode-only mute-toggle button (`rb-ios-gesture-clean-mode-v2`, design R29):
     /// a 36×36 round glass icon button matching `iconCluster`'s minimize button styling,
@@ -1051,7 +1191,8 @@ extension PlayerHeaderBarView {
                      replay: Bool = false,
                      title: String = "夏日彩妝特賣",
                      titleScroll: Bool = true,
-                     startPhase: LBStartScreenPhase = .done) -> PlayerHeaderBarView {
+                     startPhase: LBStartScreenPhase = .done,
+                     showCloseIcon: Bool = false) -> PlayerHeaderBarView {
         PlayerHeaderBarView(
             theme: theme,
             title: title,
@@ -1062,7 +1203,8 @@ extension PlayerHeaderBarView {
             isLive: live,
             isReplay: replay,
             titleScroll: titleScroll,
-            startPhase: startPhase
+            startPhase: startPhase,
+            showCloseIcon: showCloseIcon
         )
     }
 }

@@ -152,6 +152,26 @@ extension EnvironmentValues {
     }
 }
 
+// MARK: - Main-image container-width measurement (rb-ios-product-detail-main-image-scale-down-
+// letterbox, design.md D2 candidate A)
+//
+// A `.background`-mounted `GeometryReader` reports its size via `PreferenceKey` WITHOUT
+// affecting its own layout (it paints at whatever size its foreground content already resolved
+// to; it requests / reports no additional size upward). Mirrors `BottomSheetPresenter.swift`'s
+// `sheetHeightReader(_:)` / `SheetContentHeightKey` / `CardHeightKey` recipe — the SAME sheet
+// this view lives inside already relies on that recipe for its OWN auto-height measurement, so
+// this is not a new/unproven technique in this codebase.
+//
+// Distinct from the `ios-variant-prompt-overlay-fix` landmine (see `sheetContent`'s doc comment
+// above): that was a `GeometryReader` used AS a sheet card's PRIMARY (greedy, fills all offered
+// space) body content, which distorted the CARD's own ancestor height measurement. A
+// `.background` `GeometryReader` is structurally the opposite — it is sized BY its foreground,
+// never the other way around.
+private struct MainImageWidthKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
 /// The family-3 product-detail sheet for one `LBProductDetailState`. Renders the
 /// product photo / name / price (with strike-through original), the variant chip
 /// picker (one `LBPVariantPicker` per group), the qty stepper, and the primary
@@ -317,7 +337,16 @@ public struct ProductDetailSheetView: View {
     /// `ProductZoomOverlayView` (rb-ios-product-image-zoom-lightbox). nil for demo /
     /// snapshot instances (the badge renders byte-identical to the prior decorative
     /// badge; tap is a no-op).
-    private let onZoomImage: (() -> Void)?
+    ///
+    /// Carries the tapped photo's verbatim string (rb-ios-product-detail-image-gallery,
+    /// design R34) — `zoomBadge` (`.detail`, the multi-image gallery) passes
+    /// ``currentGalleryPhoto``, the CURRENTLY SELECTED gallery page, so the lightbox
+    /// magnifies the same photo the user is looking at, not always the resolver's
+    /// primary. `compactZoomBadge` (`.addToCart`, no gallery) passes `resolvedPhoto
+    /// .primaryPhoto` unchanged — same value it always implicitly zoomed to. nil is a
+    /// legitimate payload (no photos) and MUST be treated by the container as "use the
+    /// resolver's existing fallback", not as an error.
+    private let onZoomImage: ((String?) -> Void)?
 
     /// Host-wired「更多商品」推薦卡**卡片本體**tap → the container pushes the CURRENT product
     /// into its local `detailBreadcrumb` and resolves + forwards the recommendation's REAL
@@ -333,6 +362,38 @@ public struct ProductDetailSheetView: View {
     /// view only WIRES the play button when the item's `videoId` is non-nil (task 4.1 — a nil
     /// `videoId` hides the button entirely, regardless of whether this closure is set).
     private let onPlayRecommendation: ((LBProductRecommendation) -> Void)?
+
+    /// The CURRENTLY SELECTED page of the `.detail` product-photo gallery
+    /// (rb-ios-product-detail-image-gallery, design R34). A LOCAL presentation-only index
+    /// (NOT view-model state) — swiping the main image or tapping a thumbnail changes it;
+    /// swapping `variant.selectedSpec` to a source with fewer photos does NOT reset it (it
+    /// is simply clamped back into range, mirroring `NowIntroducingCarouselView`'s established
+    /// index-clamping recipe). Default `0` → every EXISTING call site (photos.count ≤ 1, e.g.
+    /// `ProductSheetsOverlayView.demoDetail()`'s deliberately-empty `photos`) renders the
+    /// single placeholder page byte-identical to before the gallery existed.
+    @State private var activePhotoIndex: Int = 0
+
+    /// Native pixel size (IN POINTS — `UIImage.size`) of each `.detail` gallery photo that has
+    /// FINISHED loading, keyed by the photo's URL STRING (NOT `activePhotoIndex` —
+    /// rb-ios-product-detail-main-image-scale-down-letterbox design.md D3: an index would
+    /// misattribute a stale size to a NEW photo at the same position after `selectedSpec`
+    /// swaps `resolvedPhoto.photos` to a different array). A given URL is written AT MOST from
+    /// `RemoteStillImageView.onImageLoaded`, which is ONLY ever constructed when `live == true`
+    /// (the existing `if live, let url = …` gate this change does not touch) — so this dictionary
+    /// is STRUCTURALLY guaranteed to stay empty for `live == false` (demo/snapshot) and for any
+    /// `live == true` page whose image is still loading or failed to load, keeping both cases on
+    /// the byte-identical placeholder branch of `galleryMainImage` (design.md D4).
+    @State private var loadedPhotoSizes: [String: CGSize] = [:]
+
+    /// The `.detail` main-image container's own rendered width, measured via a `.background`
+    /// `GeometryReader` + `PreferenceKey` (design.md D2 candidate A — the SAME established,
+    /// battle-tested recipe `LBSheetScaffold` already uses for its own auto-height measurement,
+    /// see `BottomSheetPresenter.swift`'s `sheetHeightReader(_:)` / `CardHeightKey`). `nil` until
+    /// the first layout pass reports it (falls back to `Self.fallbackMainImageContainerWidth` —
+    /// design.md candidate B's constant, used here ONLY as a defensive bootstrap default so a
+    /// same-frame `scaleDownFit` call never divides by an unmeasured width, not as the primary
+    /// measurement strategy).
+    @State private var mainImageContainerWidth: CGFloat? = nil
 
     public init(
         theme: ReferenceUITheme,
@@ -363,7 +424,7 @@ public struct ProductDetailSheetView: View {
         onToggleFavorite: (() -> Void)? = nil,
         onShare: (() -> Void)? = nil,
         onDismiss: (() -> Void)? = nil,
-        onZoomImage: (() -> Void)? = nil,
+        onZoomImage: ((String?) -> Void)? = nil,
         onOpenRecommendation: ((LBProductRecommendation) -> Void)? = nil,
         onQuickAddRecommendation: ((LBProductRecommendation) -> Void)? = nil,
         onPlayRecommendation: ((LBProductRecommendation) -> Void)? = nil
@@ -595,6 +656,15 @@ public struct ProductDetailSheetView: View {
     /// copy, which would decouple the assertions from what is actually drawn.
     var detailBodyContentForTesting: some View { detailBodyContent }
 
+    /// Test-only hook exposing the SAME product-photo gallery `body` renders (mirrors
+    /// `detailBodyContentForTesting`), so unit tests can pixel-sample the gallery in isolation
+    /// (thumbnail-row presence / dim-overlay pixels) without needing to compute its offset
+    /// inside the full sheet body (rb-ios-product-detail-image-gallery).
+    ///
+    /// MUST NOT be called from production code (it is on no `body` path, so it costs zero
+    /// pixels), and MUST keep returning the very same `productPhoto` — never a parallel copy.
+    var productPhotoForTesting: some View { productPhoto }
+
     // MARK: - Trailing section (rb-ios-product-detail-bottom-gray-gap-fix)
     //
     // Which of the THREE `.detail` body sections ends up LAST VISIBLE depends on two
@@ -750,53 +820,281 @@ public struct ProductDetailSheetView: View {
         .padding(.bottom, 8)
     }
 
-    // MARK: - Product photo (AddToCartSheet 4:3 thumb — SPEC-AWARE, deterministic placeholder)
+    // MARK: - Product photo gallery (rb-ios-product-detail-image-gallery, design R34)
     //
-    // `photos` are remote URLs; reference-ui keeps snapshots deterministic (no
-    // network / AsyncImage), so it draws a 4:3 gradient placeholder chip with a
-    // monogram (host can swap in a real image). Mirrors the design's rounded media.
+    // `.detail`'s main photo is a SWIPEABLE multi-image gallery: `resolvedPhoto.photos`
+    // (SPEC-AWARE — the selected spec's photos when it has a drawable one, otherwise the
+    // product level, ios-product-sheet-spec-photo-reference-ui) drives however many pages
+    // there are, plus a below thumbnail row (tap-to-jump, non-current thumbnails dimmed)
+    // when there is more than one photo. `photos` are remote URLs; reference-ui keeps
+    // snapshots deterministic (no network / AsyncImage), so every page draws a gradient
+    // placeholder chip with a monogram (host can swap in a real image via `live`).
     //
-    // WHICH photo comes from `resolvedPhoto` — the selected spec's when that spec has a
-    // drawable photo, otherwise the product level (ios-product-sheet-spec-photo-reference-ui).
-    // Previously this read `detail.photos` unconditionally, so picking「玫瑰棕」left the photo
-    // showing「珊瑚橘」while the price line (fixed by the sibling change) already followed the
-    // spec — for colour / style variants that is a wrong-item risk, not a cosmetic one.
-    // The monogram placeholder itself is UNCHANGED and still drawn from the product name.
+    // A ≤1-photo source (every EXISTING call site — `ProductSheetsOverlayView.demoDetail()`'s
+    // `photos` is DELIBERATELY empty, see its own doc comment) renders EXACTLY the pre-gallery
+    // single-page pixels: `galleryMainImage` alone reproduces the prior `productPhoto` output
+    // byte-for-byte (a `VStack` with ONE child adds no spacing/padding of its own), and the
+    // thumbnail row + swipe gesture are both no-ops when there is nothing to page through.
 
     private var productPhoto: some View {
-        ZStack {
-            LinearGradient(
-                gradient: Gradient(colors: [
-                    Color(hex: "#FFD7A8") ?? .orange,
-                    Color(hex: "#E27D5A") ?? .orange,
-                ]),
-                startPoint: .topLeading, endPoint: .bottomTrailing)
-            Text(Self.monogram(for: detail.name))
-                .font(.system(size: 26 * theme.fontScale, weight: .heavy))
-                .foregroundColor(.white.opacity(0.92))
-            // `live` + a real photo → the product image loads over the gradient placeholder
-            // (rb-ios-product-real-images). Snapshot / demo (`live == false`) keeps the gradient.
-            // The photo comes from `resolvedPhoto` — SPEC-AWARE with a product-level fallback
-            // (ios-product-sheet-spec-photo-reference-ui).
-            if live, let url = resolvedPhoto.primaryPhotoURL {
-                RemoteStillImageView(url: url, contentMode: .scaleAspectFill)
+        VStack(alignment: .leading, spacing: 10) {
+            galleryMainImage
+            if resolvedPhoto.photos.count > 1 {
+                galleryThumbnailRow
+            }
+        }
+    }
+
+    /// The current gallery page. WHICH page is `activePhotoIndex`, clamped into
+    /// `resolvedPhoto.photos`' current range — `resolvedPhoto` can swap to a source with fewer
+    /// photos when `variant.selectedSpec` changes, and the clamp keeps a stale index from
+    /// reading out of bounds.
+    ///
+    /// Two structurally-exclusive branches (rb-ios-product-detail-main-image-scale-down-
+    /// letterbox design.md D4), decided by whether `loadedPhotoSizes` already has this exact
+    /// page's native size:
+    ///   - UNKNOWN (this page's `loadedPhotoSizes` entry is absent) — the ORIGINAL gradient +
+    ///     monogram placeholder at a fixed 168pt height, BYTE-IDENTICAL to this view before this
+    ///     change. `loadedPhotoSizes` can ONLY ever be written from a `RemoteStillImageView`
+    ///     that this branch itself constructs (gated by the pre-existing `live == true` check),
+    ///     so `live == false` (every demo/snapshot fixture) structurally NEVER leaves this
+    ///     branch — no additional guard needed to keep those baselines pixel-locked.
+    ///   - KNOWN (native size on file) — scale-down-and-letterbox (design.md's formula, see
+    ///     `scaleDownFit(nativeSize:containerWidth:)`): a pure-white background (D5) sized to
+    ///     `containerHeight`, with the photo drawn at its scaled `displaySize` and centered by
+    ///     the `ZStack`'s default alignment.
+    private var galleryMainImage: some View {
+        let photos = resolvedPhoto.photos
+        let index = Self.clampGalleryIndex(activePhotoIndex, count: photos.count)
+        let url = Self.galleryPhotoURL(photos, at: index)
+        let knownSize = url.flatMap { loadedPhotoSizes[$0.absoluteString] }
+        let fit = knownSize.map {
+            Self.scaleDownFit(
+                nativeSize: $0,
+                containerWidth: mainImageContainerWidth ?? Self.fallbackMainImageContainerWidth)
+        }
+        let isKnown = (fit?.containerHeight ?? 0) > 0
+
+        return ZStack {
+            if isKnown, let fit = fit, let url = url {
+                // KNOWN native size → scale-down-and-letterbox. Background is a WHOLE-FRAME
+                // pure white (D5 — not the gradient with white only over the letterbox gap), and
+                // `.scaleAspectFit` (D7) is a defensive choice: once the frame IS the image's own
+                // scaled aspect ratio, `.scaleAspectFit` / `.scaleAspectFill` draw identically,
+                // but `.scaleAspectFit` can never crop a hair off an edge under floating-point
+                // rounding — honoring "never crop" over "never leave a sub-pixel gap".
+                Color.white
+                RemoteStillImageView(url: url, contentMode: .scaleAspectFit)
+                    .frame(width: fit.displaySize.width, height: fit.displaySize.height)
+            } else {
+                LinearGradient(
+                    gradient: Gradient(colors: [
+                        Color(hex: "#FFD7A8") ?? .orange,
+                        Color(hex: "#E27D5A") ?? .orange,
+                    ]),
+                    startPoint: .topLeading, endPoint: .bottomTrailing)
+                Text(Self.monogram(for: detail.name))
+                    .font(.system(size: 26 * theme.fontScale, weight: .heavy))
+                    .foregroundColor(.white.opacity(0.92))
+                // `live` + a real photo → the product image loads over the gradient placeholder
+                // (rb-ios-product-real-images). Snapshot / demo (`live == false`) keeps the
+                // gradient. `onImageLoaded` records the decoded native size so THIS SAME page
+                // flips to the KNOWN branch above on the next render
+                // (rb-ios-product-detail-main-image-scale-down-letterbox).
+                if live, let url = url {
+                    RemoteStillImageView(url: url, contentMode: .scaleAspectFill, onImageLoaded: { size in
+                        loadedPhotoSizes[url.absoluteString] = size
+                    })
+                }
             }
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 168)
+        .frame(height: (isKnown ? fit?.containerHeight : nil) ?? 168)
+        // Container-width measurement feeding `scaleDownFit` above — see `MainImageWidthKey`'s
+        // doc comment for why this `.background` `GeometryReader` is NOT the
+        // `ios-variant-prompt-overlay-fix` landmine.
+        .background(
+            GeometryReader { proxy in
+                Color.clear.preference(key: MainImageWidthKey.self, value: proxy.size.width)
+            }
+        )
+        .onPreferenceChange(MainImageWidthKey.self) { width in
+            if width > 0 { mainImageContainerWidth = width }
+        }
         // Zoom affordance (design `screens.jsx:644-647`: right:10 bottom:10, 32×32,
         // white@0.85 disc, zoom glyph #15131a). Decorative (pinch-to-zoom is a host
         // concern); paints the design's media-zoom badge over the photo.
         .overlay(zoomBadge, alignment: .bottomTrailing)
         .clipShape(RoundedRectangle(cornerRadius: 12))
+        .contentShape(Rectangle())
+        // Horizontal swipe → next/previous gallery page (design `scrollSnapType:'x mandatory'`
+        // drag-to-page). Mirrors `NowIntroducingCarouselView`'s established recipe EXACTLY:
+        // `.highPriorityGesture` + `minimumDistance: 10` + a horizontal-vs-vertical direction
+        // gate, so a committed horizontal drag still wins over the zoom badge's `Button` and
+        // the sheet's own vertical drag-to-dismiss, while a plain tap (no movement) or a
+        // vertical drag falls through unaffected. Harmless no-op when there is ≤1 photo
+        // (`handleGallerySwipe` always clamps back to index 0), so this is unconditionally
+        // attached rather than gated — zero interaction change for every EXISTING call site.
+        //
+        // Stays attached to the OUTER container in BOTH branches (design.md D6) — not the inner
+        // scaled-image node in the KNOWN branch above — so the zoom badge never drifts off its
+        // bottom-trailing corner and the swipe hit-area always covers the full letterbox gap,
+        // not just the visible photo pixels.
+        .highPriorityGesture(
+            DragGesture(minimumDistance: 10)
+                .onEnded { handleGallerySwipe($0) }
+        )
+        // E2E: the gallery's current page (visual-only container; the zoom badge Button is
+        // a child).
+        .accessibilityElement(children: .contain)
+    }
+
+    /// The 縮圖選取列 (design R34): 48×48 thumbnails, 8pt gap, tap-to-jump, non-current
+    /// thumbnails carry a `rgba(0,0,0,0.5)` dim overlay. Only mounted when there is more
+    /// than one photo (`productPhoto`'s gate) — its own presence never affects the ≤1-photo
+    /// byte-identical guarantee above.
+    ///
+    /// DELIBERATE DEVIATION from the design's native `overflowX:'auto'` browser scroll: this
+    /// module NEVER renders `ScrollView` / `Lazy*` in rendered content anywhere (the
+    /// `ImageRenderer` snapshot path renders those BLANK — see `CarouselRowView` /
+    /// `WidgetOverlayView` for the established "host-owned ScrollView" alternative, which is
+    /// architecturally too heavy to introduce for a single sheet's thumbnail strip). A plain
+    /// `HStack` is used instead and `.clipped()` at the sheet's content width — a gallery with
+    /// more thumbnails than fit is clipped at the edge rather than scrollable. Every gallery in
+    /// this codebase's own demo data (design `sdk-components.jsx:LB_DEMO.products`, R34) tops
+    /// out at 8 photos; this is an accepted, documented trade-off, not a regression (there was
+    /// no thumbnail row — scrollable or otherwise — before this change).
+    private var galleryThumbnailRow: some View {
+        let photos = resolvedPhoto.photos
+        let index = Self.clampGalleryIndex(activePhotoIndex, count: photos.count)
+        return HStack(spacing: 8) {
+            ForEach(photos.indices, id: \.self) { i in
+                galleryThumbnail(photos[i], isSelected: i == index, index: i)
+            }
+        }
+        .clipped()
+    }
+
+    private func galleryThumbnail(_ photo: String, isSelected: Bool, index: Int) -> some View {
+        Button(action: { activePhotoIndex = index }) {
+            ZStack {
+                RoundedRectangle(cornerRadius: 4)
+                    .fill(Self.bgSunken)
+                if live, let url = Self.galleryPhotoURL([photo], at: 0) {
+                    RemoteStillImageView(url: url, contentMode: .scaleAspectFill)
+                }
+                // Non-current-page dim overlay (design `rgba(0,0,0,0.5)`).
+                if !isSelected {
+                    Rectangle().fill(Color.black.opacity(0.5))
+                }
+            }
+            .frame(width: 48, height: 48)
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+        }
+        .buttonStyle(PlainButtonStyle())
+        .accessibilityIdentifier(LBAccessibilityID.productGalleryThumbnail(index))
+    }
+
+    /// The CURRENT gallery page's verbatim photo string (untrimmed, exactly as stored in
+    /// `resolvedPhoto.photos`), or nil (no photos at all). Fed to `onZoomImage` as the
+    /// lightbox's override payload so `ProductZoomOverlayView` magnifies the SAME image the
+    /// user is currently looking at (rb-ios-product-detail-image-gallery), not always the
+    /// resolver's `primaryPhoto`.
+    private var currentGalleryPhoto: String? {
+        let photos = resolvedPhoto.photos
+        guard !photos.isEmpty else { return nil }
+        return photos[Self.clampGalleryIndex(activePhotoIndex, count: photos.count)]
+    }
+
+    /// Horizontal swipe → next/previous gallery page. Mirrors `NowIntroducingCarouselView
+    /// .body`'s drag-to-page recipe: direction-gated (a predominantly-vertical drag is a
+    /// no-op, so the sheet's own drag-to-dismiss keeps working), fires on `.onEnded`, and
+    /// clamps into range via ``clampGalleryIndex(_:count:)``.
+    private func handleGallerySwipe(_ value: DragGesture.Value) {
+        let photos = resolvedPhoto.photos
+        guard abs(value.translation.width) > abs(value.translation.height) else { return }
+        let index = Self.clampGalleryIndex(activePhotoIndex, count: photos.count)
+        if value.translation.width <= -Self.gallerySwipeThreshold {
+            activePhotoIndex = Self.clampGalleryIndex(index + 1, count: photos.count)
+        } else if value.translation.width >= Self.gallerySwipeThreshold {
+            activePhotoIndex = Self.clampGalleryIndex(index - 1, count: photos.count)
+        }
+    }
+
+    /// Minimum horizontal drag distance (pt) to page the gallery — same value as
+    /// `NowIntroducingCarouselView.swipeThreshold`.
+    static let gallerySwipeThreshold: CGFloat = 40
+
+    /// Clamps a gallery page index into `[0, max(count - 1, 0)]` — pure. Guards a stale
+    /// `activePhotoIndex` after `resolvedPhoto` swaps to a source with fewer photos (a
+    /// `selectedSpec` change), and gives a `count == 0` source a single (empty) page so
+    /// callers never need a separate "no photos" branch.
+    static func clampGalleryIndex(_ index: Int, count: Int) -> Int {
+        guard count > 0 else { return 0 }
+        return min(max(index, 0), count - 1)
+    }
+
+    /// The photo URL for gallery page `index` of `photos`, or nil (index out of range, or the
+    /// entry is blank after trimming → that page draws the gradient + monogram placeholder).
+    /// Pure. Mirrors `photoURL(_:selectedSpec:)`'s trim-for-URL-construction convention —
+    /// `photos` is `resolvedPhoto`'s VERBATIM copy of the winning source; trimming here is
+    /// judgement + URL construction only, never applied to a value handed back elsewhere.
+    static func galleryPhotoURL(_ photos: [String], at index: Int) -> URL? {
+        guard photos.indices.contains(index) else { return nil }
+        let trimmed = photos[index].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return URL(string: trimmed)
+    }
+
+    // MARK: - Main-image scale-down-and-letterbox (rb-ios-product-detail-main-image-scale-down-
+    // letterbox, design.md D1-D7)
+
+    /// Bootstrap width for `scaleDownFit` on a render pass BEFORE `mainImageContainerWidth` has
+    /// been measured at least once (design.md D2 candidate B's constant, repurposed here as a
+    /// one-frame-only fallback rather than the primary measurement strategy — see
+    /// `mainImageContainerWidth`'s doc comment). Mirrors this sheet's own established
+    /// `.padding(.horizontal, 16)` convention (screen width minus 16pt each side).
+    static var fallbackMainImageContainerWidth: CGFloat { UIScreen.main.bounds.width - 32 }
+
+    /// Scale-down-and-letterbox layout for the `.detail` main image: scales `nativeSize` DOWN
+    /// (never up — `scale` is capped at `1`) to fit within a `containerWidth`-wide, `containerWidth
+    /// × 2`-tall bounding box, preserving aspect ratio, and never crops (the WHOLE image is
+    /// always shown). Pure — the user-specified formula verbatim:
+    /// ```
+    /// scale = min(1, containerWidth / nativeWidth, (containerWidth × 2) / nativeHeight)
+    /// displaySize = nativeSize × scale
+    /// containerHeight = displaySize.height
+    /// ```
+    /// The caller centers `displaySize` within a `containerWidth`-wide, `containerHeight`-tall
+    /// frame — any leftover gap is HORIZONTAL only, since the container's own height always
+    /// equals the image's scaled height (never the other way around).
+    ///
+    /// A degenerate `nativeSize` (a zero/negative width or height — never produced by a real
+    /// decoded `UIImage`, but guarded so this function can never divide by zero / propagate NaN
+    /// or `.infinity`) or a non-positive `containerWidth` returns `(.zero, 0)`; callers treat a
+    /// `containerHeight <= 0` result as "not actually known" and fall back to the placeholder
+    /// branch (`galleryMainImage`'s `isKnown` check).
+    static func scaleDownFit(
+        nativeSize: CGSize, containerWidth: CGFloat
+    ) -> (displaySize: CGSize, containerHeight: CGFloat) {
+        guard containerWidth > 0, nativeSize.width > 0, nativeSize.height > 0 else {
+            return (.zero, 0)
+        }
+        let widthScale = containerWidth / nativeSize.width
+        let heightScale = (containerWidth * 2) / nativeSize.height
+        let scale = min(1, widthScale, heightScale)
+        let displaySize = CGSize(width: nativeSize.width * scale, height: nativeSize.height * scale)
+        return (displaySize, displaySize.height)
     }
 
     /// Media-zoom badge pinned to the photo's bottom-trailing corner (design's
     /// `Icons.zoom` disc). TAPPABLE → `onZoomImage` opens the full-frame lightbox
-    /// (rb-ios-product-image-zoom-lightbox). `PlainButtonStyle` keeps the disc /
-    /// glyph pixels byte-identical to the prior decorative badge.
+    /// (rb-ios-product-image-zoom-lightbox), passing the gallery's CURRENTLY SELECTED page
+    /// (`currentGalleryPhoto`, rb-ios-product-detail-image-gallery) as the override payload.
+    /// `PlainButtonStyle` keeps the disc / glyph pixels byte-identical to the prior
+    /// decorative badge.
     private var zoomBadge: some View {
-        Button(action: { onZoomImage?() }) {
+        Button(action: { onZoomImage?(currentGalleryPhoto) }) {
             ZStack {
                 Circle().fill(Color.white.opacity(0.85))
                 Image(systemName: "magnifyingglass")
@@ -875,7 +1173,10 @@ public struct ProductDetailSheetView: View {
     /// TAPPABLE → `onZoomImage` opens the full-frame lightbox; `PlainButtonStyle` keeps pixels
     /// byte-identical to the prior decorative badge.
     private var compactZoomBadge: some View {
-        Button(action: { onZoomImage?() }) {
+        // `.addToCart` has no gallery — the payload is unconditionally `resolvedPhoto
+        // .primaryPhoto` (rb-ios-product-detail-image-gallery), the SAME value this badge
+        // always implicitly zoomed to before `onZoomImage` carried a payload.
+        Button(action: { onZoomImage?(resolvedPhoto.primaryPhoto) }) {
             ZStack {
                 Circle().fill(Color.black.opacity(0.55))
                 Image(systemName: "magnifyingglass")

@@ -169,6 +169,47 @@ public final class DefaultPlayerTemplate {
         productOverlay.products.filter { $0.narrateStatus == 2 }
     }
 
+    /// UNIFIED product-list ordering read point — extends the LIVE-only
+    /// `productOverlay.productsIntroducingFirst` (single `narrate_status==2`
+    /// `activeProduct` moved to front) to ALSO reorder for VOD / replay, so
+    /// `ProductSheetsModel`'s product-list drawer can bind ONE computed regardless of
+    /// live-vs-VOD (vod-product-list-introducing-order-template).
+    ///
+    /// - LIVE (`header.isLive == true`): delegates UNCHANGED to
+    ///   `productOverlay.productsIntroducingFirst` (existing single-active-to-front
+    ///   behaviour, untouched).
+    /// - VOD / replay (`header.isLive == false`): when `vodActiveProducts` (ALREADY
+    ///   ordered, beginTime ascending — this property does NOT re-derive or re-sort
+    ///   that ordering) is non-empty, ALL of its members move to the front IN THAT
+    ///   EXACT ORDER, followed by the remaining `productOverlay.products` preserving
+    ///   their existing relative order (`filter` is order-preserving). Empty
+    ///   `vodActiveProducts` (nothing playing at the current position) →
+    ///   `productOverlay.products` unchanged.
+    ///
+    /// Branch selection deliberately reads `header.isLive` (the explicit, authoritative
+    /// live/VOD flag), NEVER "`vodActiveProducts` is non-empty" — `vodActiveProducts`
+    /// has no live-status gate of its own, so in a theoretical edge case both could be
+    /// non-empty at once; `isLive` wins so the LIVE branch's behaviour never depends on
+    /// whether a live product happens to also carry a `begin_time`/`end_time` window.
+    ///
+    /// Pure computed — no second state, no new notification channel (feeds off the
+    /// already-wired `productOverlay` / `playbackProgress` / `header` mutation
+    /// channels). `DefaultProductOverlayState.productsIntroducingFirst` itself is
+    /// UNCHANGED (kept for direct LIVE-only testing / back-compat) — this is a NEW,
+    /// separate computed one layer up, not a replacement. Ordering (including the VOD
+    /// branch's front-placement) remains a DATA-LAYER responsibility: reference-ui
+    /// (`ProductSheetsModel`) binds THIS computed and MUST NOT re-slice / merge / sort.
+    public var productsIntroducingFirst: [LBProduct] {
+        if header.isLive {
+            return productOverlay.productsIntroducingFirst
+        }
+        let active = vodActiveProducts
+        guard !active.isEmpty else { return productOverlay.products }
+        let activeIds = Set(active.map(\.id))
+        let rest = productOverlay.products.filter { !activeIds.contains($0.id) }
+        return active + rest
+    }
+
     /// SubtitleTrack `{ available, enabled }`.
     public let subtitle: DefaultSubtitleState
 
@@ -770,7 +811,12 @@ public final class DefaultPlayerTemplate {
                                    countdownActive: s.autoNextCountdownActive,
                                    remain: s.autoNextRemainingSeconds,
                                    endScreenShown: s.endScreenShown)
-            productOverlay.handleProducts(s.products, active: s.narratingProduct)
+            // suppress-product-overlay-during-intro-ios-template: while the intro MP4
+            // preroll is playing (`s.startScreenActive`), the exposed products/activeProduct
+            // are suppressed to []/nil (the raw data is still recorded internally and
+            // restored immediately once the intro ends — no re-fetch needed).
+            productOverlay.handleProducts(s.products, active: s.narratingProduct,
+                                          introActive: s.startScreenActive)
             header.handleHeader(isSubscribed: s.isSubscribed, viewerCount: s.viewerCount,
                                 viewerCountVisible: s.viewerCountVisible)
             subtitle.handle(available: s.subtitleAvailable, enabled: s.subtitleEnabled)

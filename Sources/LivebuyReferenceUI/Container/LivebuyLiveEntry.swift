@@ -234,19 +234,38 @@ final class LivebuyLiveEntryController: ObservableObject {
     // MARK: 狀態轉移（在 main thread 上呼叫——更動 @Published）
 
     /// 套用一筆**已 gate** 的結果。已被標記結束的 id 視為無直播（避免重新浮出）；換場
-    /// （`id` 改變）時重置 `dismissed`、更新 `lastLiveId`，最後更新 `live`。
+    /// （`id` 改變，含容器重新掛載後第一次套用某場直播——此時 `lastLiveId` 恆為 nil）時重新求值
+    /// `dismissed` 的初值、更新 `lastLiveId`，最後更新 `live`。
+    ///
+    /// `dismiss-survives-remount`（rb-ios-live-entry-dismiss-survives-remount）：初值不再無條件為
+    /// `false`——改由 `lbLiveEntryInitialDismissedForId(newId:lastDismissedId:)` 決定，讀
+    /// `LivebuyLiveEntryDismissMemory.shared.lastDismissedId`（process-wide、跨
+    /// `LivebuyLiveEntryController` 實例存活的記憶）。若 `next?.id` 正是使用者上次明確關閉過的那
+    /// 一場，即使這是一個**全新建構**的 controller 實例（容器重新掛載），`dismissed` 仍以 `true`
+    /// 起算，讓入口卡維持隱藏；換成不同 `id` 的直播則正常以 `false` 起算（既有換場行為不變）。
     func apply(_ gated: LBVideoItem?) {
         var next = gated
         if let id = next?.id, endedLiveIds.contains(id) { next = nil }   // 已結束 → 不再浮出
         if lbLiveEntryShouldResetDismiss(currentId: lastLiveId, newId: next?.id) {
-            dismissed = false
+            dismissed = lbLiveEntryInitialDismissedForId(
+                newId: next?.id, lastDismissedId: LivebuyLiveEntryDismissMemory.shared.lastDismissedId)
             lastLiveId = next?.id
         }
         live = next
     }
 
-    /// 記錄使用者關閉了目前這一場的入口。
-    func dismiss() { dismissed = true }
+    /// 記錄使用者關閉了目前這一場的入口。額外把目前這場直播的 id 寫進
+    /// `LivebuyLiveEntryDismissMemory`（`dismiss-survives-remount`），讓這個選擇撐過容器之後的
+    /// 重新掛載——**唯一**寫入端：「點入口卡進去看直播」（`onTap` / `effectiveOnTap` /
+    /// `externalLiveAwareTap`）完全不呼叫此方法，不會誤觸發這筆記憶。`live == nil` 時
+    /// （理論上 `dismiss()` 只在入口卡有 `live` 時才可能被觸發，但仍明確 guard）不寫入，避免記錄
+    /// 一個無意義的 nil-derived 值。
+    func dismiss() {
+        dismissed = true
+        if let id = live?.id {
+            LivebuyLiveEntryDismissMemory.shared.recordDismissed(liveId: id)
+        }
+    }
 
     /// 收到 `.lbLiveEnded`：若目前正顯示的是一場現正直播（`liveStatus == 1`），立即清空
     /// `live`（即時隱藏，不等下一輪輪詢），並記住其 id 以免過時 fetch 把它重新浮出。
@@ -291,8 +310,14 @@ public struct LivebuyLiveEntryConfig {
     /// → **預設開平台 URL**（優先序最高，與 widget 一致）；host 想自管外部直播設 `onTap` 即覆蓋整條。
     public var onTap: ((LBVideoItem) -> Void)?
 
-    /// 關閉鈕。DEFAULT `nil`。預設行為＝隱藏到「下一場」（換新 `video.id` 才重新出現）；
-    /// host 想完全永久關閉可在 `onClose` 自記旗標再條件式掛載容器。
+    /// 關閉鈕。DEFAULT `nil`。預設行為＝隱藏到「下一場」（換新 `video.id` 才重新出現）；此保證
+    /// SHALL 撐過容器自身的重新掛載（host 只在「沒有播放器在前景」時才掛載本容器，開關播放器會讓
+    /// `LivebuyLiveEntry` 重新從零掛載一次）——`dismiss-survives-remount`
+    /// （rb-ios-live-entry-dismiss-survives-remount）：使用者對某場直播明確按過這顆關閉鈕後，只要
+    /// 容器讀到的仍是同一場（`id` 不變），即使中途重新掛載過，入口卡也不會重新浮出，直到換成不同
+    /// `id` 的新一場才重新可見。此記憶只存在 process 記憶體（不持久化、不寫 UserDefaults），app
+    /// process 重啟自然歸零。host 想完全永久關閉（連下次 process 都不再提醒）可在 `onClose` 自記
+    /// 旗標再條件式掛載容器。
     public var onClose: (() -> Void)?
 
     /// 輪詢間隔（秒）。DEFAULT `30`（`fetchLatestLive` 失敗則 3s 快重試）。
@@ -365,9 +390,14 @@ public struct LivebuyLiveEntry: View {
     @State private var dragTranslation: CGSize = .zero
     @State private var cardSize: CGSize = .zero
 
-    /// 出現時機閘（rb-ios-floating-entry-position-timing）。`.immediate` 下由兩個 init **恆設為
-    /// `true`**——不依賴 `.onAppear`、不進任何排程，故該模式下這個閘等於不存在，行為與本 change
-    /// 之前逐位元相同。`.delay` 下初值 `false`，由 `scheduleAppearance(eligible:)` 在倒數結束時翻起。
+    /// 出現時機閘（rb-ios-floating-entry-position-timing）。**建構時的初值**：`.immediate` 下由
+    /// 兩個 init **恆設為 `true`**；`.delay` 下初值 `false`。這個初值只描述「建構那一刻」——不論
+    /// 初值為何，一旦入口第一次變成可顯示（`hasEligibleEntry` 翻 `true`），
+    /// `scheduleAppearance(eligible:)` 都會重新評估是否要收回這個閘再排程翻回：`.delay` 一直都會
+    /// （既有行為，商家設定的秒數）；`.immediate` 現在若處於「剛關閉過播放器」的關閉後緩衝期內也
+    /// 會（rb-ios-live-entry-close-grace-period 新增，見 `scheduleAppearance` 的 doc）——冷開
+    /// （從未關閉過播放器）時 `.immediate` 仍與本 change 之前逐位元相同：`hasEligibleEntry` 翻
+    /// `true` 當下算出的實際延遲為 `0`，閘立刻維持 `true`，等同不存在。
     @State private var appeared: Bool
     /// 待執行的延遲出現排程；每次重新排程前先 `cancel()`（沿用同層 `ActivityToastView.dismissWork`
     /// 的 iOS-14-safe 形狀：`DispatchWorkItem` + `asyncAfter`，不用 iOS 15 的 `.task`）。
@@ -443,8 +473,10 @@ public struct LivebuyLiveEntry: View {
         .onDisappear { controller.stop() }
         // 延遲出現（rb-ios-floating-entry-position-timing）：倒數從「入口第一次變成可顯示」起算，
         // 不是從容器掛載起算——容器是 host 常駐掛載的，偵測不到直播時渲染 EmptyView；若從掛載
-        // 起算，開播晚於倒數的場次會讓 `.delay` 靜默退化成 `.immediate`。`.immediate` 下
-        // `scheduleAppearance` 立刻 return，這條 onChange 等於不存在。
+        // 起算，開播晚於倒數的場次會讓 `.delay` 靜默退化成 `.immediate`。自
+        // rb-ios-live-entry-close-grace-period 起，`scheduleAppearance` 對 `.immediate` 不再一律
+        // 立刻 return——冷開（未曾關閉過播放器）時仍等同立刻 return（見該函式 doc），只有「剛關閉
+        // 過播放器」的緩衝期內才會實際收回閘再排程翻回。
         .onChange(of: hasEligibleEntry) { eligible in scheduleAppearance(eligible: eligible) }
         // Default-open player (dropin-live-entry-default-open-player)。`defaultPresented == nil`
         // 時 inert（host 接了 onTap，或尚未點）→ 靜止時不加任何可見像素，既有 live-entry /
@@ -456,7 +488,9 @@ public struct LivebuyLiveEntry: View {
     }
 
     /// `appeared`（出現時機閘）、`dismissed == false` 且 `live != nil` 三者皆成立才渲染入口，
-    /// 否則為 `EmptyView`。`.immediate` 下 `appeared` 恆 `true`，條件等同本 change 之前。
+    /// 否則為 `EmptyView`。`.immediate` 且冷開（從未關閉過播放器）下 `appeared` 恆 `true`，條件
+    /// 等同本 change 之前；`.immediate` 但處於關閉後緩衝期內時 `appeared` 可能暫時為 `false`
+    /// （rb-ios-live-entry-close-grace-period，見 `scheduleAppearance` 的 doc）。
     @ViewBuilder
     private var content: some View {
         if appeared, !controller.dismissed, let live = controller.live {
@@ -524,26 +558,47 @@ public struct LivebuyLiveEntry: View {
 
     // MARK: - 延遲出現排程
 
-    /// 可顯示狀態翻轉時重排延遲出現。`.immediate` 直接 return（該模式完全不進排程）。
-    /// 不可顯示 → 取消排程並收回閘（下一場重新倒數）；可顯示 → 取消舊排程、收回閘、等
-    /// `lbLiveEntryAppearDelay` 秒後在 `withAnimation` 交易裡翻起（讓 `.transition` 真的播）。
-    /// 起算條件刻意用「可不可顯示」這個布林，而非直播 id：A 場**無縫**接 B 場（中間沒有一刻
-    /// 不可顯示）時只換內容、不重播延遲進場——延遲進場是給「入口從無到有」用的，中途換場再等
-    /// 一次反而像卡住。有空窗（結束 / 被關閉）才會重新倒數。
-    /// 即使排程漏了作廢也畫不出東西：`appeared` 只是 `content` 三個條件之一。
+    /// 可顯示狀態翻轉時重排延遲出現。起算條件刻意用「可不可顯示」這個布林，而非直播 id：A 場
+    /// **無縫**接 B 場（中間沒有一刻不可顯示）時只換內容、不重播延遲進場——延遲進場是給「入口從
+    /// 無到有」用的，中途換場再等一次反而像卡住。有空窗（結束 / 被關閉）才會重新倒數。不可顯示
+    /// → 取消排程、收回閘（下一場重新倒數）。即使排程漏了作廢也畫不出東西：`appeared` 只是
+    /// `content` 三個條件之一。
+    ///
+    /// 可顯示 → 實際等待秒數是兩個獨立來源取 **`max`**（`lbLiveEntryActualAppearDelay`，非相
+    /// 加、非取代）：
+    ///   • `existingConfiguredDelay`——商家後台 `floating_setting`（`lbLiveEntryAppearDelay`）；
+    ///     `.immediate` 恆 `0`，`.delay` 是商家設的秒數。
+    ///   • `closeGraceRemaining`——剛關閉播放器的緩衝（rb-ios-live-entry-close-grace-period 新
+    ///     增，`LivebuyLiveEntryCloseGate.shared`；跟商家設定完全無關，SDK 內建固定 2 秒）。
+    ///
+    /// `actualDelay <= 0`（兩個來源都是 0——最常見的就是 `.immediate` 且冷開、從未關閉過播放
+    /// 器）→ 立即現身，不進排程，`appeared = true`。**這正是本 change 對「冷開」零副作用的落
+    /// 點**：`.immediate` 的既有行為（本 change 之前逐位元相同）就是這條分支。`actualDelay > 0`
+    /// → 取消舊排程、收回閘、等 `actualDelay` 秒後在 `withAnimation` 交易裡翻起（`.delay` 下
+    /// `entryWithEntrance` 會掛 `.transition` 讓它真的播；`.immediate` 因緩衝被拉長出現的這個新
+    /// 分支目前沒有掛 `.transition`，故 `withAnimation` 對它是 no-op——這個細節未被 CI 釘住，見
+    /// `LiveEntryPositionTimingTests.swift` 檔頭「沒有自動化保障」清單同類項目）。
     private func scheduleAppearance(eligible: Bool) {
-        guard resolvedTiming == .delay else { return }
         appearWork?.cancel()
         appearWork = nil
+        guard eligible else {
+            appeared = false
+            return
+        }
+        let existingConfiguredDelay = lbLiveEntryAppearDelay(timing: resolvedTiming, delay: config.delay)
+        let closeGraceRemaining = LivebuyLiveEntryCloseGate.shared.closeGraceRemaining()
+        let actualDelay = lbLiveEntryActualAppearDelay(
+            configuredDelay: existingConfiguredDelay, closeGraceRemaining: closeGraceRemaining)
+        guard actualDelay > 0 else {
+            appeared = true
+            return
+        }
         appeared = false
-        guard eligible else { return }
         let work = DispatchWorkItem {
             withAnimation(Self.entranceAnimation) { appeared = true }
         }
         appearWork = work
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + lbLiveEntryAppearDelay(timing: .delay, delay: config.delay),
-            execute: work)
+        DispatchQueue.main.asyncAfter(deadline: .now() + actualDelay, execute: work)
     }
 
     // MARK: - 進場動畫常數（對齊設計稿 `lbp-float-in`；四端 parity 照抄同一組數值）

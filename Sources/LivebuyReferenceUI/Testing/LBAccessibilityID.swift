@@ -56,6 +56,14 @@ public enum LBAccessibilityID {
     public static let livePersonEdit = "lb_live_person_edit"
     public static let liveShare = "lb_live_share"
     public static let liveHeart = "lb_live_heart"
+    ///「更多」(⋯) button — chatClosed-only leading slot (nickname's position), opens
+    /// `LiveMoreSheetView` (rb-ios-live-replay-more-menu-and-video-info-live-copy, design R32).
+    public static let liveMore = "lb_live_more"
+    /// 字幕 (CC) toggle button — chatClosed-only trailing slot (share's old position),
+    /// forwards `onToggleCC` (rb-ios-live-replay-more-menu-and-video-info-live-copy 補正輪,
+    /// restoring the pre-`prerecorded-live-bottom-bar-comment` CC button at its new R32
+    /// position). `lb_rail_subtitle`'s sibling for the LIVE bottom bar surface.
+    public static let liveCC = "lb_live_cc"
 
     public static let announceBanner = "lb_announce_banner"
     public static let pinnedCard = "lb_pinned_card"
@@ -96,6 +104,12 @@ public enum LBAccessibilityID {
     public static let contactCancel = "lb_contact_cancel"
     public static let contactConfirm = "lb_contact_confirm"
     public static let contactScrim = "lb_contact_scrim"
+
+    // LIVE bottom bar「更多」(⋯) collapsible sheet (`LiveMoreSheetView`,
+    // rb-ios-live-replay-more-menu-and-video-info-live-copy, design R32).
+    public static let liveMoreSheet = "lb_live_more_sheet"
+    public static let liveMoreShare = "lb_live_more_share"
+    public static let liveMoreContact = "lb_live_more_contact"
 
     public static let momentCountdownRoot = "lb_moment_countdown_root"
 
@@ -154,7 +168,7 @@ public enum LBAccessibilityID {
     public static let activitySheet = "lb_activity_sheet"
     /// 外層 scrim（點擊即關閉——`LBActivitySheet` 無 stage 門檻，恆可點擊關閉）。
     public static let activitySheetScrim = "lb_activity_sheet_scrim"
-    /// 「立即參加」/「已參加」CTA。
+    /// 「立即參加」CTA（恆可重複點擊，不鎖定——`rb-ios-activity-sheet-cta-repeatable`）。
     public static let activitySheetCta = "lb_activity_sheet_cta"
     /// 分頁圓點列（`activity-sheet-pagination-reference-ui-ios`）——只在 `pageCount > 1`
     /// 時出現。獨立於 `winClaimPaginationDots`（兩個彈窗是不同螢幕物件，共用 id 會讓 E2E
@@ -211,6 +225,10 @@ public enum LBAccessibilityID {
     public static let imageZoomImage = "lb_image_zoom_image"
     public static let zoomClose = "lb_zoom_close"
 
+    /// 商品明細主圖相簿的縮圖選取列（`rb-ios-product-detail-image-gallery`，design R34）——
+    /// 一個 index 一顆，`tap` 跳圖。
+    public static func productGalleryThumbnail(_ index: Int) -> String { "lb_product_gallery_thumbnail_\(index)" }
+
     public static let notifyRestockSheet = "lb_notify_restock_sheet"
     public static let restockNoticeCta = "lb_restock_notice_cta"
 
@@ -247,8 +265,14 @@ public enum LBAccessibilityID {
 
     public static let cardKindBadge = "lb_card_kind_badge"
     public static let cardLiveBadge = "lb_card_live_badge"
-    public static let cardDurationPill = "lb_card_duration_pill"
     public static let cardUpcomingOverlay = "lb_card_upcoming_overlay"
+    /// Top-right「置頂」pin badge (`item.pin == 1`, rb-ios-carousel-card-pin-viewers-
+    /// duration-removal, design R33). Independent of `cardKindBadge`.
+    public static let cardPinnedBadge = "lb_card_pinned_badge"
+    /// LIVE-only viewer-count pill beside `cardLiveBadge` (`item.watchNum`, gated by
+    /// `item.showPvNum == 1`, rb-ios-carousel-card-pin-viewers-duration-removal,
+    /// design R33).
+    public static let cardViewerCountBadge = "lb_card_viewer_count_badge"
 
     public static let floatingWidget = "lb_floating_widget"
     public static let floatingClose = "lb_floating_close"

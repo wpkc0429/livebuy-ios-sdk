@@ -200,19 +200,24 @@ public struct MinimizedWidgetView: View {
 
     // MARK: - Close affordance (top-right → onClose)
 
-    /// Top-right round close button (`LBPMinimizedWidget` 530-538): a 20×20
-    /// translucent-dark circle (`rgba(0,0,0,0.55)`) + a close (×) glyph. Tap →
-    /// host-wired `onClose`. Stops the body tap from also firing by being its own
-    /// `Button` (SwiftUI routes the inner button hit first).
+    /// Top-right round close button (`LBPMinimizedWidget`): a translucent-dark circle
+    /// (`rgba(0,0,0,0.55)`) + a close (×) glyph. Tap → host-wired `onClose`. Stops the body
+    /// tap from also firing by being its own `Button` (SwiftUI routes the inner button hit
+    /// first).
+    ///
+    /// **Enlarged 2026-09-03 (design R32)**: 20×20 (icon 9pt) → 28×28 (icon 12pt) — pure
+    /// visual bump, identical to `FloatingWidgetView.closeButton`'s own enlargement (see that
+    /// view's doc comment for the pt-vs-design-px derivation; both floating-window surfaces
+    /// share the same `LBPFloatingWidget` design source and move together).
     private var closeButton: some View {
         Button(action: { onClose?() }) {
             ZStack {
                 Circle().fill(Color.black.opacity(0.55))
                 Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .bold))
+                    .font(.system(size: 12, weight: .bold))
                     .foregroundColor(.white)
             }
-            .frame(width: 20, height: 20)
+            .frame(width: 28, height: 28)
         }
         .buttonStyle(PlainButtonStyle())
         .accessibilityIdentifier(LBAccessibilityID.minimizedClose)

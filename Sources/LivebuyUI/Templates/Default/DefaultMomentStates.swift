@@ -175,8 +175,25 @@ public final class DefaultEndScreenState {
 /// active item; the template does NOT scan or re-poll (D4).
 public final class DefaultProductOverlayState {
 
+    /// The EXPOSED (host-facing) products/active product — what
+    /// `productsIntroducingFirst` / `introducingProductId` / reference-ui actually
+    /// read. Distinct from `rawProducts`/`rawActiveProduct` below whenever the
+    /// intro MP4 preroll is playing (suppress-product-overlay-during-intro-ios-template):
+    /// while `introActive`, these are forced to `[]`/`nil` even though core keeps
+    /// supplying real data.
     private(set) public var products: [LBProduct] = []
     private(set) public var activeProduct: LBProduct?
+
+    /// The RAW, un-suppressed products/active product most recently received from
+    /// core (`Player.momentState`), independent of whatever this instance is
+    /// currently EXPOSING via `products`/`activeProduct` above. Kept so that the
+    /// moment the intro MP4 preroll ends (`introActive` flips to `false`) the
+    /// last-known commerce data can be restored to `products`/`activeProduct`
+    /// IMMEDIATELY — no re-fetch, no waiting for the next `VideoStatePollManager`
+    /// tick — even though it was withheld from the public surface while the intro
+    /// was playing (suppress-product-overlay-during-intro-ios-template).
+    private var rawProducts: [LBProduct] = []
+    private var rawActiveProduct: LBProduct?
 
     /// The currently-introducing product's id (= `activeProduct?.id`; LIVE
     /// `narrate_status == 2`, nil when none). The reference-ui product LIST draws
@@ -186,9 +203,15 @@ public final class DefaultProductOverlayState {
     /// `products` with the currently-introducing product (`activeProduct`) moved
     /// to the FRONT, preserving the relative order of the rest. When there is no
     /// active product (VOD / nothing introducing) this equals `products` unchanged.
-    /// Pure computed (no second state). The reference-ui product LIST binds THIS so
-    /// the introducing item sorts first — ORDERING is a data-layer responsibility;
+    /// Pure computed (no second state). ORDERING is a data-layer responsibility;
     /// reference-ui MUST NOT re-sort (aligns `screens.jsx` `ProductListSheet`：介紹中排第一).
+    ///
+    /// LIVE-ONLY — this type has no visibility into VOD playback position. reference-ui's
+    /// product-list drawer (`ProductSheetsModel`) binds the UNIFIED, VOD-aware
+    /// `DefaultPlayerTemplate.productsIntroducingFirst` instead (which delegates to THIS
+    /// property while LIVE, and additionally handles VOD/replay via `vodActiveProducts`
+    /// while not live — vod-product-list-introducing-order-template). This property itself
+    /// is UNCHANGED and stays available for direct LIVE-only testing / back-compat.
     public var productsIntroducingFirst: [LBProduct] {
         guard let id = activeProduct?.id,
               let idx = products.firstIndex(where: { $0.id == id }) else { return products }
@@ -205,12 +228,28 @@ public final class DefaultProductOverlayState {
     /// DIFF by product id array + active id (LBProduct is NOT Equatable, mirror
     /// `DefaultActivityFeed` comparing `winner.id`). An unchanged 5s refresh MUST
     /// NOT re-notify.
-    func handleProducts(_ products: [LBProduct], active: LBProduct?) {
-        let changed = products.map(\.id) != self.products.map(\.id)
-            || active?.id != activeProduct?.id
+    ///
+    /// `introActive` (suppress-product-overlay-during-intro-ios-template): while the
+    /// intro MP4 preroll is playing (`Player.momentState.startScreenActive == true`),
+    /// the EXPOSED `products`/`activeProduct` are forced to `[]`/`nil` regardless of
+    /// what `products`/`active` carry — the intro screen MUST NOT show product cards
+    /// (問題 6, user-reported). The raw values are still recorded (`rawProducts` /
+    /// `rawActiveProduct`) so that the moment `introActive` flips back to `false` the
+    /// already-known data is exposed immediately, with no re-fetch. Defaults to
+    /// `false` so every pre-existing call site / test (which has no notion of intro
+    /// suppression) is source- and behaviour-compatible.
+    func handleProducts(_ products: [LBProduct], active: LBProduct?, introActive: Bool = false) {
+        rawProducts = products
+        rawActiveProduct = active
+
+        let exposedProducts = introActive ? [] : products
+        let exposedActive = introActive ? nil : active
+
+        let changed = exposedProducts.map(\.id) != self.products.map(\.id)
+            || exposedActive?.id != self.activeProduct?.id
         guard changed else { return }
-        self.products = products
-        self.activeProduct = active
+        self.products = exposedProducts
+        self.activeProduct = exposedActive
         onMutation?()
     }
 }

@@ -235,6 +235,16 @@ public struct ProductSheetsOverlayView: View {
     /// `lbBottomSheet` stack so the viewer covers the open sheet. NOT view-model state.
     @State private var zoomedDetail: LBProductDetailState?
 
+    /// The photo string the zoom badge was tapped WITH, or nil (rb-ios-product-detail-
+    /// image-gallery, design R34) — forwarded to `ProductZoomOverlayView.overridePhotoURL`
+    /// so the lightbox magnifies the SAME gallery page the user is currently looking at in
+    /// `ProductDetailSheetView`'s `.detail` presentation, not always the resolver's primary.
+    /// `.addToCart` / `NotifyRestockSheetView` (no gallery) set this to the resolver's own
+    /// `primaryPhoto` / nil respectively — see each call site below. A LOCAL presentation-only
+    /// value, set alongside `zoomedDetail` and cleared alongside it too (never a second source
+    /// of truth independent of "is the lightbox even open").
+    @State private var zoomedPhotoOverride: String?
+
     /// Whether the add-to-cart needs-login gate is currently presented. A LOCAL
     /// presentation flag (NOT a model snapshot): set true on the template's
     /// `addToCartNeedsLogin` false→true transition; cleared on 前往登入 hand-off /
@@ -324,8 +334,16 @@ public struct ProductSheetsOverlayView: View {
                     // captured with `zoomedDetail`: the lightbox covers the sheet, so the
                     // selection cannot change while it is open.
                     selectedSpec: model.variant.selectedSpec,
+                    // The specific gallery page the zoom badge was tapped with
+                    // (rb-ios-product-detail-image-gallery) — wins over the `selectedSpec`
+                    // fallback above when non-nil; nil (e.g. the restock sheet, which has no
+                    // gallery) falls through to that existing resolution unchanged.
+                    overridePhotoURL: zoomedPhotoOverride,
                     live: live,
-                    onClose: { zoomedDetail = nil })
+                    onClose: {
+                        zoomedDetail = nil
+                        zoomedPhotoOverride = nil
+                    })
             }
             // Add-to-cart「需登入」gate (cart-needs-login-gate) — presented TOPMOST (after
             // the sheet stack + lightbox) when the route-B add hit the empty-`buy_no` 401
@@ -427,6 +445,10 @@ public struct ProductSheetsOverlayView: View {
                 // narrating product's id, not just the first — `model.introducingProductId`
                 // (single, core's "first" convenience) could only ever flag one row.
                 introducingProductIds: Set(model.liveActiveProducts.map { $0.id }),
+                // Raw backend-order snapshot for the row number badge (rb-ios-product-row-
+                // number-badge) — deliberately NOT `model.products` (introducing-first
+                // reordered); see `ProductSheetsModel.productsBackendOrder`'s doc.
+                productsBackendOrder: model.productsBackendOrder,
                 // Playback mode for the row overlay (VOD play / live 介紹中 / replay
                 // begin-end window). `rowMode` is nil for a demo model → ProductListView
                 // falls back to `live` (baselines byte-identical); a live-bound model
@@ -609,7 +631,13 @@ public struct ProductSheetsOverlayView: View {
                 // remaining-stock count — `extensions.show_stock` MUST NOT be able to hide it.
                 onToggleNotice: { model.toggleNotice(forProductId: detail.productId) },
                 onDismiss: { dismissDetail() },
-                onZoomImage: { zoomedDetail = detail })
+                // No gallery on this surface (rb-ios-product-detail-image-gallery) — clear any
+                // stale override from a PRIOR zoom on a different sheet, so the lightbox falls
+                // through to its existing `selectedSpec`-resolved primary unchanged.
+                onZoomImage: {
+                    zoomedDetail = detail
+                    zoomedPhotoOverride = nil
+                })
         case .addToCart:
             AddToCartSheetView(
                 theme: theme,
@@ -639,7 +667,12 @@ public struct ProductSheetsOverlayView: View {
                 onAddToCart: { addToCartReprompting() },
                 onOpenCart: { model.openCart() },
                 onDismiss: { dismissDetail() },
-                onZoomImage: { zoomedDetail = detail })
+                // `.addToCart` has no gallery — `photo` is the resolver's own `primaryPhoto`
+                // (rb-ios-product-detail-image-gallery), forwarded verbatim.
+                onZoomImage: { photo in
+                    zoomedDetail = detail
+                    zoomedPhotoOverride = photo
+                })
         case .detail:
             ProductDetailSheetView(
                 theme: theme,
@@ -694,7 +727,13 @@ public struct ProductSheetsOverlayView: View {
                 // 分享 is a host concern — forward the container's host passthrough.
                 onShare: { onShare?() },
                 onDismiss: { dismissDetail() },
-                onZoomImage: { zoomedDetail = detail },
+                // The gallery's currently-selected page (rb-ios-product-detail-image-gallery) —
+                // may be nil (no photos), which is a legitimate "use the resolved fallback"
+                // payload, not an error.
+                onZoomImage: { photo in
+                    zoomedDetail = detail
+                    zoomedPhotoOverride = photo
+                },
                 onOpenRecommendation: { item in openRecommendation(item, mode: .detail) },
                 onQuickAddRecommendation: { item in openRecommendation(item, mode: .addToCart) },
                 onPlayRecommendation: { item in switchRecommendationVideo(item) })

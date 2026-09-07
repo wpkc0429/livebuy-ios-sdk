@@ -28,6 +28,14 @@ import LivebuyUI
 // rather than always the product-level one. The resolution itself lives in the shared pure
 // function `ResolvedProductPhoto` — this view re-uses it, it does not re-derive the ladder.
 //
+// `overridePhotoURL` (rb-ios-product-detail-image-gallery, design R34) lets a caller with a
+// MORE SPECIFIC notion of "which photo" (the product-detail gallery's currently-selected
+// page) win over the resolver's `primaryPhoto` — an ADDITIVE override, not a rewrite of the
+// resolver's own degradation ladder (`ResolvedProductPhoto` is untouched by this change). A
+// nil / blank-after-trim override is treated as "no override supplied" and falls through to
+// the existing `photoURL(detail:selectedSpec:)` resolution, so every EXISTING call site
+// (defaulted `nil`) is byte-identical.
+//
 // iOS-14-safe SwiftUI only: `ZStack` / `GeometryReader` / `Button` / `DragGesture` /
 // `LinearGradient` / `.scaleEffect` / `.offset` / `edgesIgnoringSafeArea` are all iOS-13+.
 // No `.task` / `AsyncImage` / `NavigationStack` / `.foregroundStyle` / `.tint`.
@@ -52,6 +60,14 @@ public struct ProductZoomOverlayView: View {
     /// Without this the sheet would show the 玫瑰棕 photo and tapping zoom would show 珊瑚橘 —
     /// a NEW cross-surface inconsistency of exactly the kind that change removes. Read-only.
     public let selectedSpec: LBSpec?
+    /// The specific gallery-page photo string to magnify (verbatim, untrimmed — same shape as
+    /// `ResolvedProductPhoto.primaryPhoto`), or nil (rb-ios-product-detail-image-gallery, design
+    /// R34). When non-nil and non-blank-after-trim it WINS over the resolved `primaryPhoto` —
+    /// this is how the lightbox tracks the product-detail multi-image gallery's CURRENTLY
+    /// SELECTED page rather than always the resolver's primary. Defaults to `nil`, which falls
+    /// through to the pre-existing `photoURL(detail:selectedSpec:)` resolution unchanged — every
+    /// EXISTING call site (never passes this) renders byte-identical. See `displayPhotoURL(...)`.
+    public let overridePhotoURL: String?
     /// `false` (snapshot / demo) → gradient + monogram placeholder only (deterministic baseline);
     /// `true` (host runtime) → load the resolved photo (see ``selectedSpec``) over the
     /// placeholder via `RemoteStillImageView`.
@@ -76,6 +92,7 @@ public struct ProductZoomOverlayView: View {
         theme: ReferenceUITheme,
         detail: LBProductDetailState,
         selectedSpec: LBSpec? = nil,
+        overridePhotoURL: String? = nil,
         live: Bool = false,
         shownInitially: Bool = false,
         onClose: (() -> Void)? = nil
@@ -83,6 +100,7 @@ public struct ProductZoomOverlayView: View {
         self.theme = theme
         self.detail = detail
         self.selectedSpec = selectedSpec
+        self.overridePhotoURL = overridePhotoURL
         self.live = live
         self.onClose = onClose
         self._shown = State(initialValue: shownInitially)
@@ -140,9 +158,10 @@ public struct ProductZoomOverlayView: View {
     /// The product photo — gradient + monogram placeholder, with the real image overlaid
     /// when `live`. Mirrors `ProductDetailSheetView.productPhoto`'s placeholder/real-image pattern.
     ///
-    /// WHICH photo is resolved by the SAME pure function the sheet uses
-    /// (`ResolvedProductPhoto`), fed the same `selectedSpec`, so the magnified image is
-    /// always the image the user just tapped.
+    /// WHICH photo is resolved by ``displayPhotoURL(overridePhotoURL:detail:selectedSpec:)`` —
+    /// `overridePhotoURL` (the gallery's current page, when supplied) wins over the SAME pure
+    /// function the sheet uses (`ResolvedProductPhoto`, fed the same `selectedSpec`), so the
+    /// magnified image is always the image the user just tapped.
     private var productImage: some View {
         ZStack {
             LinearGradient(
@@ -154,10 +173,33 @@ public struct ProductZoomOverlayView: View {
             Text(ProductDetailSheetView.monogram(for: detail.name))
                 .font(.system(size: 64 * theme.fontScale, weight: .heavy))
                 .foregroundColor(.white.opacity(0.92))
-            if live, let url = ProductDetailSheetView.photoURL(detail, selectedSpec: selectedSpec) {
+            if live, let url = Self.displayPhotoURL(
+                overridePhotoURL: overridePhotoURL, detail: detail, selectedSpec: selectedSpec) {
                 RemoteStillImageView(url: url, contentMode: .scaleAspectFill)
             }
         }
+    }
+
+    /// The photo URL to magnify: `overridePhotoURL` (trimmed) when it is non-nil and non-blank
+    /// after trimming, otherwise the pre-existing resolved-primary path unchanged
+    /// (rb-ios-product-detail-image-gallery). Pure — mirrors
+    /// `ProductDetailSheetView.photoURL`'s trim-for-URL-construction convention (the override
+    /// string itself is verbatim per `ResolvedProductPhoto`'s "trim judges, never the value"
+    /// rule; trimming here is a URL-construction requirement only).
+    ///
+    /// A blank-after-trim override (e.g. the gallery's current page happens to be a blank
+    /// entry) is treated the SAME as "no override supplied" — falling through to the resolved
+    /// primary is a strictly safer default than magnifying nothing.
+    static func displayPhotoURL(
+        overridePhotoURL: String?,
+        detail: LBProductDetailState,
+        selectedSpec: LBSpec?
+    ) -> URL? {
+        if let override = overridePhotoURL {
+            let trimmed = override.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !trimmed.isEmpty { return URL(string: trimmed) }
+        }
+        return ProductDetailSheetView.photoURL(detail, selectedSpec: selectedSpec)
     }
 
     private var dragGesture: some Gesture {

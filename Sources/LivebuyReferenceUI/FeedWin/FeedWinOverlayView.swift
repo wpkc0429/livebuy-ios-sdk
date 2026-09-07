@@ -175,6 +175,22 @@ public struct FeedWinOverlayView: View {
     /// claim regardless of clean mode. Do not extend `cleanMode` to that branch.
     public let cleanMode: Bool
 
+    /// Whether the LIVE bottom bar's「更多」(⋯) collapsible menu (`LiveMoreSheetView`, presented by
+    /// `PlayerShellView` via `.lbBottomSheet`) is currently presented. `PlayerShellView` cannot
+    /// reach this sibling view directly (it is composed alongside it, not inside its render tree —
+    /// `MinimalDesign.playerOverlay` mirrors the state via `onMoreSheetPresentedChange` and
+    /// forwards it here), so it is threaded through as a plain parameter
+    /// (rb-ios-live-more-sheet-above-chat). `true` → the chat feed sub-view is hidden +
+    /// non-interactive, same opacity/hit-testing treatment as `infoPanelOpen` / `cleanMode` above
+    /// (merged into the SAME judgment, not a third independent hide) — so the menu's own dim scrim
+    /// cleanly covers the background and the menu is fully usable. `false` (default / demo /
+    /// snapshot) → unchanged (baseline byte-identical).
+    ///
+    /// ⚠️ `WinEntryView` (win-claim entry badge), the activity entry badge, and the claim sheet
+    /// below are NOT gated by `moreSheetOpen` — same exemption as `cleanMode` / `infoPanelOpen`
+    /// above.
+    public let moreSheetOpen: Bool
+
     /// Whether to render the merged chat-feed stream at all. It is a LIVE-only surface, and its
     /// full-bleed scrollable variant eats hit-testing; in VOD (`false`) it would occlude / swallow
     /// taps on the VOD side rail, so the container passes `false` to drop it entirely (the
@@ -184,10 +200,11 @@ public struct FeedWinOverlayView: View {
     public let showsChatFeed: Bool
 
     /// Trailing inset applied ONLY to the merged chat-feed stream so it stays in the design's
-    /// LEFT column (`live-chrome.jsx` `LBLiveChatOverlay` `right:152`) and does NOT extend into
-    /// / occlude the bottom-right `LBLivePinnedCard` column — nor let the chat `ScrollView` eat
-    /// taps meant for that product card. Default `0` keeps the demo / snapshot path
-    /// byte-identical; it does NOT shift the centered claim modal or the win-entry badge.
+    /// LEFT column (`live-chrome.jsx` `LBLiveChatOverlay` `right:120`, R31 — was `right:152`)
+    /// and does NOT extend into / occlude the bottom-right `LBLivePinnedCard` column — nor let
+    /// the chat `ScrollView` eat taps meant for that product card. Default `0` keeps the demo /
+    /// snapshot path byte-identical; it does NOT shift the centered claim modal or the win-entry
+    /// badge.
     public let chatTrailingInset: CGFloat
 
     /// Leading inset applied ONLY to the merged chat-feed stream so its left edge aligns with
@@ -231,7 +248,8 @@ public struct FeedWinOverlayView: View {
                 infoPanelOpen: Bool = false, chatTrailingInset: CGFloat = 0,
                 chatLeadingInset: CGFloat = 0,
                 showsChatFeed: Bool = true,
-                cleanMode: Bool = false) {
+                cleanMode: Bool = false,
+                moreSheetOpen: Bool = false) {
         self.model = model
         self.theme = theme
         self.chatBottomInset = chatBottomInset
@@ -241,6 +259,7 @@ public struct FeedWinOverlayView: View {
         self.chatLeadingInset = chatLeadingInset
         self.showsChatFeed = showsChatFeed
         self.cleanMode = cleanMode
+        self.moreSheetOpen = moreSheetOpen
     }
 
     public var body: some View {
@@ -270,9 +289,10 @@ public struct FeedWinOverlayView: View {
                 // Keep the newest (bottom) rows ABOVE the LIVE bottom bar — applied
                 // ONLY to the chat feed (NOT the centered claim modal / win-entry).
                 .padding(.bottom, chatBottomInset)
-                // Keep the chat in the design's LEFT column (LBLiveChatOverlay right:152) so it
-                // does not occlude / eat taps on the bottom-right LBLivePinnedCard column —
-                // applied ONLY to the chat feed (rb-ios-live-pinned-card-appears).
+                // Keep the chat in the design's LEFT column (LBLiveChatOverlay right:120, R31 —
+                // was right:152) so it does not occlude / eat taps on the bottom-right
+                // LBLivePinnedCard column — applied ONLY to the chat feed
+                // (rb-ios-live-pinned-card-appears).
                 .padding(.trailing, chatTrailingInset)
                 // Align the chat's left edge with the LIVE bottom bar's bag button left margin
                 // instead of sitting flush against the screen edge — applied ONLY to the chat
@@ -283,11 +303,15 @@ public struct FeedWinOverlayView: View {
                 // taps (the panel's scrim then cleanly covers the background). opacity (not
                 // removal) preserves the chat's scroll/auto-stick state for when it returns.
                 // Also hidden while clean mode is on (rb-ios-clean-mode-hide-chat-feed,
-                // parity with Android/Flutter) — merged into the SAME judgment, not a second
-                // independent hide. ONLY the chat feed — the win-entry badge / claim modal
-                // below are untouched by either condition.
-                .opacity((infoPanelOpen || cleanMode) ? 0 : 1)
-                .allowsHitTesting(!infoPanelOpen && !cleanMode)
+                // parity with Android/Flutter), and while the LIVE bottom bar's「更多」(⋯)
+                // menu is up (rb-ios-live-more-sheet-above-chat, same reasoning as the info
+                // panel — the menu is also an internal `PlayerShellView` bottom sheet that
+                // sits in a LOWER overlay layer than this chat feed) — all three merged into
+                // the SAME judgment, not separate independent hides. ONLY the chat feed — the
+                // win-entry badge / claim modal below are untouched by any of the three
+                // conditions.
+                .opacity((infoPanelOpen || cleanMode || moreSheetOpen) ? 0 : 1)
+                .allowsHitTesting(!infoPanelOpen && !cleanMode && !moreSheetOpen)
             }
 
             // Floating win-claim entry badge — right side. R27 (`rb-ios-win-claim-pagination`)

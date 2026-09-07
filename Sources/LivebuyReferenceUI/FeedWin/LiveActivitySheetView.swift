@@ -16,19 +16,23 @@ import LivebuyUI
 // exposed public surface).
 //
 // ─────────────────────────────────────────────────────────────────────────────
-// SINGLE-STAGE, NOT a `WinClaimModalView` four-stage clone (design.md D3)
+// SINGLE-STAGE, NOT a `WinClaimModalView` four-stage clone (design.md D3;
+// updated by `rb-ios-activity-sheet-cta-repeatable`)
 // ─────────────────────────────────────────────────────────────────────────────
 // `WinClaimModalView` runs `claim → confirmSubmit/confirmClose → submitting →
 // done/fail` because the win-claim submit has an ASYNCHRONOUS backend result to
 // wait for. Joining an activity (`joinCurrentActivity()` → `EVENT_JOIN_INTENT`) is
 // FIRE-AND-FORGET — core never reports success/failure for it (see
-// `live-activity-entry-template` design.md D3) — and the design source
-// (`LBActivitySheet`) itself only has ONE local `joined` boolean, no submitting /
-// result states. So this view carries exactly ONE piece of UI-local state
-// (`@State private var joined`), NOT a stage machine. Do NOT grow this into a
-// `WinClaimModalView`-shaped type — the two state machines are shaped differently
-// for a real reason (async result vs. none) and forcing them to share code would
-// drag `WinClaimModalView`'s unrelated four-stage concerns into review here.
+// `live-activity-entry-template` design.md D3). This view carries NO UI-local
+// state at all — the CTA is a stateless, repeatable dispatch: it always reads
+// "立即參加" and always fires `onJoin?()` on tap, with nothing to reconcile
+// against and nothing to gate a second (or third, or Nth) tap on
+// (`rb-ios-activity-sheet-cta-repeatable` — the previous single `@State private
+// var joined` boolean has been removed; not even ONE piece of local state is
+// needed anymore). Do NOT grow this into a `WinClaimModalView`-shaped type — the
+// two flows are shaped differently for a real reason (async result vs. none) and
+// forcing them to share code would drag `WinClaimModalView`'s unrelated
+// four-stage concerns into review here.
 //
 // ─────────────────────────────────────────────────────────────────────────────
 // SUB-VIEW INPUT PATTERN (mirrors `WinClaimModalView` / `WinEntryView`)
@@ -55,9 +59,10 @@ import LivebuyUI
 // `.foregroundStyle` / `.tint`.
 
 /// The single-stage 抽獎活動參加彈窗 for one `LBActiveEvent`. Mirrors
-/// `WinClaimModalView`'s centered scrim + card presentation, but carries only ONE
-/// local「已參加」boolean (design.md D3) — there is no submitting / result stage
-/// because joining an activity has no asynchronous outcome to wait for.
+/// `WinClaimModalView`'s centered scrim + card presentation, but carries NO
+/// UI-local state at all (`rb-ios-activity-sheet-cta-repeatable`) — there is no
+/// submitting / result stage because joining an activity has no asynchronous
+/// outcome to wait for, and the CTA itself is a stateless, repeatable dispatch.
 public struct LiveActivitySheetView: View {
 
     // MARK: - Inputs (documented sub-view input pattern)
@@ -77,7 +82,8 @@ public struct LiveActivitySheetView: View {
     /// snapshot instances construct action-free.
     private let onClose: (() -> Void)?
 
-    /// Join intent (CTA tap, only while not yet `joined`). The container forwards
+    /// Join intent (CTA tap — repeatable, fires on every tap with no lock-out
+    /// state, `rb-ios-activity-sheet-cta-repeatable`). The container forwards
     /// this to `FeedWinModel.joinCurrentActivity()`. Default `nil`.
     private let onJoin: (() -> Void)?
 
@@ -117,14 +123,6 @@ public struct LiveActivitySheetView: View {
         self.pageIndex = pageIndex
         self.onPage = onPage
     }
-
-    // MARK: - UI-local state (NOT view-model, design.md D3)
-
-    /// Whether the CTA has been pressed this presentation. **UI local state** —
-    /// `DefaultActiveEvent` / `DefaultPlayerTemplate` MUST NOT persist this (the
-    /// join call is fire-and-forget with no result to reconcile against, so there
-    /// is nothing for a view-model to own here — see design.md D3).
-    @State private var joined: Bool = false
 
     // MARK: - Body
 
@@ -286,36 +284,28 @@ public struct LiveActivitySheetView: View {
         "留言關鍵字【\(keyword)】即可參加抽獎！"
     }
 
-    /// Pure: whether a CTA tap should actually trigger a join call, given the
-    /// current `joined` state. Split out so this decision is unit-testable without
-    /// rendering the view — the `@State` WRITE itself is left as an untested,
-    /// reviewed one-line dispatch (mirrors `FeedWinOverlayView.legalLinkRoute(for:)`
-    /// / `WinClaimModalView.stage(phase:...)`: `@State` writes performed on a view
-    /// instance SwiftUI never actually installed are silently discarded, so the
-    /// mutation itself has no unit-testable surface — only the decision does).
-    static func shouldJoin(joined: Bool) -> Bool {
-        !joined
-    }
+    /// CTA tap dispatch — `rb-ios-activity-sheet-cta-repeatable`: unconditionally
+    /// forwards to `onJoin?()`, every single time it's called, with no gating or
+    /// state mutation. Extracted as a one-line `self`-touching dispatch method
+    /// (mirrors `WinClaimModalView.handleFooterTermsTap()` / `.handleScrimTap()`)
+    /// so a test can call it directly, repeatedly, without rendering the view.
+    func handleCtaTap() { onJoin?() }
 
-    /// 「立即參加」/「已參加」CTA — 按下呼叫 `onJoin?()` 並本地切 `joined = true`
-    /// （design.md D3：fire-and-forget，無非同步結果可等）。`joined` 後 disabled + 灰底。
+    /// 「立即參加」CTA — 按下即呼叫 `handleCtaTap()`（`rb-ios-activity-sheet-cta-repeatable`：
+    /// fire-and-forget，無非同步結果可等，CTA 恆可點擊、每次按下皆各自獨立觸發，MUST NOT
+    /// 因先前任一次點擊而鎖定 / 改變文案或背景色）。
     private var ctaButton: some View {
-        Button(action: {
-            guard Self.shouldJoin(joined: joined) else { return }
-            joined = true
-            onJoin?()
-        }) {
-            Text(joined ? Self.joinedLabel : Self.joinLabel)
+        Button(action: handleCtaTap) {
+            Text(Self.joinLabel)
                 .font(.system(size: 16 * theme.fontScale, weight: .heavy))
                 .foregroundColor(.white)
                 .frame(maxWidth: .infinity)
                 .padding(.vertical, 14)
                 .background(
                     RoundedRectangle(cornerRadius: 12)
-                        .fill(joined ? Self.joinedBackground : theme.accent))
+                        .fill(theme.accent))
         }
         .buttonStyle(PlainButtonStyle())
-        .disabled(joined)
         .padding(.top, 4)
         .accessibilityIdentifier(LBAccessibilityID.activitySheetCta)
     }
@@ -363,8 +353,6 @@ public struct LiveActivitySheetView: View {
     // MARK: - Design tokens (design-literal, mirrors `WinClaimModalView`'s convention)
 
     static let scrimColor = Color.black.opacity(0.6)
-    /// 「已參加」disabled CTA 底色（design source `#C9CDD3`）。
-    static let joinedBackground = Color(hex: "#C9CDD3") ?? Color.gray.opacity(0.4)
     /// `theme.surface.textDim`（footer 次要文字，與 `WinClaimModalView.textDim` 同一色值）。
     static let textDim = Color(hex: "#6B6775") ?? Color.gray
     /// 分頁圓點非目前頁色（對齊 `WinClaimModalView.dotInactive` 同一色值 / 設計稿
@@ -372,36 +360,13 @@ public struct LiveActivitySheetView: View {
     static let dotInactive = Color(hex: "#D8DBE0") ?? Color.gray.opacity(0.3)
 
     static let joinLabel = "立即參加"
-    static let joinedLabel = "已參加"
     static let footerTerms = "使用條款"
     static let footerPrivacy = "隱私政策"
 }
 
-// MARK: - Test / preview seed
-//
-// `joined` is `@State`, unreachable from outside via the public initializer — that
-// is BY DESIGN (D3: it always starts `false`, flipping only via the CTA). Mirrors
-// `WinClaimModalView.makeSeededForTesting`'s same underscore-storage technique
-// (`docs/unit-test-discipline.md` §3's `*ForTesting` naming convention).
-// **Production code never calls this.**
-//
-// This module cannot offer a production-level `LiveActivitySheetView.demo(...)`
-// convenience the way `WinEntryView.demo(...)` does: `LBActiveEvent`'s memberwise
-// `init` is deliberately `internal` to `LivebuySDK` (host apps read the public
-// fields but never construct this value — see `LBModels.swift`'s doc comment), so
-// only `@testable import LivebuySDK` code (the snapshot test) can build one.
-
-extension LiveActivitySheetView {
-
-    /// Test-only / preview seed: build a view for a given `activity` with `joined`
-    /// pre-set. Production code never calls this.
-    static func makeSeededForTesting(
-        theme: ReferenceUITheme,
-        activity: LBActiveEvent,
-        joined: Bool = false
-    ) -> LiveActivitySheetView {
-        var view = LiveActivitySheetView(theme: theme, activity: activity)
-        view._joined = State(initialValue: joined)
-        return view
-    }
-}
+// `rb-ios-activity-sheet-cta-repeatable`: this view no longer carries any
+// `@State` — the previous `makeSeededForTesting(theme:activity:joined:)` test /
+// preview seed existed solely to pre-set the (now removed) `joined` boolean, so
+// it has been removed too. Test code that needs an instance (snapshot tests
+// included) MUST use the public `LiveActivitySheetView(theme:activity:...)`
+// initializer directly — there is no longer any hidden state to seed.

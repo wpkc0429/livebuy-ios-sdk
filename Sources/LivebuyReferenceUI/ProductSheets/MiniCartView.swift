@@ -33,28 +33,28 @@ import LivebuyUI
 // action-free). It NEVER records / clears the peek itself (task 4.2) — that is the
 // template's `DefaultMiniCart`; this layer only forwards the close / open intents.
 //
-// PHOTO-LED (rb-align-ios-product-sheets): aligned to the design's `LBPMiniCart`,
-// the peek LEADS with a 52×52 product thumbnail. `photos` are remote URLs and the
-// reference-ui keeps snapshots deterministic (no network / `AsyncImage`), so — like
-// `ProductDetailSheetView`'s 4:3 media — it draws a 52×52 rounded gradient
-// placeholder with a monogram (the host can swap in a real image). The rest mirrors
-// `LBPMiniCart`: the dark glass card surface, the single-line name, the price line
-// (`已售完` when `soldOut == 1`, else `priceShow`), and the trailing circular close
-// button. NO「已加入購物車」confirmation line (the design's `LBPMiniCart` has none —
-// the peek's mere appearance is the "added" signal). Tapping the card body opens the
-// detail; tapping the close button dismisses (matching `onTap` / `onClose`).
+// PHOTO-LED (rb-align-ios-product-sheets, restyled rb-ios-vod-live-product-card-
+// restyle / R31): aligned to the design's `LBPMiniCart`, the peek LEADS with a
+// product thumbnail (56×56 square as of `rb-ios-minicart-image-square-cover`,
+// only left two corners rounded, flush against the card's white background).
+// The rest mirrors `LBPMiniCart`: the white card surface, the single-line
+// name, the price line (`已售完` when `soldOut == 1`, else `priceShow`, in
+// the merchant accent color), and the close button now absolutely-positioned
+// at the card's top-right corner. NO「已加入購物車」confirmation line (the
+// design's `LBPMiniCart` has none — the peek's mere appearance is the
+// "added" signal). Tapping the card body opens the detail; tapping the
+// close button dismisses (matching `onTap` / `onClose`).
 //
 // iOS-14-safe SwiftUI only. `ZStack` / `HStack` / `VStack` / `Text` / `Button` /
-// `RoundedRectangle` / `Circle` / `Color` are all iOS-13+. The dark glass surface
-// uses a solid translucent fill (no `.ultraThinMaterial`, which is iOS-15+) so the
-// baseline is deterministic on the iOS-14 floor. No `.task` / `AsyncImage` /
-// `NavigationStack` / `.foregroundStyle` / `.tint`.
+// `RoundedRectangle` / `Circle` / `Color` are all iOS-13+. No `.ultraThinMaterial`
+// (iOS-15+), `.task` / `AsyncImage` / `NavigationStack` / `.foregroundStyle` / `.tint`.
 
 /// The family-3 floating mini-cart peek for one `LBMiniCartPeek`. Renders a compact
-/// photo-led glass card — a 52×52 product thumbnail + the product name + a price /
-/// sold-out line — with a tap-to-open-detail body and a trailing close button
-/// (aligned to the design's `LBPMiniCart`). The container draws it only when a peek
-/// exists.
+/// photo-led white card (R31) — a 56×56 square product thumbnail (`rb-ios-minicart-
+/// image-square-cover`) + the product name + a
+/// price / sold-out line — with a tap-to-open-detail body and a top-right-overlaid
+/// close button (aligned to the design's `LBPMiniCart`). The container draws it
+/// only when a peek exists.
 public struct MiniCartView: View {
 
     /// The resolved reference-ui theme (FIRST positional argument, always).
@@ -84,9 +84,12 @@ public struct MiniCartView: View {
     /// (`.frame(maxWidth: .infinity)`, 問題 9).
     private let fullWidth: Bool
 
-    /// Optional accent tag drawn above the name (e.g.「介紹中」for the VOD now-introducing card).
-    /// `nil` (mini-cart peek) → no tag (peek byte-identical).
-    private let tag: String?
+    // (rb-ios-minicart-design-align) The `tag: String?` parameter (an optional accent caption,
+    // e.g.「介紹中」) has been REMOVED — the design's `LBPMiniCart` (`sdk-components.jsx`) has no
+    // tag / caption concept at all, and the only call site that ever passed a non-nil value
+    // (`PlayerShell/NowIntroducingCarouselView.swift`) has been updated to stop passing it. No
+    // other call site in this repo passed a non-nil `tag` (verified via `grep` across
+    // `ios/Sources` / `ios/Tests`), so this is a clean removal, not a source-compat shim.
 
     public init(
         theme: ReferenceUITheme,
@@ -94,8 +97,7 @@ public struct MiniCartView: View {
         onDismiss: (() -> Void)? = nil,
         onOpenDetail: (() -> Void)? = nil,
         live: Bool = false,
-        fullWidth: Bool = false,
-        tag: String? = nil
+        fullWidth: Bool = false
     ) {
         self.theme = theme
         self.peek = peek
@@ -103,7 +105,6 @@ public struct MiniCartView: View {
         self.onOpenDetail = onOpenDetail
         self.live = live
         self.fullWidth = fullWidth
-        self.tag = tag
     }
 
     // MARK: - Derived presentation (pure)
@@ -133,29 +134,46 @@ public struct MiniCartView: View {
 
     private var cardButton: some View {
         Button(action: { onOpenDetail?() }) {
+            // (rb-ios-minicart-design-align) Padding matches `LBPMiniCart` exactly: the container's
+            // own inset is RIGHT-ONLY (design `padding: '0 8px 0 0'`) via `.padding(.trailing, 8)`
+            // below — `productThumb` therefore carries ZERO padding on any side (flush against the
+            // card's top/left/bottom edges), and `infoColumn` carries its own top/bottom inset
+            // (design info `div`'s `padding: '8px 0'`). The image/text horizontal gap comes solely
+            // from this HStack's `spacing: 10` (design `gap: 10`), not from either child's padding.
             HStack(spacing: 10) {
                 productThumb
                 infoColumn
-                closeButton
+                    .padding(.vertical, 8)
             }
-            .padding(8)
+            .padding(.trailing, 8)
             .background(
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(Self.glassFill)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16)
-                            .stroke(Self.glassStroke, lineWidth: 0.5))
+                RoundedRectangle(cornerRadius: Self.cardCornerRadius)
+                    .fill(Self.cardBackground)
             )
-            .shadow(color: Color.black.opacity(0.25), radius: 12, x: 0, y: 6)
+            // Close button (R31): moved OFF the content HStack onto an absolute
+            // top-right overlay (design `top:3,right:3`) — see `closeButton`.
+            .overlay(closeButton, alignment: .topTrailing)
+            // R31: `boxShadow: '0 6px 18px rgba(0,0,0,0.15)'` — replaces the retired
+            // dark-glass card's `0.25`-opacity shadow. Blur-radius halving convention
+            // matches `LiveOverlayChromeView.pinnedCard(_:)`'s own `18px → 9pt` shadow.
+            .shadow(color: Color.black.opacity(0.15), radius: 9, x: 0, y: 6)
         }
         .buttonStyle(PlainButtonStyle())
     }
 
-    // MARK: - Product thumbnail (LBPMiniCart 52×52 ProductMock — deterministic placeholder)
+    // MARK: - Product thumbnail (LBPMiniCart 56×56 ProductMock — deterministic placeholder)
     //
-    // Photo-led peek: a 52×52 rounded media leading the card (design `LBPMiniCart`).
-    // `photos` are remote URLs; reference-ui keeps snapshots deterministic (no network
-    // / AsyncImage), so it draws a gradient placeholder chip with a monogram (host can
+    // Photo-led peek: a 56-wide rounded media leading the card (design `LBPMiniCart`,
+    // R31: width 52→60; R34 (2026-09-04, `rb-ios-product-detail-image-gallery`): 60→56
+    // (`3.5rem`) — only the LEFT two corners rounded, flush against the card's right
+    // content edge. `rb-ios-minicart-image-square-cover` (2026-09-05): the frame's
+    // HEIGHT was changed from an explicit `52` to `56` to make it a true 56×56 square
+    // (matching every other product-card thumbnail in the SDK — the live pinned card
+    // 100×100, the product row 64×64, the add-to-cart sheet 96×96), and the runtime
+    // `RemoteStillImageView` was switched from `.scaleAspectFit` to `.scaleAspectFill`
+    // so the real image fills the square edge-to-edge (cropped) instead of letterboxing.
+    // `photos` are remote URLs; reference-ui keeps snapshots deterministic (no network /
+    // AsyncImage), so it draws a gradient placeholder chip with a monogram (host can
     // swap in a real image) — mirroring `ProductDetailSheetView`'s photo placeholder.
 
     private var productThumb: some View {
@@ -174,85 +192,90 @@ public struct MiniCartView: View {
             // runtime (`live`) with a non-empty URL; layered OVER the gradient placeholder so the
             // snapshot path (`live == false`) stays the deterministic placeholder.
             if live, let url = Self.imageURL(peek.pic) {
-                RemoteStillImageView(url: url, contentMode: .scaleAspectFit)
+                RemoteStillImageView(url: url, contentMode: .scaleAspectFill)
             }
         }
-        .frame(width: 52, height: 52)
-        .clipShape(RoundedRectangle(cornerRadius: 10))
+        .frame(width: 56, height: 56)
+        .clipShape(LeftRoundedRectangle(radius: Self.cardCornerRadius))
     }
 
     // MARK: - Info column (name + price line)
 
     private var infoColumn: some View {
         VStack(alignment: .leading, spacing: 2) {
-            // Optional accent tag (e.g.「介紹中」for the VOD now-introducing card; nil for the
-            // mini-cart peek → not drawn, peek byte-identical). The「介紹中」tag carries the
-            // accent equalizer glyph + accent text (對齊設計 `LBLivePinnedCard` 等化器 + accent 文字,
-            // 與商品列底部橫幅共用 `EqualizerGlyph`).
-            if let tag = tag, !tag.isEmpty {
-                HStack(spacing: 3) {
-                    EqualizerGlyph(size: 11, color: theme.accent)
-                    Text(tag)
-                        .font(.system(size: 11 * theme.fontScale, weight: .semibold))
-                        .foregroundColor(theme.accent)
-                }
-            }
+            // (rb-ios-minicart-design-align) The design's `LBPMiniCart` has no tag / caption field
+            // at all (`screens.jsx`'s sole call site passes no such prop) — the accent tag this
+            // view previously drew here (e.g.「介紹中」for the VOD now-introducing card) was a
+            // design deviation the user asked to remove. The `tag: String?` parameter that drove
+            // it has been removed entirely (see the property declaration above) — there is no
+            // longer anything to render here.
 
-            // Product name — single-line, ellipsis-truncated (design 13/600).
+            // Product name — single-line, ellipsis-truncated (design 13/600). R31: white
+            // card → `theme.text` (was the glass card's fixed white). `paddingRight: 26`
+            // (design) reserves room under the now-absolute top-right close button.
             Text(peek.name)
                 .font(.system(size: 13 * theme.fontScale, weight: .semibold))
-                .foregroundColor(Self.onGlassText)
+                .foregroundColor(theme.text)
                 .lineLimit(1)
                 .truncationMode(.tail)
+                .padding(.trailing, 26)
 
-            // Price line — sold-out → 已售完; else the priceShow (design 11pt dim).
+            // Price line — sold-out → 已售完 (dim); else the priceShow in the merchant
+            // accent color (R31: was a fixed `#FF7B8A` price-pink on the dark glass card).
             Text(isSoldOut ? Self.soldOutLabel : peek.priceShow)
                 .font(.system(size: 12 * theme.fontScale, weight: isSoldOut ? .semibold : .bold))
-                .foregroundColor(isSoldOut ? Self.onGlassTextDim : Self.priceColor)
+                .foregroundColor(isSoldOut ? Self.textDim : theme.accent)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    // MARK: - Close button (LBPMiniCart trailing close — 22×22 glass circle)
+    // MARK: - Close button (LBPMiniCart top-right close — 22×22, R31)
     //
-    // Tapping it dismisses WITHOUT opening the detail. Because the whole card is a
-    // Button, we make this an inner Button: a child Button intercepts the tap so the
-    // outer open-detail action does not also fire (matching the design's
-    // `e.stopPropagation()` on `onClose`). A no-op when `onDismiss == nil`.
+    // R31: moved from the content row's trailing end to an absolute top-right overlay
+    // (design `top:3,right:3`), transparent background (was a translucent white glass
+    // circle), icon tinted `theme.text` (was fixed white). Tapping it dismisses WITHOUT
+    // opening the detail. Because the whole card is a Button, we make this an inner
+    // Button: a child Button intercepts the tap so the outer open-detail action does not
+    // also fire (matching the design's `e.stopPropagation()` on `onClose`). A no-op when
+    // `onDismiss == nil`. `.contentShape(Rectangle())` keeps the full 22×22 tap target
+    // even though the fill is now transparent.
 
     private var closeButton: some View {
         Button(action: { onDismiss?() }) {
             ZStack {
-                Circle().fill(Self.closeFill)
+                Circle().fill(Color.clear)
                 Image(systemName: "xmark")
                     .font(.system(size: 10, weight: .bold))
-                    .foregroundColor(Self.onGlassText)
+                    .foregroundColor(theme.text)
             }
             .frame(width: 22, height: 22)
+            .contentShape(Rectangle())
         }
         .buttonStyle(PlainButtonStyle())
+        .padding(.top, 3)
+        .padding(.trailing, 3)
     }
 
     // MARK: - Decorative design tokens (literal minimal hex via Color(hex:))
     //
-    // accent / fontScale come from the resolved theme (above). These are FIXED
-    // decorative colors lifted verbatim from the design's `LBPMiniCart`
-    // (`design/templates/minimal/sdk-components.jsx`, dark glass overlay) —
-    // design-literal, NOT theme-resolved. Kept consistent with `WinClaimModalView`'s
-    // surface-token approach (literal hex via `Color(hex:)`, nil-coalesced).
+    // accent / text / fontScale come from the resolved theme (above). These are FIXED
+    // decorative tokens lifted verbatim from the design's `LBPMiniCart`
+    // (`design/templates/minimal/sdk-components.jsx:881-920`, R31 white-card restyle,
+    // `rb-ios-vod-live-product-card-restyle`) — design-literal, NOT theme-resolved
+    // (except where the design itself now points at `theme.surface.text` /
+    // `theme.surface.textDim` / `accent`, which map onto this module's flat
+    // `ReferenceUITheme.text` / `.accent`). `textDim` mirrors the established
+    // `#6B6775` dim-text token used across this module (e.g. `ProductRowView.textDim`,
+    // `WinClaimModalView.textDim`).
 
-    /// `rgba(20,20,24,0.78)` — the dark glass card fill.
-    static let glassFill = (Color(hex: "#141418") ?? Color.black).opacity(0.78)
-    /// `rgba(255,255,255,0.10)` — the 0.5pt hairline border on the glass.
-    static let glassStroke = Color.white.opacity(0.10)
-    /// On-glass primary text (`#fff` in the design).
-    static let onGlassText = Color.white
-    /// On-glass dim text (`rgba(255,255,255,0.65)` — the price / confirmation line).
-    static let onGlassTextDim = Color.white.opacity(0.65)
-    /// In-stock price accent (`#FF7B8A` — the design's price-pink on the glass).
-    static let priceColor = Color(hex: "#FF7B8A") ?? Color(.systemPink)
-    /// The trailing close-circle fill (`rgba(255,255,255,0.18)`).
-    static let closeFill = Color.white.opacity(0.18)
+    /// `#fff` — the white card fill (R31; was the dark glass card's `rgba(20,20,24,0.78)`).
+    static let cardBackground = Color(hex: "#FFFFFF") ?? Color.white
+    /// `0.25rem` ≈ 4pt (R31 design Decisions: `1rem = 16px` web convention) — the card's
+    /// corner radius (was `16`), also reused by `productThumb`'s left-corner radius.
+    static let cardCornerRadius: CGFloat = 4
+    /// Dim text token (`#6B6775`, this module's established dim-text hex) — the
+    /// sold-out price line.
+    static let textDim = Color(hex: "#6B6775") ?? Color.gray
 
     // MARK: - Fixed localized copy (static presentation strings)
 
@@ -273,6 +296,36 @@ public struct MiniCartView: View {
         let s = pic.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !s.isEmpty else { return nil }
         return URL(string: s)
+    }
+}
+
+// MARK: - iOS-14-safe left-rounded rectangle (R31 `productThumb`)
+//
+// `productThumb` rounds ONLY the top-left and bottom-left corners (design
+// `borderRadius: '0.25rem 0 0 0.25rem'` — flush against the card's right content
+// edge). `RoundedRectangle` rounds all four; `UIRectCorner`-masked corners via
+// `cornerRadius(_:corners:)` need a custom `Path`, which is iOS-13+ safe. Mirrors
+// `SheetKit/TopRoundedRectangle.swift`'s custom-Path approach (no `UIRectCorner` /
+// iOS-16 `UnevenRoundedRectangle`), generalized to the left edge instead of the top.
+
+struct LeftRoundedRectangle: Shape {
+    let radius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let r = min(radius, min(rect.width, rect.height) / 2)
+        var path = Path()
+        path.move(to: CGPoint(x: rect.maxX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.minX + r, y: rect.minY))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX, y: rect.minY + r),
+            control: CGPoint(x: rect.minX, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY - r))
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX + r, y: rect.maxY),
+            control: CGPoint(x: rect.minX, y: rect.maxY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY))
+        path.closeSubpath()
+        return path
     }
 }
 

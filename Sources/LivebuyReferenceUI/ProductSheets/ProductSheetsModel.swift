@@ -56,8 +56,9 @@ public final class ProductSheetsModel: ObservableObject {
     // -- Surface 1: ProductListView ← product list drawer (D-2) ----------------
 
     /// The core-fed products snapshot, surfaced INTRODUCING-FIRST by the data layer
-    /// (`DefaultProductOverlayState.productsIntroducingFirst` — LIVE narrate_status==2 商品排第一,
-    /// 其餘維持相對順序; VOD / 無介紹中時等於原序). Already ordered by the data layer — this
+    /// (`DefaultPlayerTemplate.productsIntroducingFirst` — LIVE narrate_status==2 商品排第一,
+    /// VOD/回放依 `vodActiveProducts` 播放進度置頂, 其餘維持相對順序;
+    /// vod-product-list-introducing-order-template). Already ordered by the data layer — this
     /// layer MUST NOT slice / merge / re-sort (doing so would be a second copy, violating single-truth).
     @Published public private(set) var products: [LBProduct]
 
@@ -78,6 +79,29 @@ public final class ProductSheetsModel: ObservableObject {
     /// view-model capability (no view-model / core change). Empty for a demo / snapshot instance
     /// with no bound template.
     @Published public private(set) var liveActiveProducts: [LBProduct]
+
+    /// The RAW, backend-order products snapshot (`DefaultPlayerTemplate.productOverlay.products`)
+    /// — rb-ios-product-row-number-badge. Deliberately DIFFERENT from `products` above: `products`
+    /// is `productsIntroducingFirst` (already reordered so introducing-now products sort first, for
+    /// DISPLAY); this property is the UN-reordered order, used ONLY to resolve a row's number-badge
+    /// position (`ProductRowNumberBadge.resolveIndex`, `ProductListView.swift`). Reading it from
+    /// `products` instead would make every row's number jump whenever the introducing set changes
+    /// (the introducing product gets moved to the front) — wrong per the design's "編號＝原始清單序
+    /// 號" rule.
+    ///
+    /// A plain (NOT `@Published`) read-through computed property — same pattern as
+    /// `optionAvailability` below: the source itself is a stored value on the template with no
+    /// caching needed here, and SwiftUI already re-evaluates this alongside every OTHER `@Published`
+    /// write this class makes on `refresh(from:)`, so a second stored/`@Published` copy would just be
+    /// a second maintenance path for the same data. This also means NO special-case logic is needed
+    /// for "after a LIVE 5s poll replaces `products` wholesale" or "after a product stops
+    /// introducing" — every read simply reflects whatever the template holds AT THAT MOMENT.
+    /// `template == nil` (demo / snapshot instance) falls back to `products` (same demo-fallback
+    /// convention as `products` / `liveActiveProducts` above — a demo has no separate "backend order"
+    /// source of its own).
+    public var productsBackendOrder: [LBProduct] {
+        template?.productOverlay.products ?? products
+    }
 
     /// Playback-mode signals for the product-row thumbnail overlay
     /// (rb-ios-product-row-status-overlay). Mirrored from the template
@@ -208,7 +232,7 @@ public final class ProductSheetsModel: ObservableObject {
     /// live convenience init for the seed values.
     private convenience init(snapshotting t: DefaultPlayerTemplate) {
         self.init(
-            products: t.productOverlay.productsIntroducingFirst,
+            products: t.productsIntroducingFirst,
             introducingProductId: t.productOverlay.introducingProductId,
             liveActiveProducts: t.liveActiveProducts,
             isLive: t.header.isLive,
@@ -291,7 +315,7 @@ public final class ProductSheetsModel: ObservableObject {
     /// Change` fires once per `@Published` write — acceptable for the skeleton;
     /// surface sub-views read final values within one runloop.
     private func refresh(from t: DefaultPlayerTemplate) {
-        products = t.productOverlay.productsIntroducingFirst
+        products = t.productsIntroducingFirst
         introducingProductId = t.productOverlay.introducingProductId
         liveActiveProducts = t.liveActiveProducts
         isLive = t.header.isLive
@@ -457,7 +481,7 @@ public final class ProductSheetsModel: ObservableObject {
     /// from core `channel.otherGoods`). Populated there (via `cacheRecommendationResolvedProduct`)
     /// at resolve time; consulted as a FALLBACK by `brief(forProductId:)` / `description(forProductId:)`
     /// above when the PRIMARY `products` snapshot lookup misses — a recommendation resolved from
-    /// `channel.otherGoods` is never in `products` (== `productOverlay.productsIntroducingFirst`,
+    /// `channel.otherGoods` is never in `products` (== `template.productsIntroducingFirst`,
     /// scoped to the CURRENT VIDEO's own `goods`), so without this fallback its `brief`/`description`
     /// always resolved to `""` even when the backend genuinely sent real values.
     ///

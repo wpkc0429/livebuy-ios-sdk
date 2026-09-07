@@ -167,6 +167,12 @@ public struct PlayerShellView: View {
     /// `model.openServiceLink()` exit. Local presentation state only.
     @State private var contactMerchantPresented: Bool = false
 
+    /// Whether the LIVE bottom bar's「更多」(⋯) collapsible menu (`LiveMoreSheetView`) is
+    /// presented. Opened by `LiveBottomBarView.onMore` — only rendered by that bar's
+    /// `chatClosed` (finished-live-replay) variant (design R32,
+    /// rb-ios-live-replay-more-menu-and-video-info-live-copy). Local presentation state only.
+    @State private var liveMoreSheetPresented: Bool = false
+
     /// Top-right minimize → host collapses the player into the bottom-right floating
     /// preview (`FloatingWidgetView`). The shell does NOT own the collapse (it holds
     /// no `LBVideoItem`); it only forwards the intent. nil → the button is inert.
@@ -343,6 +349,16 @@ public struct PlayerShellView: View {
     /// existing `onInfoPanelPresentedChange` / `onIsLiveChange` precedents above. nil (default /
     /// snapshot) → no report (baseline unchanged).
     private let onCleanModeChange: ((Bool) -> Void)?
+
+    /// Reports the LIVE bottom bar「更多」(⋯) collapsible menu (`liveMoreSheetPresented`,
+    /// `LiveMoreSheetView`) open/closed state to the container each time it changes, so the
+    /// container can hide the family-2 chat feed (which sits in a HIGHER overlay layer and would
+    /// otherwise occlude the menu / swallow its taps) while the menu is up
+    /// (rb-ios-live-more-sheet-above-chat). The menu itself (content / share / contact actions /
+    /// `.lbBottomSheet` presentation) is unchanged — this is a read-only state report, mirrors the
+    /// existing `onInfoPanelPresentedChange` precedent above. nil (default / snapshot) → no report
+    /// (baseline unchanged).
+    private let onMoreSheetPresentedChange: ((Bool) -> Void)?
 
     /// Test-only observability hook (`rb-ios-gesture-clean-mode-v2`, `docs/unit-test-discipline.md`
     /// `*ForTesting` naming): called SYNCHRONOUSLY, alongside `model.seekBy(_:)`, from BOTH the
@@ -756,6 +772,7 @@ public struct PlayerShellView: View {
                 onScrubbingChange: ((Bool) -> Void)? = nil,
                 onScrubBarExpandedChange: ((Bool) -> Void)? = nil,
                 onCleanModeChange: ((Bool) -> Void)? = nil,
+                onMoreSheetPresentedChange: ((Bool) -> Void)? = nil,
                 isScrubbingForTesting: Bool = false,
                 scrubBarExpandedForTesting: Bool = false,
                 cleanModeForTesting: Bool = false,
@@ -795,6 +812,7 @@ public struct PlayerShellView: View {
         self.onScrubbingChange = onScrubbingChange
         self.onScrubBarExpandedChange = onScrubBarExpandedChange
         self.onCleanModeChange = onCleanModeChange
+        self.onMoreSheetPresentedChange = onMoreSheetPresentedChange
         self.seekByForTesting = seekByForTesting
         self.cleanModeTapSchedule = cleanModeTapSchedule
         // Test-only seed for the two scrub-driven `@State` properties (see their doc comments
@@ -1439,6 +1457,11 @@ public struct PlayerShellView: View {
                     // 單擊切靜音手勢退役後的操作管道。`onToggleMute` 只在 `cleanMode == true` 期間
                     // 非 nil——`PlayerHeaderBarView` 依此決定是否渲染這顆鈕（不佔位）。
                     muted: model.muted,
+                    // 右上角鈕圖示模式（rb-ios-player-direct-close-button）：per-shell 常數，
+                    // 由 `LivebuyPlayer.buildModels()` 解析 `LivebuyPlayerConfig
+                    // .enableDirectCloseButton` 對全域偏好後寫入；純呈現旗標，本層不知道
+                    // 全域設定的存在。
+                    showCloseIcon: model.showCloseIcon,
                     onMinimize: { onMinimize?() },
                     // 訂閱徽章 → 容器注入的 gate（未登入 → AuthGate(.subscribe)）；未注入 fallback
                     // `model.toggleSubscribe()`（rb-ios-subscribe-login-gate）。與 info pill 共用。
@@ -1569,9 +1592,25 @@ public struct PlayerShellView: View {
                         onShare: { if let onShare = onShare { onShare() } else { model.performShare() } },
                         // Real like via the existing turnkey forwarder + an immediate local heart
                         // burst (rb-ios-live-bottom-heart-burst — design `onLike → spawnHeart`).
-                        onLike: { model.performLike(); liveHeartTick &+= 1 })
-                        // onToggleCC intentionally not wired: the LIVE bottom bar no longer has a CC
-                        // toggle (the replay variant is removed — prerecorded-live-bottom-bar-comment).
+                        onLike: { model.performLike(); liveHeartTick &+= 1 },
+                        // CC (字幕) toggle → the SAME real forwarder `OperationRailView`'s VOD
+                        // `.subtitle` rail item uses (`handleRailTap(.subtitle)` → `model.toggleSubtitle()`),
+                        // restored 2026-09-03 (correction round) at its NEW trailing-slot position
+                        // for the `chatClosed` variant (design R32). ⚠️ This flips real,
+                        // meaningful state (`model.subtitleEnabled`) — it is NOT a fake/no-op
+                        // wire — but produces NO visible caption here: `CaptionOverlayView` is
+                        // gated on `!model.isLive` (unchanged since its first commit), and
+                        // `chatClosed` implies the live-chrome branch, not the VOD branch, so
+                        // there is currently no rendering consumer for this state on THIS branch
+                        // (a pre-existing gap that predates this button's removal — the OLD
+                        // isReplay-driven CC button had the identical limitation, since isReplay
+                        // also implies `isLive == true`). Extending `CaptionOverlayView`'s gate to
+                        // the live-chrome branch is explicitly OUT OF SCOPE for this change — see
+                        // design.md.
+                        onToggleCC: { model.toggleSubtitle() },
+                        // 「更多」(⋯) → open `LiveMoreSheetView` (chatClosed-only leading slot;
+                        // design R32, rb-ios-live-replay-more-menu-and-video-info-live-copy).
+                        onMore: { withAnimation { liveMoreSheetPresented = true } })
                         // rb-ios-live-bottom-bar-16pt-align: no static offset here — LiveBottomBarView
                         // itself now owns the full 16pt bottom inset internally (barBottomPadding), so
                         // its background sits flush against the true bottom edge (design `bottom: 0`).
@@ -1706,6 +1745,10 @@ public struct PlayerShellView: View {
                 // 分岔就會出現「header 已顯真 logo、面板仍是字母漸層」這種跨面不一致。
                 // snapshot / demo 路徑（`paintsBackgroundPlaceholder == true`）維持漸層 chip、不觸網。
                 live: !paintsBackgroundPlaceholder,
+                // 直播 vs 點播文案分流（design R32）——沿用既有 `model.isLive`（`liveStatus == 1`），
+                // 與這個檔案自己的 `live:`（上一行，網路圖片載入 gate）是完全不同的兩件事，故取名
+                // `isLiveBroadcast` 而非 `isLive`/`live`，避免與既有語彙混淆（見 `live` prop 文件註解）。
+                isLiveBroadcast: model.isLive,
                 onSelectTab: { tab in model.selectInfoTab(tab) },
                 // 與商家一對一對話 → present the「聯絡商家」confirm modal FIRST (design
                 // `contact_merchant`), same intent as the side-rail serviceLink tap; only its
@@ -1719,13 +1762,43 @@ public struct PlayerShellView: View {
                 // （rb-ios-subscribe-login-gate，取代原本一律直接 toggleSubscribe 的寫法）。
                 onSubscribe: { performSubscribe() })
         }
-        // 「聯絡商家」confirm modal — composed ABOVE the info-panel sheet so it overlays it.
+        // LIVE bottom bar「更多」(⋯) collapsible menu (design R32,
+        // rb-ios-live-replay-more-menu-and-video-info-live-copy) — same shared SheetKit
+        // presenter. Both actions dismiss THIS sheet first, then forward to their existing
+        // host seam (mirrors the design's own single-`openSheet`-state "pick one action and
+        // it takes over" semantics, distinct from the info panel, which stays open underneath
+        // its own confirm modal).
+        .lbBottomSheet(theme: theme, isPresented: $liveMoreSheetPresented) {
+            LiveMoreSheetView(
+                theme: theme,
+                // 分享 → 與 LIVE 底部 bar 自己的分享鈕同一走線（容器注入的 `onShare`，含
+                // presentChannelShare fallback；非容器 / snapshot 維持既有 headless
+                // `model.performShare()`，rb-ios-live-share-default-sheet 同款）。
+                onShare: {
+                    withAnimation { liveMoreSheetPresented = false }
+                    if let onShare = onShare { onShare() } else { model.performShare() }
+                },
+                // 客服 → 與側欄 serviceLink / info-panel「與商家一對一對話」同一「聯絡商家」
+                // confirm modal 走線（`contactMerchantPresented` + `ContactMerchantModalView`）。
+                onContact: {
+                    withAnimation { liveMoreSheetPresented = false }
+                    withAnimation { contactMerchantPresented = true }
+                })
+        }
+        // 「聯絡商家」confirm modal — composed ABOVE the info-panel sheet AND the「更多」sheet
+        // so it overlays either.
         .overlay(contactMerchantOverlay)
         // Report info-panel open/closed to the container so it can hide the higher-layer
         // chat feed while the panel is up (rb-ios-info-panel-not-covered-by-chat). Read-only
         // report — the panel state / dismiss paths are unchanged.
         .onChange(of: infoPanelPresented) { presented in
             onInfoPanelPresentedChange?(presented)
+        }
+        // Report「更多」選單 open/closed to the container so it can hide the higher-layer chat
+        // feed while the menu is up (rb-ios-live-more-sheet-above-chat). Read-only report — the
+        // menu itself / its two actions are unchanged.
+        .onChange(of: liveMoreSheetPresented) { presented in
+            onMoreSheetPresentedChange?(presented)
         }
         // Report LIVE/VOD mode (initial + every change) so the container can hide the LIVE-only
         // chat feed in VOD (rb-ios-hide-chat-feed-in-vod). `.onAppear` supplies the initial value

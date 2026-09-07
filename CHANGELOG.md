@@ -5,6 +5,57 @@ All notable changes to the Livebuy iOS SDK will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [4.14.0] - 2026-09-07
+
+> **Minor.** 本輪規模遠大於任何一輪先例（221 個 commit，v4.13.0 只有 25 個），主軸是「四端
+> 100% 像素 parity」政策的補課批次。**含 3 項 ⚠️ BREAKING**（1 項 core 行為面 + 2 項
+> reference-ui-internal）——比照 v4.5.0/v4.8.0/v4.9.0/v4.11.0/v4.13.0 先例，含 BREAKING 但
+> 整輪仍判定 minor。**本輪對 core/template 層有實質觸碰**（與 v4.13.0「零 core」不同），詳見
+> `openspec/changes/archive/.../v4-14-0-release-readiness/design.md` Decision 1/3。**iOS +
+> Android 兩端 lockstep**；React Native / Flutter 同一批主題已落地於套件本身，不隨本次 tag
+> 對外發佈（見
+> [`livebuy-android-sdk/CHANGELOG.md`](../livebuy-android-sdk/CHANGELOG.md#4140---2026-09-07)
+> 的 Android 對照段）。完整敘述見
+> [`docs/release-notes/v4.14.0.md`](../docs/release-notes/v4.14.0.md)。
+
+### Added
+
+- **直播回放版型統一**（`isFinishedLiveReplay`）——已結束直播回放不再誤用 VOD 版型，改與 LIVE
+  共用聊天室/留言框/商品卡/底部操作列（僅 disabled 文案不同）。
+- **四輪 design 改版**：商品明細主圖改多圖相簿 + 燈箱跟隨選中圖（R34）、聊天/活動訊息列改版
+  固定語意色 + 主播 accent 名牌取代「主播」標籤（R30）、直播回放更多選單 + 說明面板依直播/
+  點播文案分流（R32）、VOD 商品列縮圖新增左上角編號徽章（介紹中改顯示 HOT，R35）+ 三態播放/
+  介紹中/已結束覆蓋層（R36）、輪播卡新增置頂 pin icon + 觀看人數徽章（R33）。
+- **直播入口卡新增關閉播放器後 2 秒緩衝**（跟商家 app 冷開延遲設定各自獨立）。
+- **`enableDirectCloseButton` 全域預設設定**（新增可選參數本身為 Added；預設值翻轉見下方
+  Changed）。
+- **VOD 商品列表 sheet 回放/VOD 時介紹中商品也置頂到最前**（template 層）。
+
+### Changed
+
+- **⚠️ BREAKING — `enableDirectCloseButton` 全域預設值 `false → true`**：播放器右上角關閉
+  行為改變（不再先進入縮小態）。行為面 BREAKING，非源碼面——既有不帶此參數的呼叫端仍可編譯。
+  若依賴舊行為，需在 `configure(...)` 顯式帶 `enableDirectCloseButton: false`。
+- **⚠️ BREAKING — VOD/回放輪播卡「▶ 時長」徽章移除**：design R33 明確拍板，推翻
+  `docs/contract-governance.md` R8「移除守門」預設保留。同輪商品卡改白卡配色。
+- **⚠️ BREAKING — MiniCart「介紹中」tag 機制移除**：`MiniCartView` public init 不再有 `tag`
+  參數，對齊設計稿 `LBPMiniCart` 沒有介紹文案欄位的事實。唯一呼叫端
+  `NowIntroducingCarouselView.swift` 同輪同步移除。
+- **VOD 側欄浮動購物袋 icon 比例校正回 ~70%**。
+- **icon 向量化**：CC icon 對齊設計稿、更多 sheet 分享 icon 改實心版、聊天回到最新箭頭改獨立
+  向量 glyph、商品明細按鈕改向量 `DetailGlyph`。
+
+### Fixed
+
+- **開場影片播放期間 template 層抑制商品卡顯示**。
+- **抽獎活動彈窗 CTA 移除已參加鎖定改可重複點擊**。
+- **開場影片結束/手動略過時補發 moment snapshot 防禦性修正**（parity Android）。
+- **`PollManager` 首輪立即觸發、不等 5 秒節奏**。
+- **播放器頂欄標題/主持人名欄位撐滿可用寬度**。
+- **聊天室主播名牌冒號間距修正**。
+- **「更多」sheet 被聊天室擋住修正**。
+- **公告橫幅配色/避讓區多輪修正**。
+
 ## [4.13.1] - 2026-09-03
 
 > **Patch.** 兩項獨立修正：① 補齊 v4.13.0（R29 播放器手勢三度改版）design.md 當時刻意記錄的

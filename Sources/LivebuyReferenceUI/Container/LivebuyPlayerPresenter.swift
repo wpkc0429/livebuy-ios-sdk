@@ -142,6 +142,20 @@ public func clampFloatingOffset(
     return CGSize(width: clampedX, height: clampedY)
 }
 
+/// Resolves `LivebuyPlayerConfig.enableDirectCloseButton` against the app-wide default
+/// (`Livebuy.shared?.enableDirectCloseButton`, `player-direct-close-button-core`,
+/// `rb-ios-player-direct-close-button`): a non-nil per-instance `configValue` OVERRIDES the
+/// global preference; `nil` falls back to `globalValue`. Pure (internal-testability) — SHARED by
+/// `LivebuyPlayer.buildModels()` (drives `PlayerShellModel.showCloseIcon`, i.e. WHICH icon the
+/// header draws) and this file's `composedConfig` below (drives WHAT `onMinimize` actually does),
+/// so the two call sites can NEVER disagree about which mode is active for a given
+/// `LivebuyPlayerConfig`. Deliberately takes the already-read global value as a plain `Bool`
+/// parameter (rather than reading `Livebuy.shared` itself) so this stays a trivial, side-effect-free
+/// function with no SDK singleton dependency to fake in a test.
+func resolvedEnableDirectCloseButton(configValue: Bool?, globalValue: Bool) -> Bool {
+    configValue ?? globalValue
+}
+
 /// Rebuilds a DISPLAY-ONLY copy of `video` with `liveStatus` (and the paired `type`, using the
 /// SAME `type: isLive ? 2 : 1` convention `LivebuyPlayer.switchedVideoItem` already establishes)
 /// overridden to match `isLive` — the CURRENT authoritative live-status signal
@@ -404,18 +418,28 @@ public struct LivebuyPlayerPresenter: ViewModifier {
     /// other seams pass through.
     private var composedConfig: LivebuyPlayerConfig {
         var c = config
-        // Minimize → collapse to the floating preview (dismiss full, keep the session).
+        // Minimize → collapse to the floating preview (dismiss full, keep the session) — UNLESS
+        // `enableDirectCloseButton` resolves `true` (`rb-ios-player-direct-close-button`), in
+        // which case the top-right button is showing the "close" icon instead (see
+        // `PlayerShellModel.showCloseIcon`, resolved by the SAME pure function in
+        // `LivebuyPlayer.buildModels()`) and tapping it MUST go straight through the exact same
+        // close path as the floating card's own close button (`closeSession()`, including the
+        // close-grace-period bridge) — `isMinimized` is NEVER set `true` on this path.
         c.onMinimize = {
-            withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { isMinimized = true }
+            if resolvedEnableDirectCloseButton(
+                configValue: config.enableDirectCloseButton,
+                globalValue: Livebuy.shared?.enableDirectCloseButton ?? false) {
+                withAnimation { closeSession() }
+            } else {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.85)) { isMinimized = true }
+            }
         }
         // Fatal moment dismiss (end-screen close / unrecoverable error close) → close all.
         // Reset the floating drag offset so the next session re-opens at the default corner.
-        c.onDismiss = { _ in
-            video = nil
-            isMinimized = false
-            committedOffset = .zero
-            dragTranslation = .zero
-        }
+        // Routed through `closeSession()` (rb-ios-live-entry-close-grace-period) — see its doc
+        // for why this counts as a genuine user-close for the sibling `LivebuyLiveEntry`'s
+        // close-grace bridge, and why existing behavior here is unchanged.
+        c.onDismiss = { _ in closeSession() }
         // In-player in-place switch (swipe / hot-pick / watch-next) → re-bind `video` to the
         // SWITCHED video as the REAL item the container resolved (id + REAL `cover` / `title`
         // from the adjacency nav / hot / next item that drove the switch), so the floating
@@ -528,13 +552,10 @@ public struct LivebuyPlayerPresenter: ViewModifier {
                 withAnimation { isMinimized = false }
             },
             onClose: {
-                // Close everything.
-                withAnimation {
-                    isMinimized = false
-                    video = nil
-                    committedOffset = .zero
-                    dragTranslation = .zero
-                }
+                // Close everything. Routed through `closeSession()`
+                // (rb-ios-live-entry-close-grace-period) — this is the exact user-reported
+                // scenario (shrink the live player to a floating card, tap its close button).
+                withAnimation { closeSession() }
             })
         return config.design.floatingPlayerCard(context)
             .padding(resolvedPosition == .leftBottom ? .leading : .trailing, Self.floatingInset.width)
@@ -566,6 +587,42 @@ public struct LivebuyPlayerPresenter: ViewModifier {
                     position: resolvedPosition)
                 dragTranslation = .zero
             }
+    }
+
+    /// Closes the whole session — the shared body of BOTH genuine user-close paths:
+    /// `composedConfig.onDismiss` (full-screen fatal-moment dismiss: end-screen close /
+    /// unrecoverable error close / swipe-nav-close-on-empty) and `floatingCard(_:)`'s close
+    /// button (the floating minimized card's own X — the exact scenario the user reported:
+    /// shrink the live player to a floating card, tap its close button). Both are "the user
+    /// ends this playback session"; `onMinimize` (collapse) and the floating card's `onTap`
+    /// (tap-to-restore) are NOT — neither calls this.
+    ///
+    /// Existing behavior is UNCHANGED (only extracted, not modified): notify the host
+    /// (`video = nil`), reset the floating card's drag offset, and reset `isMinimized` so the
+    /// next session re-opens full-screen at the default corner. (iOS never needed the Android
+    /// `rb-android-collapsible-player-close-no-reflash` carve-out that leaves `isMinimized`
+    /// untouched — `video` here is a plain `@Binding`, so `video = nil` takes effect
+    /// synchronously in the same SwiftUI transaction; there is no asynchronous host-relay
+    /// window in which a stale non-nil `video` could misread a still-`true` `isMinimized` as
+    /// "should be full-screen" and flash the full player back — the bug Android's carve-out
+    /// exists to avoid.)
+    ///
+    /// ADDS exactly one thing (`rb-ios-live-entry-close-grace-period`): records "now" into the
+    /// shared `LivebuyLiveEntryCloseGate` so the sibling drop-in `LivebuyLiveEntry` (which only
+    /// mounts once this presenter's session is gone, i.e. `video == nil`) can hold off popping
+    /// back up for a brief SDK-internal grace period instead of appearing to not have closed at
+    /// all. This has no effect on this presenter's own behavior — `LivebuyLiveEntry` is a
+    /// separate component and never reads this presenter's state.
+    ///
+    /// Callers decide their own animation wrapping (unchanged): `composedConfig.onDismiss` calls
+    /// this bare; `floatingCard(_:)`'s close button wraps it in `withAnimation` — both exactly as
+    /// before this extraction.
+    private func closeSession() {
+        LivebuyLiveEntryCloseGate.shared.recordClosedNow()
+        video = nil
+        isMinimized = false
+        committedOffset = .zero
+        dragTranslation = .zero
     }
 
     /// The floating card's theme: the explicit override, else the resolved

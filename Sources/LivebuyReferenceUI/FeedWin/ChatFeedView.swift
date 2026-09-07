@@ -517,7 +517,9 @@ struct LBChatLineRow: View {
     var userName: String? = nil
 
     // MARK: - 群組① 真正的聊天角色 metadata (chat-message-taxonomy ⑤)
-    /// 主播留言 / 主播回覆。`true` → accent 軌 + `crown.fill` + accent 氣泡 +「主播」實心標。
+    /// 主播留言 / 主播回覆。`true` → accent 軌 + `crown.fill`（軌現依 `rb-ios-feed-avatar-
+    /// icon-hide` 不渲染）+ 中性色氣泡 + accent 色底名牌（內容＝`userName`，`rb-ios-chat-
+    /// message-line-restyle`，design R30：取代先前的整片 accent 氣泡 +「主播」實心標）。
     var isHost: Bool = false
     /// AI 自動回覆。`true` → `sparkles` 軌 glyph +「AI」外框標（疊在主播回覆版型上）。
     var isAI: Bool = false
@@ -586,20 +588,55 @@ struct LBChatLineRow: View {
 
     private var roleBubble: some View {
         VStack(alignment: .leading, spacing: 3) {
-            // header：名字 +「主播」/「AI」標（以版型而非顏色區分）。
-            HStack(spacing: 5) {
-                if let name = userName, !name.isEmpty {
-                    Text(name)
-                        .font(.system(size: 11.5 * theme.fontScale,
-                                      weight: isHost ? .bold : .semibold))
-                        .foregroundColor(.white.opacity(isHost ? 0.95 : 0.66))
-                        .lineLimit(1)
+            // header：名字 / 名牌 +「AI」標（以版型而非顏色區分）+ 冒號.
+            //
+            // `rb-ios-chat-message-line-restyle`（design R30，2026-09-03）：主播身分
+            // 不再靠獨立的固定字串「主播」實心標——`userName` 本身直接放進一個 accent
+            // 色底名牌（`roleTag(name, solid: true, bg: theme.accent)`），取代先前
+            // 「暱稱文字（獨立 `Text`）+ 獨立『主播』badge」兩個並排元素。AI 外框標
+            // （`isAI` 時）不受影響，與主播名牌並存（AI 訊息本身也帶 `isHost == true`）。
+            // 非主播但仍走角色版型（`hasRole == true && isHost == false`，例如僅帶
+            // `replyText` 的少見情境）的暱稱顏色從白 `0.66` 改固定 `#FBB0B7`（粉色，
+            // 對齊 design 的觀眾識別色）。
+            // `rb-ios-chat-header-colon-spacing-fix`：外層 `HStack(spacing: 0)` 讓冒號
+            // 與名牌 / AI 標群組零間距貼齊——`spacing: 5` 只保留在內層，只管「名牌 / 暱稱」
+            // 與「AI 標」之間的間距（對齊設計稿 `moments.jsx` `gap: 5` 只作用於這兩者之間，
+            // 冒號是外層獨立 sibling `<span>`，不共用這份間距）。先前把冒號一併塞進同一個
+            // `HStack(spacing: 5)`，導致冒號多吃一份不該有的 `5pt` 間距——即本次要修正的
+            // 偏差。
+            HStack(spacing: 0) {
+                HStack(spacing: 5) {
+                    if let name = userName, !name.isEmpty {
+                        if isHost {
+                            roleTag(name, solid: true, bg: theme.accent)
+                        } else {
+                            Text(name)
+                                .font(.system(size: 11.5 * theme.fontScale, weight: .semibold))
+                                .foregroundColor(Self.guestRoleNameColor)
+                                .lineLimit(1)
+                        }
+                    }
+                    if isAI {
+                        roleTag("AI", solid: false)
+                    }
                 }
-                if isAI {
-                    roleTag("AI", solid: false)
-                } else if isHost {
-                    roleTag("主播", solid: true)
-                }
+                // 冒號（design R30）：`hasRole == true` 路徑自本輪起也統一補冒號，比照
+                // 觀眾留言 `bubbleText` 既有的冒號慣例（`rb-ios-chat-message-colon-
+                // separator`）。MUST 帶明確 `.font()`——`rb-ios-chat-colon-font-
+                // baseline-fix` 的既知坑：未設 `.font()` 的 `Text` 片段會吃到 ambient
+                // ~17pt 預設字體，讓行高與相鄰片段不一致。放在外層零間距 `HStack` 的最後
+                // 一個子項（名牌 / AI 標群組之後），與該群組零間距貼齊，對齊 design「名牌
+                // 後緊接冒號」的視覺意圖，不牽動下方內文 `Text` 既有的獨立分行 /
+                // `lineLimit(nil)` 結構。
+                //
+                // NOTE（邊界情境，未測試覆蓋）：若 `userName` 為 nil/空字串但
+                // `isHost`/`isAI` 為真（目前所有真實呼叫端與既有測試皆不會發生——
+                // 主播訊息的 `userName` 恆非空），header 會只剩下這個冒號本身。這是
+                // 舊版「即使沒暱稱仍畫固定字串『主播』」行為的一個副作用性改變，design
+                // 沒有交代這個邊界情境的 fallback，本次不臆測補一個新文案。
+                Text("：")
+                    .font(.system(size: 11.5 * theme.fontScale, weight: .regular))
+                    .foregroundColor(.white)
             }
             // 引用框（主播回覆 / AI 回覆）：左側直條 + 暗底，只顯引用文字（後端無引用者名）。
             if let reply = replyText, !reply.isEmpty {
@@ -629,12 +666,19 @@ struct LBChatLineRow: View {
         .padding(.vertical, 5)
         .background(
             RoundedRectangle(cornerRadius: 12)
-                .fill(isHost ? theme.accent : Color.black.opacity(0.42)))
+                // `rb-ios-chat-message-line-restyle`（design R30）：主播氣泡不再整片
+                // 染 accent——與觀眾留言氣泡（`bubble`）同一底色，身分改由上方的
+                // accent 名牌承載，不再靠氣泡染色區分。
+                .fill(Color.black.opacity(0.42)))
     }
 
-    /// 名字後的角色標。`solid`=true → 白 0.22 實心（主播）；false → 透明 + 白 0.55 邊框（AI）。
+    /// 名字 / 角色標。`solid`=true → 實心，底色為 `bg`（`isHost` 名牌用 `theme.accent`；
+    /// 未指定回退既有白 0.22，維持 AI 標既有呼叫點原始碼相容）；`solid`=false → 透明 +
+    /// 白 0.55 邊框（AI 標，`bg` 對此分支無作用）。`bg` 參數為 `rb-ios-chat-message-line-
+    /// restyle`（design R30）新增，對齊設計原始碼 `moments.jsx` 的 `tag(label, solid, bg)`
+    /// helper 同步擴充第三參數（主播名牌需要指定 accent 底色，取代固定字串「主播」）。
     @ViewBuilder
-    private func roleTag(_ label: String, solid: Bool) -> some View {
+    private func roleTag(_ label: String, solid: Bool, bg: Color = Color.white.opacity(0.22)) -> some View {
         Text(label)
             .font(.system(size: 9 * theme.fontScale, weight: .heavy))
             .foregroundColor(.white)
@@ -642,10 +686,15 @@ struct LBChatLineRow: View {
             .frame(height: 14)
             .background(
                 RoundedRectangle(cornerRadius: 4)
-                    .fill(solid ? Color.white.opacity(0.22) : Color.clear)
+                    .fill(solid ? bg : Color.clear)
                     .overlay(solid ? nil : RoundedRectangle(cornerRadius: 4)
                         .stroke(Color.white.opacity(0.55), lineWidth: 1)))
     }
+
+    /// 非主播但仍走角色版型（`hasRole == true && isHost == false`）的暱稱顏色（design
+    /// R30：固定 `#FBB0B7` 粉色，取代先前的白 `0.66`）。internal（非 `private`）以便單元
+    /// 測試直接斷言數值。
+    static let guestRoleNameColor: Color = Color(hex: "#FBB0B7") ?? .pink
 
     /// Translucent dark bubble. ACT_BUBBLE: radius 12, black 0.42, padding h11/v4.
     /// Vertical padding tightened from 5→3 (rb-ios-chat-bubble-padding-tighten) to
@@ -789,21 +838,34 @@ struct LBChatLineRow: View {
 // isHost avatar (the design's slot SVG path is byte-identical to the host crown path —
 // confirmed against the RN/Android siblings — NOT a checkmark), on the shared 24px icon
 // rail (same language as `LBActivityLineRow`), then a FLAT `theme.accent` bubble (radius 12, same fill formula as
-// the host chat bubble — no gradient wash / border anymore) stacking a name+「主播」badge
-// header (when `userName` is non-empty) above the 2-line keyword copy, with the「加入活動」/
-// 「已參加」CTA moved BELOW the text as its own row (was inline beside the text). The ONLY
+// the host chat bubble — no gradient wash / border anymore) stacking a name+badge
+// header (when `userName` is non-empty) above the 2-line keyword copy, with the CTA /
+// 「已參加」chip moved BELOW the text as its own row (was inline beside the text). The ONLY
 // interactive row in the stream — its tap is FORWARDED via `onJoin` (host wired); this layer
 // never joins itself. (rb-ios-event-message-design-align, rb-ios-loading-announce-restyle.)
+//
+// `rb-ios-chat-message-line-restyle`（design R30，2026-09-03）further updates the name
+// header (name+「主播」badge → a single accent-colored nameplate carrying `userName`
+// itself, plus a trailing colon — same treatment as `LBChatLineRow.roleBubble`) and the
+// unjoined CTA (white-capsule/accent-text/「加入活動」 → accent-filled/white-text/
+// full-width/「立即參加」). The joined-state chip is unaffected. Correction (2026-09-03,
+// same change, second pass): the bubble fill itself ALSO moves off `theme.accent` to the
+// same neutral `Color.black.opacity(0.42)` `roleBubble` now uses (verified against
+// `design/templates/minimal/moments.jsx:634` — `ACT_BUBBLE`'s own fill, no accent
+// override) — the "FLAT `theme.accent` bubble" description above (from the earlier
+// `c3c98733` re-sync) is now HISTORICAL only; identity is carried by `hostNameplate`
+// instead. See the NOTE on `bubble` below for the full account.
 
 struct LBEventJoinLineRow: View {
     let theme: ReferenceUITheme
     let text: String
     /// 主播名稱（`ChatFeedView.hostName` ← `FeedWinModel.hostName` ← `DefaultPlayerTemplate
-    /// .header.hostName`），純顯示 — 對齊 `LBChatLineRow.roleBubble` 的主播名 + 「主播」badge
-    /// 版型。空字串（未綁定 `FeedWinModel` 的呼叫端，如各 snapshot test 直接建構 `ChatFeedView`
-    /// 未帶 `hostName`）→ 不畫名字列，不影響其餘版型 / CTA gating。
+    /// .header.hostName`），純顯示 — 對齊 `LBChatLineRow.roleBubble` 的 accent 名牌版型
+    /// （`rb-ios-chat-message-line-restyle`，design R30）。空字串（未綁定 `FeedWinModel` 的
+    /// 呼叫端，如各 snapshot test 直接建構 `ChatFeedView` 未帶 `hostName`）→ 不畫名字列，不
+    /// 影響其餘版型 / CTA gating。
     let userName: String
-    /// keyword 非空 → 畫「加入活動」CTA（後端「`ek` isset 才顯示 CTA」契約，問題 1）；空 → 純活動公告
+    /// keyword 非空 → 畫 CTA（後端「`ek` isset 才顯示 CTA」契約，問題 1）；空 → 純活動公告
     /// （活動已結束 / goods `event[]` 未含該 event → template 帶入 keyword ""），不畫 CTA / 已參加 chip。
     let hasCTA: Bool
     let joined: Bool
@@ -846,10 +908,17 @@ struct LBEventJoinLineRow: View {
                     .foregroundColor(.white))
     }
 
-    /// Host-bubble-styled card (design re-sync `c3c98733`): flat `theme.accent` fill (SAME
-    /// formula as `LBChatLineRow.roleBubble`'s `isHost` bubble — no gradient wash / border),
-    /// stacking an optional name+badge header, the keyword copy, and the CTA (moved below
-    /// the text, was inline beside it).
+    /// Host-bubble-styled card (design re-sync `c3c98733`): flat `theme.accent` fill (no
+    /// gradient wash / border), stacking an optional name+badge header, the keyword copy,
+    /// and the CTA (moved below the text, was inline beside it).
+    ///
+    /// NOTE（`rb-ios-chat-message-line-restyle`，design R30；補正 2026-09-03）：權威來源
+    /// `design/templates/minimal/moments.jsx` 第 634 行已核對——`LBEventJoinLine` 落地版
+    /// 的氣泡是 `<span style={{ ...ACT_BUBBLE, ... }}>`，**沒有** `background: accent` 覆寫，
+    /// `ACT_BUBBLE` 本身底色即 `rgba(0,0,0,0.42)`，與 `LBChatLineRow.roleBubble` 本輪改版
+    /// 後的中性底同一套公式。上一輪「留給未來若有明確決策再處理」的保留判斷已由此次核對
+    /// 收斂——**本 struct 的氣泡底色本輪一併改為中性色**，與 `roleBubble` 一致，身分識別
+    /// 改由 `hostNameplate`（accent 底名牌）承載，不再靠氣泡本身染色區分。
     private var bubble: some View {
         VStack(alignment: .leading, spacing: 3) {
             if !userName.isEmpty {
@@ -868,30 +937,43 @@ struct LBEventJoinLineRow: View {
         }
         .padding(.horizontal, 11)
         .padding(.vertical, 5)
-        .background(RoundedRectangle(cornerRadius: 12).fill(theme.accent))
+        .background(RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(0.42)))
     }
 
-    /// 主播名 + 「主播」badge header row, same formula as `LBChatLineRow.roleBubble`'s name +
-    /// `roleTag("主播", solid: true)`.
+    /// 主播名牌 + 冒號 header row（`rb-ios-chat-message-line-restyle`，design R30：取代先前的
+    /// 「暱稱文字（獨立 `Text`）+ 獨立『主播』badge」兩個並排元素——比照 `LBChatLineRow
+    /// .roleBubble` 的同一套改版：accent 色底名牌承載身分識別，名牌後緊接冒號）。
     private var hostNameHeader: some View {
-        HStack(spacing: 5) {
-            Text(userName)
-                .font(.system(size: 11.5 * theme.fontScale, weight: .bold))
-                .foregroundColor(.white.opacity(0.95))
-                .lineLimit(1)
-            hostBadge
+        // `rb-ios-chat-header-colon-spacing-fix`：`hostNameplate` 與冒號零間距貼齊
+        // （`HStack(spacing: 0)`）——先前 `spacing: 5` 讓冒號多吃一份不該有的間距，對齊
+        // `roleBubble` 同款修正與設計稿 `moments.jsx` 冒號是外層獨立 sibling、零間距的
+        // 意圖。
+        HStack(spacing: 0) {
+            hostNameplate
+            // 冒號（design R30）：MUST 帶明確 `.font()`，比照 `LBChatLineRow.roleBubble`
+            // 的既知坑（`rb-ios-chat-colon-font-baseline-fix`）——未設 font 的 `Text` 片
+            // 段會吃到 ambient ~17pt 預設字體。
+            Text("：")
+                .font(.system(size: 11.5 * theme.fontScale, weight: .semibold))
+                .foregroundColor(.white)
         }
     }
 
-    /// 「主播」badge — white 0.22 solid capsule, same formula as `LBChatLineRow.roleTag(_:
-    /// solid: true)`.
-    private var hostBadge: some View {
-        Text("主播")
+    /// 主播名牌 — accent 色底、內容為主播暱稱本身（`rb-ios-chat-message-line-restyle`，
+    /// design R30：取代原本「暱稱文字（`size 11.5`、`weight .bold`、白 `0.95`）+ 獨立
+    /// 『主播』badge（白 `0.22` 底）」兩個並排元素）。樣式公式沿用既有「主播」badge 的參數
+    /// （白字、`size 9`、`weight .heavy`、圓角 4、`height 14`），僅底色改 `theme.accent`、
+    /// 內容改 `userName`——與 `LBChatLineRow.roleTag(_:solid:bg:)` 同構，但此 struct
+    /// 獨立實作一份（不共用該 private method；`private` 對同檔案內不同 struct 本來就互相
+    /// 不可見，這兩個 struct 對「主播」badge 一向各自一份，本次沿用既有慣例）。
+    private var hostNameplate: some View {
+        Text(userName)
             .font(.system(size: 9 * theme.fontScale, weight: .heavy))
             .foregroundColor(.white)
+            .lineLimit(1)
             .padding(.horizontal, 5)
             .frame(height: 14)
-            .background(RoundedRectangle(cornerRadius: 4).fill(Color.white.opacity(0.22)))
+            .background(RoundedRectangle(cornerRadius: 4).fill(theme.accent))
     }
 
     /// Trailing CTA row — 加入活動 / 已參加, moved BELOW the text (design re-sync `c3c98733`:
@@ -907,16 +989,21 @@ struct LBEventJoinLineRow: View {
         }
     }
 
-    /// 加入活動 CTA button — white capsule, accent text (design re-sync `c3c98733`: was accent
-    /// capsule + white text), weight `.heavy` (was `.bold`).
+    /// 「立即參加」CTA button（`rb-ios-chat-message-line-restyle`，design R30：文案由
+    /// 「加入活動」改「立即參加」；樣式由「白底 accent 字」（design re-sync `c3c98733`
+    /// 當時的樣式）對調回「accent 底白字」；寬度撐滿容器，對齊設計稿 `width: '100%'`）。
+    /// `.frame(maxWidth: .infinity)` 讓外層既有的彈性佈局（`bubble` VStack → 外層
+    /// `HStack(.frame(maxWidth: .infinity, alignment: .leading))`）自然把整個氣泡撐寬，
+    /// 不需要另外量測 / 寫死任何像素寬度常數。
     private var joinButton: some View {
         Button(action: onJoin) {
             Text(Self.joinLabel)
                 .font(.system(size: 12 * theme.fontScale, weight: .heavy))
-                .foregroundColor(theme.accent)
+                .foregroundColor(.white)
                 .padding(.horizontal, 13)
                 .padding(.vertical, 6)
-                .background(Capsule().fill(Color.white))
+                .frame(maxWidth: .infinity)
+                .background(Capsule().fill(theme.accent))
         }
         .buttonStyle(.plain)
         .accessibilityIdentifier(LBAccessibilityID.eventJoinCta)
@@ -939,8 +1026,8 @@ struct LBEventJoinLineRow: View {
         .accessibilityIdentifier(LBAccessibilityID.eventJoinJoined)
     }
 
-    /// 加入活動 CTA label.
-    static let joinLabel = "加入活動"
+    /// CTA label（`rb-ios-chat-message-line-restyle`，design R30：was 「加入活動」）.
+    static let joinLabel = "立即參加"
     /// 已參加 joined-state label.
     static let joinedLabel = "已參加"
     /// Fallback copy when `text` is empty (`LBEventJoinLine` default copy).
@@ -950,20 +1037,35 @@ struct LBEventJoinLineRow: View {
 // MARK: - LBActivityLineRow — tier-styled activity row (LBActivityLine)
 //
 // Mirrors the UPDATED `moments.jsx` `LBActivityLine`: every row shares one unified
-// language — a 24×24 round icon SLOT + a rounded-12 bubble — and tiers differ ONLY
-// by accent-wash intensity + icon (emphasis ASCENDING):
-//   • `.join`     — 進場: lowest-key. slot 白 0.16 / grey icon; bubble 黑 0.32, NO
-//                   accent, text 白 0.9, medium.
-//   • `.purchase` — 購買: slot accent / white bag icon; bubble 黑 0.46 + accent 0.13
-//                   wash, medium.
+// language — a 24×24 round icon SLOT + a rounded-12 bubble. Icon differs by tier;
+// bubble color differs by tier as follows:
+//   • `.join`     — 進場: slot 白 0.16 / grey icon; bubble **固定語意色珊瑚紅**
+//                   `rgba(232,108,108,0.72)`, text 白 0.9, medium.
+//   • `.browse`   — 觀眾選購: slot 白 0.16 / grey icon; bubble 黑 0.32, NO accent,
+//                   text 白 0.9, medium（design 這輪未涵蓋，維持不變）.
+//   • `.purchase` — 購買: slot accent / white bag icon; bubble **固定語意色青綠**
+//                   `rgba(45,212,191,0.72)`, medium.
 //   • `.intro`    — 介紹: slot accent / white megaphone icon; bubble 黑 0.46 + accent
-//                   0.18 wash, medium (商品開始介紹 — 強調介於購買與中獎之間).
-//   • `.win`      — 中獎: slot accent / white trophy icon; bubble 黑 0.46 + accent
-//                   0.23 wash + 細框 accent 0.4 + 極淡光暈 accent 0.2, bold. NO 🎉.
+//                   0.18 wash, medium（商品開始介紹 — design 這輪未涵蓋，維持不變）.
+//   • `.win`      — 中獎: slot accent / white trophy icon; bubble **固定語意色鮮紅**
+//                   `rgba(240,50,70,0.72)` + 細框 accent 0.4 + 極淡光暈 accent 0.2,
+//                   bold. NO 🎉.
 //
-// The design's accent wash `linear-gradient(accentXX,accentXX)` over `rgba(0,0,0,0.46)`
-// = a flat accent overlay (alpha XX) on a 0.46 black base — modelled as a black-base
-// RoundedRectangle with an accent-tinted overlay.
+// `rb-ios-chat-message-line-restyle`（design R30，2026-09-03）：`.join` / `.purchase` /
+// `.win` 的氣泡底色從「隨商家 accent 主題色調的暈染」（`washBubble(_:)`，黑底 + accent
+// overlay）改成三種**固定**語意色 —— 三種活動類型的視覺差異從此不再受商家主題色影響。
+// `.browse` / `.intro` 這輪 design 未涵蓋，維持原本黑底 / 黑底+accent 暈染邏輯不動。
+// `.win` 的 `border` / `boxShadow` 光暈仍用 accent（design 原文 `border: 1px solid
+// ${accent}66; boxShadow: 0 2px 10px ${accent}33`），這是刻意保留、不是遺漏。
+//
+// `.intro` 分支是 iOS（連同 Android/RN/Flutter）既有的共通擴充 tier——design 畫布的
+// `LBActivityLine` 本身只有 join/purchase/browse/win 四種分支，沒有 `.intro` 對應項；
+// 這是「design 沒有涵蓋到的既有擴充」，R30 這輪同樣沒有觸及，維持既有 accent 暈染樣式。
+//
+// 舊版（`.purchase`/`.intro` 曾用）的 accent wash 模型 `linear-gradient(accentXX,
+// accentXX)` over `rgba(0,0,0,0.46)` = a flat accent overlay (alpha XX) on a 0.46
+// black base — 仍套用在未改版的 `.intro` 分支，模型為 a black-base RoundedRectangle
+// with an accent-tinted overlay（見 `washBubble(_:)`）。
 
 struct LBActivityLineRow: View {
     let theme: ReferenceUITheme
@@ -1035,29 +1137,54 @@ struct LBActivityLineRow: View {
     @ViewBuilder
     private var bubble: some View {
         switch tier {
-        case .join, .browse:
-            // 進場 / 觀眾選購 — black 0.32, no accent wash（最低調，無 accent 暈染）。
+        case .join:
+            // 進場 — 固定語意色珊瑚紅（rb-ios-chat-message-line-restyle，design R30：
+            // 取代先前的黑 0.32 中性色，不再隨 accent 主題色調）。
+            RoundedRectangle(cornerRadius: 12).fill(Self.joinBubbleColor)
+        case .browse:
+            // 觀眾選購 — black 0.32, no accent wash（design 這輪未涵蓋，維持不變）。
             RoundedRectangle(cornerRadius: 12).fill(Color.black.opacity(0.32))
         case .purchase:
-            washBubble(0.13)   // accent22
+            // 購買 — 固定語意色青綠（rb-ios-chat-message-line-restyle，design R30：
+            // 取代先前的黑 0.46 + accent 0.13 暈染）。
+            RoundedRectangle(cornerRadius: 12).fill(Self.purchaseBubbleColor)
         case .intro:
-            washBubble(0.18)   // accent2e
+            washBubble(0.18)   // accent2e（design 這輪未涵蓋，維持不變）
         case .win:
-            // 中獎 — accent 0.23 wash + hairline accent border + faint glow. NO 🎉.
+            // 中獎 — 固定語意色鮮紅純色底（rb-ios-chat-message-line-restyle，design R30：
+            // 取代先前的黑 0.46 + accent 0.23 暈染）+ hairline accent border + faint
+            // accent glow（`border`/`boxShadow` 仍用 accent，design 原文明確保留）. NO 🎉.
             RoundedRectangle(cornerRadius: 12)
-                .fill(Color.black.opacity(0.46))
-                .overlay(RoundedRectangle(cornerRadius: 12).fill(theme.accent.opacity(0.23)))
+                .fill(Self.winBubbleColor)
                 .overlay(RoundedRectangle(cornerRadius: 12).stroke(theme.accent.opacity(0.4), lineWidth: 1))
                 .shadow(color: theme.accent.opacity(0.2), radius: 5, x: 0, y: 2)
         }
     }
 
     /// Black 0.46 base + an accent-tinted overlay (the design's `accentXX` wash).
+    /// Only `.intro` still uses this (rb-ios-chat-message-line-restyle, design R30 —
+    /// `.join` / `.purchase` / `.win` moved to fixed semantic colors below).
     private func washBubble(_ wash: Double) -> some View {
         RoundedRectangle(cornerRadius: 12)
             .fill(Color.black.opacity(0.46))
             .overlay(RoundedRectangle(cornerRadius: 12).fill(theme.accent.opacity(wash)))
     }
+
+    // MARK: - Fixed semantic colors (rb-ios-chat-message-line-restyle, design R30)
+    //
+    // `Color(hex:)` (`ReferenceUITheme.swift`) only parses 6-digit RGB and returns an
+    // opaque (alpha 1.0) color; `.opacity(_:)` on an already-opaque `Color` sets the
+    // alpha directly, so `hex + .opacity(0.72)` is exactly equivalent to the design's
+    // `rgba(r,g,b,0.72)` literal. Fallback is `.gray` (not an iOS-15+ semantic color
+    // like `.teal`) to keep the file's existing iOS-14-safe convention.
+
+    /// 進場氣泡固定語意色（design R30：珊瑚紅 `rgba(232,108,108,0.72)`）。internal（非
+    /// `private`）以便單元測試直接斷言數值（`docs/unit-test-discipline.md` 純資料層斷言）。
+    static let joinBubbleColor: Color = (Color(hex: "#E86C6C") ?? .gray).opacity(0.72)
+    /// 購買氣泡固定語意色（design R30：青綠 `rgba(45,212,191,0.72)`）。
+    static let purchaseBubbleColor: Color = (Color(hex: "#2DD4BF") ?? .gray).opacity(0.72)
+    /// 中獎氣泡固定語意色（design R30：鮮紅 `rgba(240,50,70,0.72)`）。
+    static let winBubbleColor: Color = (Color(hex: "#F03246") ?? .gray).opacity(0.72)
 
     private var textColor: Color {
         (tier == .join || tier == .browse) ? Color.white.opacity(0.9) : .white

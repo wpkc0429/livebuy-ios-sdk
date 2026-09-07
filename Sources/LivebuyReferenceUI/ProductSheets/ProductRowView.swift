@@ -79,6 +79,19 @@ public struct ProductRowView: View {
     public let isNarrating: Bool
     public let playbackPosition: Int
 
+    /// Thumbnail top-leading number / HOT badge (rb-ios-product-row-number-badge, design R35
+    /// `sdk-components.jsx:LBPProductRow` `numberBadge`). `nil` (default — every EXISTING call
+    /// site, incl. the `.grid` 「更多商品」推薦格, which has no notion of "this video's backend
+    /// order") → no badge drawn. The `.row` `ProductListView` call site resolves this via the pure
+    /// `ProductRowNumberBadge.resolveIndex(product:backendOrder:mode:)` (VOD always `nil`).
+    /// Deliberately named `badgeIndex`, NOT `index` — `index` above already exists for a DIFFERENT
+    /// purpose (per-item accessibility identifiers, present on every row regardless of layout /
+    /// playback mode); reusing that name here would collide both in Swift and in meaning (a plain
+    /// 0-based array position vs. a 1-based "position in the ORIGINAL backend order", shown only in
+    /// live / replay). When `isIntroducing` (below) is true, the badge shows a flame icon + "HOT"
+    /// INSTEAD OF this number — see `numberBadge(index:)`.
+    public let badgeIndex: Int?
+
     /// Host-wired 卡片本體 / 名稱 tap → open detail (`ProductListView.onOpenProduct` /
     /// the recommendation grid's card-body tap). nil → no-op (demo / snapshot).
     private let onOpenProduct: (() -> Void)?
@@ -127,6 +140,7 @@ public struct ProductRowView: View {
         mode: ProductRowMode = .vod,
         isNarrating: Bool = false,
         playbackPosition: Int = 0,
+        badgeIndex: Int? = nil,
         onOpenProduct: (() -> Void)? = nil,
         onQuickAdd: (() -> Void)? = nil,
         onNotifyRestock: (() -> Void)? = nil,
@@ -143,6 +157,7 @@ public struct ProductRowView: View {
         self.mode = mode
         self.isNarrating = isNarrating
         self.playbackPosition = playbackPosition
+        self.badgeIndex = badgeIndex
         self.onOpenProduct = onOpenProduct
         self.onQuickAdd = onQuickAdd
         self.onNotifyRestock = onNotifyRestock
@@ -175,6 +190,50 @@ public struct ProductRowView: View {
     /// verbatim from the pre-extraction `productRow(_:index:)`).
     private var isIntroducing: Bool { overlay.showIntroducing && !soldOut }
 
+    // MARK: - Number / HOT badge (rb-ios-product-row-number-badge, design R35)
+    //
+    // Top-leading thumbnail overlay, independent of the play-hint / 介紹中 banner overlays
+    // above (all four can coexist — this one sits at a different corner). `nil` `badgeIndex`
+    // draws nothing (both layouts' current callers besides `ProductListView`'s `.row` never
+    // pass one). `isIntroducing` reuses the SAME flag the bottom 介紹中 banner uses — no second
+    // "is this row currently being introduced" computation.
+
+    @ViewBuilder
+    private var numberBadgeOverlay: some View {
+        if let badgeIndex = badgeIndex {
+            numberBadge(index: badgeIndex)
+        } else {
+            EmptyView()
+        }
+    }
+
+    /// Design `numberBadge`: black 70%-opacity, white text, top-left + bottom-right rounded
+    /// (`border-radius: 0.25rem 0 0.25rem 0`) 4pt corners via `NumberBadgeShape`. Sizing / font
+    /// differ by `layout` per the design (`.grid` 20pt box / 12pt font, `.row` 18pt / 11pt) even
+    /// though only `.row` is wired to a non-nil `badgeIndex` today (see `badgeIndex`'s doc).
+    /// `isIntroducing` swaps the whole content for a flame icon + "HOT" — the flame's fixed 10pt
+    /// size matches the design's literal `Icons.hot size={10}` (not layout- or `theme.fontScale`-
+    /// scaled, matching this file's existing hand-drawn-glyph convention, e.g. `EqualizerGlyph`).
+    private func numberBadge(index: Int) -> some View {
+        let isGrid = layout == .grid
+        return HStack(spacing: 3) {
+            if isIntroducing {
+                HotFlameGlyph(size: 10, color: .white)
+                Text(Self.hotBadgeLabel)
+            } else {
+                Text("\(index)")
+            }
+        }
+        .font(.system(size: (isGrid ? 12 : 11) * theme.fontScale, weight: .bold))
+        .foregroundColor(.white)
+        .lineLimit(1)
+        .fixedSize()
+        .padding(.horizontal, isIntroducing ? 6 : 5)
+        .frame(minWidth: isGrid ? 20 : 18, minHeight: isGrid ? 20 : 18)
+        .background(Self.numberBadgeBackground)
+        .clipShape(NumberBadgeShape(radius: 4))
+    }
+
     public var body: some View {
         switch layout {
         case .row:
@@ -194,54 +253,88 @@ public struct ProductRowView: View {
     // `product-sheets-overlay-list-presented` / `product-list-search-open` /
     // `product-list-search-no-results` / `product-list-outsoon-hot-labels`). The ACTION
     // wiring (`onPlayClick ?? onSeekToIntro` fallback) is unchanged by this visual swap.
+    //
+    // `.row` THUMBNAIL CORNER + BORDER (design R34, `rb-ios-product-detail-image-gallery`,
+    // 2026-09-04): corner radius 12→4 + a new `1px solid #D2D2D2` border — the SAME 5
+    // baselines above are affected AGAIN by this change (thumbnail geometry, not just the
+    // play-hint pill inside it).
 
     private var rowBody: some View {
         HStack(spacing: 12) {
             ZStack {
-                RoundedRectangle(cornerRadius: 12)
+                RoundedRectangle(cornerRadius: 4)
                     .fill(Self.bgSunken)
                 if live, let url = Self.photoURL(product) {
                     RemoteStillImageView(url: url, contentMode: .scaleAspectFill)
                 }
-                if overlay.showPlay {
-                    VStack(spacing: 0) {
-                        Spacer(minLength: 0)
-                        HStack(spacing: 3) {
-                            Image(systemName: "play.fill")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundColor(Self.playHintText)
-                            Text(Self.playHintLabel)
-                                .font(.system(size: 9.5, weight: .semibold))
-                                .foregroundColor(Self.playHintText)
-                                .lineLimit(1)
-                                .fixedSize()
-                        }
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(Capsule().fill(Color.white.opacity(0.75)))
-                        .padding(.bottom, 4)
+                // VOD (rb-ios-product-row-vod-intro-mask, design R36): a DIFFERENT, unified
+                // three-phase visual — centered play button / full-bleed equalizer mask / no
+                // overlay — replacing the「看講解」pill and「介紹中」banner below for `.vod`
+                // ONLY. `.live` / `.replay` keep those existing visuals byte-identical.
+                if mode == .vod {
+                    if overlay.showPlay {
+                        vodPlayOverlay
+                    } else if isIntroducing {
+                        vodIntroducingMask
                     }
-                }
-                if isIntroducing {
-                    VStack(spacing: 0) {
-                        Spacer(minLength: 0)
-                        HStack(spacing: 3) {
-                            EqualizerGlyph(size: 9, color: .white)
-                            Text(Self.introducingLabel)
-                                .font(.system(size: 10 * theme.fontScale, weight: .bold))
-                                .foregroundColor(.white)
-                                .lineLimit(1)
-                                .fixedSize()
+                } else {
+                    if overlay.showPlay {
+                        VStack(spacing: 0) {
+                            Spacer(minLength: 0)
+                            HStack(spacing: 3) {
+                                Image(systemName: "play.fill")
+                                    .font(.system(size: 9, weight: .bold))
+                                    .foregroundColor(Self.playHintText)
+                                Text(Self.playHintLabel)
+                                    .font(.system(size: 9.5, weight: .semibold))
+                                    .foregroundColor(Self.playHintText)
+                                    .lineLimit(1)
+                                    .fixedSize()
+                            }
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 3)
+                            .background(Capsule().fill(Color.white.opacity(0.75)))
+                            .padding(.bottom, 4)
                         }
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 3)
-                        .padding(.horizontal, 4)
-                        .background(theme.accent)
+                    }
+                    if isIntroducing {
+                        // R31 (`rb-ios-vod-live-product-card-restyle`): fixed
+                        // `rgba(240,50,70,.7)` coral (was `theme.accent`) — unified with
+                        // `LiveOverlayChromeView.pinnedCard(_:)`'s narrate badge, same color
+                        // token. Font size 10pt → 12pt (design `sdk-components.jsx:LBPProductRow`).
+                        VStack(spacing: 0) {
+                            Spacer(minLength: 0)
+                            HStack(spacing: 3) {
+                                EqualizerGlyph(size: 9, color: .white)
+                                Text(Self.introducingLabel)
+                                    .font(.system(size: 12 * theme.fontScale, weight: .bold))
+                                    .foregroundColor(.white)
+                                    .lineLimit(1)
+                                    .fixedSize()
+                            }
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, 3)
+                            .padding(.horizontal, 4)
+                            .background(Self.introducingBadgeColor)
+                        }
                     }
                 }
             }
             .frame(width: 64, height: 64)
-            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .clipShape(RoundedRectangle(cornerRadius: 4))
+            // Number / HOT badge (rb-ios-product-row-number-badge, design R35) — top-leading
+            // overlay. `.overlay(_:alignment:)` (the plain-View-argument overload, NOT the
+            // `@ViewBuilder` closure overload added in iOS 15) keeps this file iOS-14-safe.
+            .overlay(numberBadgeOverlay, alignment: .topLeading)
+            // `.row` thumbnail border (design R34, `rb-ios-product-detail-image-gallery`,
+            // 2026-09-04): `1px solid #D2D2D2` — the corner radius shrink (12→4) above and this
+            // border are the SAME visual direction as the R33 carousel-card white-card /
+            // R34 product-photo-gallery convergence; `.grid` layout is UNAFFECTED (its own
+            // 14pt radius + deliberate no-border stays, see the `.grid` MARK below).
+            .overlay(
+                RoundedRectangle(cornerRadius: 4)
+                    .stroke(Self.rowThumbBorder, lineWidth: 1)
+            )
             .contentShape(Rectangle())
             // design R21 task 1.3: `onPlayClick` non-nil overrides the existing seek — nil
             // (ProductListView's existing call site) falls back to `onSeekToIntro` exactly
@@ -312,6 +405,38 @@ public struct ProductRowView: View {
                     .frame(height: 1)
             }
         )
+    }
+
+    // MARK: - VOD-only thumbnail overlays (rb-ios-product-row-vod-intro-mask, design R36)
+    //
+    // `.row`-only (see `rowBody`'s `mode == .vod` branch above); `.grid` never reads `overlay`
+    // so these are never reached from `gridBody`.
+
+    /// VOD `upcoming` phase: a centered black circle play button — replaces the bottom
+    /// 「看講解」pill for VOD ONLY (`.live` / `.replay` keep the pill, see `rowBody`). Design
+    /// `sdk-components.jsx:LBPProductRow`'s `playOverlay`: 32pt circle, `rgba(0,0,0,0.5)` fill,
+    /// centered white 15pt play triangle.
+    private var vodPlayOverlay: some View {
+        ZStack {
+            Circle()
+                .fill(Color.black.opacity(0.5))
+                .frame(width: 32, height: 32)
+            Image(systemName: "play.fill")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundColor(.white)
+        }
+    }
+
+    /// VOD `now` phase: a full-bleed `rgba(0,0,0,0.5)` mask + centered white equalizer, with
+    /// NO text — visually distinct from the `.live` / `.replay` bottom「介紹中」coral banner
+    /// (same semantic — this product is currently being introduced — different presentation).
+    /// Reuses the existing `EqualizerGlyph` (same bars as the `.live`/`.replay` banner's, just
+    /// larger: 18pt here vs 9pt there), matching design `introBadge`'s VOD branch.
+    private var vodIntroducingMask: some View {
+        ZStack {
+            Color.black.opacity(0.5)
+            EqualizerGlyph(size: 18, color: .white)
+        }
     }
 
     private func rowOutlineGlyph<Glyph: View>(action: (() -> Void)?, @ViewBuilder glyph: () -> Glyph) -> some View {
@@ -393,6 +518,13 @@ public struct ProductRowView: View {
             }
             .aspectRatio(1, contentMode: .fit)
             .clipShape(RoundedRectangle(cornerRadius: 14))
+            // Number / HOT badge (rb-ios-product-row-number-badge, design R35) — same overlay as
+            // `.row` above. In practice `badgeIndex` is always `nil` here today (the「更多商品」
+            // recommendation grid call site never passes one — a cross-video recommendation card
+            // has no "this video's backend order" to number), so this renders nothing for every
+            // EXISTING `.grid` call site; kept implemented for design-component fidelity (the
+            // design's `LBPProductRow` draws `numberBadge` in both its `row` and `grid` branches).
+            .overlay(numberBadgeOverlay, alignment: .topLeading)
 
             Text(product.name)
                 .font(.system(size: 13 * theme.fontScale, weight: .semibold))
@@ -503,14 +635,30 @@ public struct ProductRowView: View {
     static let textDim = Color(hex: "#6B6775") ?? Color.gray
     static let stroke = Color(hex: "#ECEAF0") ?? Color.gray.opacity(0.2)
     static let bgSunken = Color(hex: "#F4F4F6") ?? Color.gray.opacity(0.08)
+    /// `.row` thumbnail border (design R34, `rb-ios-product-detail-image-gallery`) — distinct
+    /// from `stroke` above (the `.row` list's own hairline divider color).
+    static let rowThumbBorder = Color(hex: "#D2D2D2") ?? Color.gray.opacity(0.4)
     static let saleColor = Color(hex: "#E0334B") ?? Color.red
     static let soldOutColor = Color(hex: "#9A96A3") ?? Color.gray
     static let outSoonColor = Color(hex: "#F5A623") ?? Color.orange
+    /// 「介紹中」橫幅底色（R31，`rb-ios-vod-live-product-card-restyle`）：固定
+    /// `rgba(240,50,70,.7)` 珊瑚紅，不再跟隨商家 `theme.accent`。與
+    /// `LiveOverlayChromeView.pinnedCard(_:)` 的新標籤共用同一色票（
+    /// `design/templates/minimal/sdk-components.jsx:LBPProductRow`）。
+    static let introducingBadgeColor = (Color(hex: "#F03246") ?? Color.red).opacity(0.7)
 
     static let soldOutLabel = "已售完"
     static let introducingLabel = "介紹中"
     static let outSoonLabel = "即將售完"
     static let hotLabel = "熱賣中"
+
+    /// Number / HOT badge background (design `rgba(0,0,0,0.7)`, rb-ios-product-row-number-badge).
+    /// Distinct from `introducingBadgeColor` above (bottom banner) — a different badge, different
+    /// corner, different color token.
+    static let numberBadgeBackground = Color.black.opacity(0.7)
+    /// Number badge's introducing-state label (design "HOT") — distinct from `introducingLabel`
+    /// ("介紹中", the bottom banner's text); the two badges show DIFFERENT text for the same state.
+    static let hotBadgeLabel = "HOT"
 
     /// `.row` play-hint pill text/icon color (design R21, `rb-ios-product-row-play-hint-pill`).
     static let playHintText = Color(hex: "#111111") ?? Color.black
@@ -526,6 +674,38 @@ public struct ProductRowView: View {
         let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !s.isEmpty else { return nil }
         return URL(string: s)
+    }
+}
+
+// MARK: - NumberBadgeShape — iOS-14-safe two-corner-rounded rectangle
+//         (rb-ios-product-row-number-badge, design R35)
+//
+// Design `border-radius: 0.25rem 0 0.25rem 0` (CSS 4-value shorthand = top-left /
+// top-right / bottom-right / bottom-left) — top-left AND bottom-right rounded,
+// top-right AND bottom-left square. `UnevenRoundedRectangle` (the direct SwiftUI
+// equivalent) is iOS 16+; this module stays iOS-14-safe throughout (see
+// `SheetKit/TopRoundedRectangle.swift`'s identical rationale for its own
+// two-of-four-corners shape), so this is a small hand-rolled `Shape` using the
+// same `addQuadCurve` technique.
+private struct NumberBadgeShape: Shape {
+    let radius: CGFloat
+
+    func path(in rect: CGRect) -> Path {
+        let r = min(radius, min(rect.width, rect.height) / 2)
+        var path = Path()
+        path.move(to: CGPoint(x: rect.minX + r, y: rect.minY))
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.minY))                 // top edge → top-right (square)
+        path.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - r))             // right edge
+        path.addQuadCurve(
+            to: CGPoint(x: rect.maxX - r, y: rect.maxY),
+            control: CGPoint(x: rect.maxX, y: rect.maxY))                    // bottom-right (rounded)
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.maxY))                // bottom edge → bottom-left (square)
+        path.addLine(to: CGPoint(x: rect.minX, y: rect.minY + r))            // left edge
+        path.addQuadCurve(
+            to: CGPoint(x: rect.minX + r, y: rect.minY),
+            control: CGPoint(x: rect.minX, y: rect.minY))                   // top-left (rounded)
+        path.closeSubpath()
+        return path
     }
 }
 

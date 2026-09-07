@@ -70,6 +70,19 @@ public final class PlayerShellModel: ObservableObject {
     /// `PlayerShellView` feeds it to `PlayerHeaderBarView`; `false` stops the title from
     /// marquee-scrolling WITHOUT hiding it and WITHOUT changing its line height.
     public var titleScroll: Bool = true
+    /// Top-right button icon mode (`rb-ios-player-direct-close-button`). NOT a
+    /// template-derived value — a per-shell constant resolved once by `LivebuyPlayer
+    /// .buildModels()` (via `resolvedEnableDirectCloseButton(configValue:globalValue:)`, which
+    /// folds `LivebuyPlayerConfig.enableDirectCloseButton` against the global
+    /// `Livebuy.shared?.enableDirectCloseButton` preference), so it is a plain stored property
+    /// (not `@Published`): set once at build time, never mutated at runtime — exactly like
+    /// `showViewerCount` / `titleScroll` above. `PlayerShellView` feeds it to
+    /// `PlayerHeaderBarView.showCloseIcon`, which swaps the button's icon (`PipGlyph` → `xmark`)
+    /// and accessibility label PURELY for presentation; the actual behavior switch (collapse to
+    /// floating vs. direct dismiss) lives in `LivebuyPlayerPresenter.composedConfig`, which
+    /// resolves the SAME flag independently (it has no access to this model). Default `false`
+    /// keeps every existing call site byte-identical.
+    public var showCloseIcon: Bool = false
     /// Subscribe badge state (`DefaultPlayerHeaderState.isSubscribed`).
     @Published public private(set) var isSubscribed: Bool
     /// Share action context URL (`DefaultPlayerHeaderState.shareUrl`).
@@ -338,6 +351,7 @@ public final class PlayerShellModel: ObservableObject {
         viewerCountVisible: Bool = true,
         showViewerCount: Bool = true,
         titleScroll: Bool = true,
+        showCloseIcon: Bool = false,
         isSubscribed: Bool = false,
         shareUrl: String = "",
         railItems: [LBSideRailItem] = PlayerShellModel.defaultRailItems,
@@ -381,6 +395,7 @@ public final class PlayerShellModel: ObservableObject {
         self.viewerCountVisible = viewerCountVisible
         self.showViewerCount = showViewerCount
         self.titleScroll = titleScroll
+        self.showCloseIcon = showCloseIcon
         self.isSubscribed = isSubscribed
         self.shareUrl = shareUrl
         self.railItems = railItems

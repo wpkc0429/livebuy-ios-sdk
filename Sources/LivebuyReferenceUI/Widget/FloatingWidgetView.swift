@@ -203,8 +203,18 @@ public struct FloatingWidgetView: View {
         .accessibilityIdentifier(LBAccessibilityID.floatingWidget)
     }
 
-    /// Top-right round close button (`sdk-components.jsx` `LBPFloatingWidget` 694-702):
-    /// a 20×20 `rgba(0,0,0,0.55)` circle with a white ✕ glyph. Forwards `onClose` only.
+    /// Top-right round close button (`sdk-components.jsx` `LBPFloatingWidget`): a
+    /// `rgba(0,0,0,0.55)` circle with a white ✕ glyph. Forwards `onClose` only.
+    ///
+    /// **Enlarged 2026-09-03 (design R32)**: 20×20 (icon 9pt) → 28×28 (icon 12pt) — a pure
+    /// visual bump, no behavior change. The design's OWN literal values moved 20×20/icon-11px
+    /// → 28×28/icon-14px, but SF/`.font(size:)` pt is not a 1:1 stand-in for the design's SVG
+    /// px (this button's ORIGINAL 9pt was already smaller than the design's then-11px for
+    /// exactly that reason — see the git history / `rb-ios-live-replay-more-menu-and-video-
+    /// info-live-copy` design.md). 12pt is a considered pt choice for the new 28pt circle
+    /// (scaling the button's own linear growth, 20→28 = ×1.4, onto the prior 9pt glyph ≈
+    /// 12.6pt), not a literal transcription of the design's 14px — verified against a render
+    /// rather than assumed.
     ///
     /// NO border and NO shadow of its own — the design has neither (`border: 'none'`,
     /// no `box-shadow` on the button; the window's own drop-shadow is separate and
@@ -220,10 +230,10 @@ public struct FloatingWidgetView: View {
                 Circle()
                     .fill(Self.closeGlass)
                 Image(systemName: "xmark")
-                    .font(.system(size: 9, weight: .bold))
+                    .font(.system(size: 12, weight: .bold))
                     .foregroundColor(.white)
             }
-            .frame(width: 20, height: 20)
+            .frame(width: 28, height: 28)
         }
         .buttonStyle(PlainButtonStyle())
         .accessibilityIdentifier(LBAccessibilityID.floatingClose)

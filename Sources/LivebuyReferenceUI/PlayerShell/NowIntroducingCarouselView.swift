@@ -9,8 +9,13 @@ import LivebuyUI
 //
 // Multiple products can be introduced at the same VOD playhead (overlapping
 // `[beginTime, endTime)` windows → `DefaultPlayerTemplate.vodActiveProducts`). This carousel
-// shows ONE full-width card at a time (`MiniCartView(fullWidth: true, tag: "介紹中")`) plus page
-// dots, and swipes left/right to change the current page.
+// shows ONE full-width card at a time (`MiniCartView(fullWidth: true)`) plus page dots, and
+// swipes left/right to change the current page.
+//
+// (rb-ios-minicart-design-align) `MiniCartView` no longer has a `tag` parameter — the design's
+// `LBPMiniCart` (`sdk-components.jsx`) has no tag / caption concept at all, and the accent
+// 「介紹中」caption this carousel previously passed through was a design deviation the user asked
+// to remove. This call site no longer passes anything beyond `fullWidth: true`.
 //
 // SNAPSHOT-SAFE: it draws ONLY the current card + page dots — NO `TabView` / `ScrollView` /
 // `GeometryReader` / `Lazy*` (those render BLANK through the `ImageRenderer` snapshot path).
@@ -71,8 +76,7 @@ public struct NowIntroducingCarouselView: View {
                     onDismiss: { onDismiss?(peek.productId) },
                     onOpenDetail: { onOpenDetail?(peek.productId) },
                     live: live,
-                    fullWidth: true,
-                    tag: Self.introducingTag)
+                    fullWidth: true)
                     .accessibilityIdentifier(LBAccessibilityID.nowIntroducingCard)
 
                 if peeks.count > 1 {
@@ -120,5 +124,4 @@ public struct NowIntroducingCarouselView: View {
     }
 
     static let swipeThreshold: CGFloat = 40
-    static let introducingTag = "介紹中"
 }

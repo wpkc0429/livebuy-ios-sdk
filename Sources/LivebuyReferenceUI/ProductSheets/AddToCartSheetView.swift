@@ -59,8 +59,11 @@ public struct AddToCartSheetView: View {
     private let onOpenCart: (() -> Void)?
     private let onDismiss: (() -> Void)?
     /// Host-wired zoom badge tap → container opens the full-frame lightbox. Forwarded
-    /// to the inner `ProductDetailSheetView` (rb-ios-product-image-zoom-lightbox).
-    private let onZoomImage: (() -> Void)?
+    /// verbatim to the inner `ProductDetailSheetView` (rb-ios-product-image-zoom-lightbox).
+    /// Carries the tapped photo's verbatim string, or nil — see the inner view's doc comment
+    /// (rb-ios-product-detail-image-gallery). `.addToCart` has no gallery, so the payload is
+    /// always the resolver's `primaryPhoto`; this wrapper does not construct it itself.
+    private let onZoomImage: ((String?) -> Void)?
 
     public init(
         theme: ReferenceUITheme,
@@ -82,7 +85,7 @@ public struct AddToCartSheetView: View {
         onAddToCart: (() -> Void)? = nil,
         onOpenCart: (() -> Void)? = nil,
         onDismiss: (() -> Void)? = nil,
-        onZoomImage: (() -> Void)? = nil
+        onZoomImage: ((String?) -> Void)? = nil
     ) {
         self.theme = theme
         self.detail = detail

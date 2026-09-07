@@ -86,7 +86,7 @@ public struct FloatingBagButtonView: View {
     // MARK: - Design tokens (LBPBagButton)
 
     private static let size: CGFloat = 40          // 40×40 floating bag (rb-ios-gesture-clean-mode-v2: 48→40, design R29)
-    private static let glyphSize: CGFloat = 22     // Icons.bag size 22 (~55% of 40pt button; rb-ios-gesture-clean-mode-v2: 34→22, design R29)
+    private static let glyphSize: CGFloat = 28     // Icons.bag size 28 (~70% of 40pt button; rb-ios-vod-bag-icon-ratio-restore: 22→28, correcting rb-ios-gesture-clean-mode-v2's non-proportional 34→22 slip)
     private static let badgeMinWidth: CGFloat = 20 // count chip minWidth
     private static let badgeHeight: CGFloat = 20   // count chip height
     private static let badgeFontSize: CGFloat = 11 // fontSize 11, weight 800

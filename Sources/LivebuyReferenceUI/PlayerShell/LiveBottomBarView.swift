@@ -17,9 +17,20 @@ import LivebuyUI
 //   • a white shopping-bag button + cart badge (when `bagCount > 0`),
 //   • a flex "留言..." TAP-TARGET pill (NOT an inline TextField — design `onComment`
 //     opens a sheet; the real composer is the host's),
-//   • a nickname (person-edit) button,
-//   • a share button,
+//   • a leading slot — NICKNAME (person-edit) in every variant except `chatClosed`, where
+//     it is replaced by「更多」(⋯) opening `LiveMoreSheetView` (design R32,
+//     `rb-ios-live-replay-more-menu-and-video-info-live-copy` — see `leadingSlotKind`),
+//   • a trailing slot — SHARE in every variant except `chatClosed`, where it is replaced
+//     by a CC (字幕) toggle forwarding `onToggleCC` (design R32 moves the CC button INTO
+//     share's old position — see `trailingActionKind`),
 //   • an accent like (heartFill) button.
+//
+// `chatClosed` variant button count (design `LBLiveBottomBar`'s `replay` branch,
+// `design/contract/components.md` line 67): FOUR icon buttons — bag / 更多 (leading slot,
+// `更多`'s old CC position) / CC (trailing slot, share's old position) / heart. A 2026-09-03
+// correction round restored the CC button (a prior pass replaced Share with More but dropped
+// CC entirely, leaving only 3 buttons — see `onToggleCC`'s doc comment for the button's own
+// functional history).
 //
 // Comment entry ALWAYS available (prerecorded-live-bottom-bar-comment, 問題 1): this bar
 // renders ONLY for a live broadcast (`isLive == true`, i.e. `channel.liveStatus == 1`) /
@@ -106,10 +117,39 @@ public struct LiveBottomBarView: View {
     public let onShare: (() -> Void)?
     /// Like (❤️) tap → host-wired like exit. nil → inert.
     public let onLike: (() -> Void)?
-    /// CC toggle → host-wired subtitle toggle. RETAINED for source compatibility (defaulted
-    /// nil); the LIVE bottom bar no longer draws a CC button (the prior replay variant is
-    /// removed — prerecorded-live-bottom-bar-comment). nil → inert.
+    /// CC (字幕) toggle → host-wired subtitle toggle. RESTORED 2026-09-03 (correction round,
+    /// `rb-ios-live-replay-more-menu-and-video-info-live-copy`) after a brief period as
+    /// source-compat-only dead weight: `prerecorded-live-bottom-bar-comment` (2026-06-18)
+    /// removed this button's RENDERING (it used to swap in for the nickname slot on the old,
+    /// now-defunct `isReplay`-driven replay variant) while keeping the closure param for ABI
+    /// compat; design R32 (2026-09-03) re-introduces a CC button for the `chatClosed` variant,
+    /// in the TRAILING slot (share's old position — see `trailingActionKind`), not the
+    /// leading/nickname slot it originally occupied.
+    ///
+    /// ⚠️ Functional history (verified against git history + `PlayerShellView`'s caption
+    /// rendering gate before restoring this): pre-removal, `PlayerShellView` wired this to the
+    /// SAME real forwarder restored below (`model.toggleSubtitle()`) — never a no-op — so this
+    /// is NOT "reviving inert UI debris." But `CaptionOverlayView` has been gated on `!isLive`
+    /// since its very first commit, and `isReplay` (the old trigger) implies `isLive == true`
+    /// exactly like `chatClosed`/`isFinishedLiveReplay` does today — so toggling this NEVER
+    /// produced a visible caption while this button was live-chrome-side, either historically
+    /// or now. Restoring the button + its historical wiring is faithful parity (matches
+    /// `OperationRailView`'s still-active VOD `.subtitle` rail item, which forwards to the
+    /// identical `model.toggleSubtitle()`); extending `CaptionOverlayView`'s rendering gate to
+    /// the live-chrome branch so a caption actually appears is a SEPARATE, larger scope
+    /// EXPLICITLY NOT undertaken in this round — see design.md.
+    ///
+    /// nil → inert (demo / snapshot).
     public let onToggleCC: (() -> Void)?
+    /// 「更多」(⋯) tap → host opens `LiveMoreSheetView` (分享 + 客服). Only rendered in the
+    /// `chatClosed` (finished-live-replay) variant, in the LEADING slot (nickname's position —
+    /// design `LBLiveBottomBar` R32: the old CC-toggle slot now shows「更多」; CC itself moves
+    /// to the TRAILING slot, share's old position — see `leadingSlotKind` / `trailingActionKind`
+    /// below). nil → inert.
+    /// A fresh seam rather than repurposing `onToggleCC`: the two are now DISTINCT buttons in
+    /// DISTINCT slots that both render simultaneously in the `chatClosed` variant, so they could
+    /// not share one closure even if naming allowed it (rb-ios-live-replay-more-menu-and-video-info-live-copy).
+    public let onMore: (() -> Void)?
 
     public init(
         theme: ReferenceUITheme,
@@ -123,7 +163,8 @@ public struct LiveBottomBarView: View {
         onNickname: (() -> Void)? = nil,
         onShare: (() -> Void)? = nil,
         onLike: (() -> Void)? = nil,
-        onToggleCC: (() -> Void)? = nil
+        onToggleCC: (() -> Void)? = nil,
+        onMore: (() -> Void)? = nil
     ) {
         self.theme = theme
         self.bagCount = bagCount
@@ -137,6 +178,7 @@ public struct LiveBottomBarView: View {
         self.onShare = onShare
         self.onLike = onLike
         self.onToggleCC = onToggleCC
+        self.onMore = onMore
     }
 
     // MARK: - Body
@@ -176,24 +218,37 @@ public struct LiveBottomBarView: View {
                     Color.clear.frame(maxWidth: .infinity, maxHeight: 1)
                 }
 
-                // Nickname (person-edit) button shows ONLY in the normal LIVE variant
-                // (`!isUpcoming && !chatClosed`): dropped in the upcoming slim variant (design
-                // gates it on `!upcoming`) AND in the 回放 chat-closed variant (改名 only serves
-                // commenting; with the chat room closed it is useless). The LIVE bottom bar no
-                // longer swaps it for a CC toggle on the behind-edge `isReplay`
-                // (prerecorded-live-bottom-bar-comment).
-                if !isUpcoming && !chatClosed {
+                // Leading slot — NICKNAME in the normal LIVE variant, 更多 (More) in chatClosed
+                // (design `LBLiveBottomBar` R32: More occupies the nickname/CC slot's position),
+                // NOTHING in upcoming slim (design gates both on `!upcoming`) — see
+                // `leadingSlotKind`. 2026-09-03 correction round: a prior pass simply omitted
+                // this slot's content in chatClosed instead of rendering More here (More had been
+                // misplaced into the TRAILING slot, displacing CC entirely — see git history /
+                // design.md for the correction).
+                switch Self.leadingSlotKind(bagOnly: bagOnly, isUpcoming: isUpcoming, chatClosed: chatClosed) {
+                case .nickname:
                     // 設定暱稱 draws the hand-drawn person-EDIT composite (head + pencil
                     // badge, design `live-chrome.jsx` ≈224), not SF `person.fill`
                     // (rb-align-nickname-icon-person-edit).
                     iconButton(action: onNickname) { PersonEditGlyph(size: Self.iconGlyphSize, color: .white) }
                         .accessibilityIdentifier(LBAccessibilityID.livePersonEdit)
+                case .more:
+                    iconButton(action: onMore) { MoreGlyph(size: Self.iconGlyphSize, color: .white) }
+                        .accessibilityIdentifier(LBAccessibilityID.liveMore)
+                case .none:
+                    EmptyView()
                 }
 
-                // Share draws the hand-drawn `ShareGlyph` (design `Icons.share`),
-                // not SF `square.and.arrow.up` (rb-ios-share-icon-design-align).
-                iconButton(action: onShare) { ShareGlyph(size: Self.iconGlyphSize, color: .white) }
-                    .accessibilityIdentifier(LBAccessibilityID.liveShare)
+                // Trailing slot — SHARE in every variant EXCEPT chatClosed, where design R32
+                // moves the CC (字幕) toggle into this position (share itself moves INTO the new
+                // `LiveMoreSheetView`「更多」sheet instead) — see `trailingActionKind`. Share
+                // draws the hand-drawn `ShareGlyph` (design `Icons.share`), not SF
+                // `square.and.arrow.up` (rb-ios-share-icon-design-align). CC draws the hand-drawn
+                // `CcGlyph` (design `Icons.cc`), not SF Symbol `captions.bubble`
+                // (rb-ios-live-bottom-bar-cc-icon-align) — the same glyph `OperationRailView`'s
+                // VOD `.subtitle` rail item already draws (rb-ios-cc-icon-design-align), so the
+                // two CC call sites in this package are now visually consistent.
+                trailingAction
                 iconButton(symbol: Self.likeSymbol, tint: theme.accent, action: onLike)
                     .accessibilityIdentifier(LBAccessibilityID.liveHeart)
             }
@@ -296,10 +351,72 @@ public struct LiveBottomBarView: View {
     }
 
     /// Whether the nickname (person-edit) button shows — only in the normal LIVE variant.
-    /// Pure (unit-testable). Dropped in upcoming slim / bag-only / 回放 chat-closed.
+    /// Pure (unit-testable). Dropped in upcoming slim / bag-only / 回放 chat-closed. RETAINED
+    /// as its own boolean (existing tests read it directly); `leadingSlotKind` below is the
+    /// render-time source of truth and is defined in terms consistent with this predicate
+    /// (`leadingSlotKind(...) == .nickname` iff `showsNickname(...) == true`).
     static func showsNickname(bagOnly: Bool, isUpcoming: Bool, chatClosed: Bool) -> Bool {
         !bagOnly && !isUpcoming && !chatClosed
     }
+
+    /// Which affordance the LEADING slot (between the comment area and the trailing slot)
+    /// draws (`rb-ios-live-replay-more-menu-and-video-info-live-copy`, design R32). Pure
+    /// (unit-testable, no rendering) — mirrors `commentAreaKind`'s discipline. This is the
+    /// slot the OLD (pre-`prerecorded-live-bottom-bar-comment`) CC toggle used to occupy;
+    /// design R32 now puts「更多」there for `chatClosed` instead of CC (CC itself moves to
+    /// the TRAILING slot — see `trailingActionKind`).
+    enum LeadingSlotKind: Equatable { case nickname, more, none }
+
+    /// Resolve the leading slot's variant: `bagOnly` or `isUpcoming` → `.none` (neither
+    /// affordance applies — bag-only drops this whole section, upcoming slim has no chat to
+    /// moderate); `chatClosed` → `.more`; otherwise → `.nickname` (normal LIVE). Pure (no I/O,
+    /// no UIKit). `bagOnly` is defensive-complete (this whole section is skipped by the
+    /// `if bagOnly` branch in `body` before this is ever consulted), matching
+    /// `trailingActionKind`'s own signature shape.
+    static func leadingSlotKind(bagOnly: Bool, isUpcoming: Bool, chatClosed: Bool) -> LeadingSlotKind {
+        if bagOnly || isUpcoming { return .none }
+        return chatClosed ? .more : .nickname
+    }
+
+    /// Which affordance the TRAILING slot (between the leading slot and like) draws
+    /// (`rb-ios-live-replay-more-menu-and-video-info-live-copy`, design R32). Pure
+    /// (unit-testable, no rendering) — mirrors `commentAreaKind` / `leadingSlotKind`'s
+    /// discipline. This is the slot the OLD (pre-`prerecorded-live-bottom-bar-comment`) Share
+    /// button unconditionally occupied; design R32 now puts CC (字幕) there for `chatClosed`
+    /// instead (Share itself moves INTO the new「更多」sheet — see `LeadingSlotKind.more`).
+    enum TrailingActionKind: Equatable { case share, cc }
+
+    /// Resolve the trailing action slot's variant: `chatClosed` (finished-live-replay, and
+    /// not `bagOnly`/`isUpcoming` — those two variants keep their own unrelated trailing
+    /// affordance, `share`, unaffected by this swap) → `.cc` (design moves CC INTO share's old
+    /// position for this ONE variant); every other combination → `.share` (unchanged). Pure
+    /// (no I/O, no UIKit).
+    static func trailingActionKind(bagOnly: Bool, isUpcoming: Bool, chatClosed: Bool) -> TrailingActionKind {
+        (!bagOnly && !isUpcoming && chatClosed) ? .cc : .share
+    }
+
+    /// The TRAILING slot's actual content — extracted out of `body`'s inline `switch`
+    /// (rb-ios-live-bottom-bar-cc-icon-align) purely so `trailingActionForTesting` below can
+    /// hand a test a bounded subtree to `Mirror`-walk (mirrors `OperationRailView
+    /// .pillButtonForTesting`'s reasoning: `body` mixes this slot's content with the leading
+    /// slot / bag button / like button, so asserting on `body` directly cannot isolate what
+    /// THIS slot alone draws). Behavior is byte-identical to the inline `switch` it replaces.
+    @ViewBuilder
+    private var trailingAction: some View {
+        switch Self.trailingActionKind(bagOnly: bagOnly, isUpcoming: isUpcoming, chatClosed: chatClosed) {
+        case .share:
+            iconButton(action: onShare) { ShareGlyph(size: Self.iconGlyphSize, color: .white) }
+                .accessibilityIdentifier(LBAccessibilityID.liveShare)
+        case .cc:
+            iconButton(action: onToggleCC) { CcGlyph(size: Self.iconGlyphSize, color: .white) }
+                .accessibilityIdentifier(LBAccessibilityID.liveCC)
+        }
+    }
+
+    /// Test-only access to `trailingAction`'s rendered subtree (mirrors `OperationRailView
+    /// .pillButtonForTesting`). Not gated behind `#if DEBUG` — the sibling accessor isn't either
+    /// (source parity), and this is a pure, side-effect-free computed property.
+    var trailingActionForTesting: some View { trailingAction }
 
     // MARK: - Icon button (`LBLiveBottomBar` iconBtn)
 
@@ -382,6 +499,11 @@ private extension LiveBottomBarView {
     // （rb-align-nickname-icon-person-edit）。
     // share 改用自繪 ShareGlyph（Icons.share 三節點），不再用 SF symbol（rb-ios-share-icon-design-align）。
     static let likeSymbol = "heart.fill"            // Icons.heartFill
+    // CC (字幕) 改用自繪 CcGlyph（Icons.cc 圓角矩形徽章 + 雙 c 弧線），不再用 SF Symbol
+    // `captions.bubble`（rb-ios-live-bottom-bar-cc-icon-align）。`ccSymbol` 保留（源碼相容），
+    // unused — `trailingAction` 的 `.cc` 分支已改畫 `CcGlyph`，與 `OperationRailView`.subtitle
+    // 現行值共用同一顆 glyph。
+    static let ccSymbol = "captions.bubble"         // unused — see CcGlyph
 }
 
 // MARK: - Preview (deterministic demo)
@@ -396,6 +518,9 @@ struct LiveBottomBarView_Previews: PreviewProvider {
             LiveBottomBarView(theme: ReferenceUIThemePalette.minimal, bagCount: 3, isReplay: false, isUpcoming: true)
             // bag-only (introPlaying intro MP4) — just the bag button
             LiveBottomBarView(theme: ReferenceUIThemePalette.minimal, bagCount: 5, isReplay: false, bagOnly: true)
+            // chatClosed (finished-live-replay) — 留言區 disabled、leading 格為「更多」(⋯)、
+            // trailing 格為 CC 字幕（design R32；2026-09-03 補正輪還原）。
+            LiveBottomBarView(theme: ReferenceUIThemePalette.minimal, bagCount: 4, isReplay: false, chatClosed: true)
         }
         .padding(.vertical, 40)
         .background(Color.black)
